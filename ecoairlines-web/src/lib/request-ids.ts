@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
+import { ApiError } from '../api/client';
 
 const DEVICE_KEY = 'eco.deviceFingerprint';
 let memoryFingerprint: string | undefined;
@@ -34,4 +35,26 @@ export function useIdempotencyKey(dependencies: unknown[]): { key: () => string;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(renew, dependencies);
   return { key: useCallback(() => ref.current, []), renew };
+}
+
+/** La operación sigue en curso en el servidor: `PROVIDER_UNAVAILABLE` con `retryAfter` (p. ej. la tarjeta quedó pendiente). */
+const stillRunning = (error: unknown) =>
+  error instanceof ApiError && error.problem?.code === 'PROVIDER_UNAVAILABLE' && error.retryAfter !== undefined;
+
+/**
+ * Reintenta `send` mientras el servidor responda que la operación sigue en curso (la saga continúa y, con la MISMA
+ * `Idempotency-Key`, el reintento devuelve el resultado cuando termina, sin ejecutarla dos veces). `onWaiting` avisa a la
+ * pantalla en cada espera. Como mucho `maxWaitMs`; después se lanza el último error.
+ */
+export async function retryWhileRunning<T>(send: () => Promise<T>, onWaiting: () => void, maxWaitMs = 120_000): Promise<T> {
+  const until = Date.now() + maxWaitMs;
+  for (;;) {
+    try {
+      return await send();
+    } catch (error) {
+      if (!stillRunning(error) || Date.now() >= until) throw error;
+      onWaiting();
+      await new Promise((resolve) => setTimeout(resolve, Math.max(1, (error as ApiError).retryAfter!) * 1000));
+    }
+  }
 }

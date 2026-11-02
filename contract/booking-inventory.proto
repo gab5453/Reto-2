@@ -1,0 +1,33 @@
+// COPIA SIN CAMBIOS del contrato Protobuf de Booking Prototipo (`src/proto/inventory.proto`, compartido con autos), tomada
+// de `vuelos-openapi-v2.yaml` §9 "Sincronización de stock por gRPC" (25/10/2026). No se modifica: si Booking lo cambia, se
+// vuelve a copiar. EcoAirlines es CLIENTE: MS.G.Offers llama a PushStockUpdate (D33) en grpc://booking.epn.edu.ec:50051
+// (local localhost:50051), con la metadata `x-correlation-id`.
+//   service_id      = "NODE_VUE_ECOAIRLINES"
+//   item_id         = número de vuelo + cabina, p. ej. "EA300-ECONOMY"
+//   date / time_slot = fecha (YYYY-MM-DD) y hora local de salida (HH:mm) del vuelo (BKG-06)
+//   available_units = asientos AVAILABLE de esa cabina (el mismo valor que CabinPricing.availableSeats)
+
+syntax = "proto3";
+package inventory;
+
+service InventoryStockService {
+  rpc PushStockUpdate (StockUpdateMessage) returns (StockUpdateAck);
+  rpc StreamInventoryChanges (stream StockChangeEvent) returns (StreamSummary);
+}
+
+message StockUpdateMessage {
+  string service_id = 1;      // "vuelos" o código del nodo (ej. "NODE_VUE_ECOAIRLINES")
+  string item_id = 2;         // número de vuelo + cabina, ej. "AV1632-ECONOMY"
+  string date = 3;            // fecha del vuelo YYYY-MM-DD
+  string time_slot = 4;       // hora de salida local HH:mm
+  int32 available_units = 5;  // asientos libres (AVAILABLE) en esa cabina
+  int64 timestamp = 6;        // epoch ms
+}
+message StockUpdateAck { bool success = 1; string message = 2; int64 processed_at = 3; }
+message StockChangeEvent {
+  string event_id = 1; string service_id = 2; string item_id = 3;
+  string date = 4; string time_slot = 5;
+  int32 delta = 6;            // -N al bloquear/vender, +N al liberar/cancelar
+  int64 timestamp = 7;
+}
+message StreamSummary { int32 total_events_processed = 1; bool is_synchronized = 2; string last_sync_hash = 3; }

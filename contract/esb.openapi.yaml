@@ -1,0 +1,1752 @@
+openapi: 3.0.3
+info:
+  title: ESB — enrutador, composición, transversal y entrada de eventos de Booking (interno)
+  version: 1.3.0
+  license:
+    name: Uso académico — Integración de Sistemas (sin licencia de distribución)
+  description: |
+    **ESB** de EcoAirlines (Reto 2, PLAN.md §4.2). Concentra la lógica de integración: los MS de respuesta (MS.Vuelos,
+    MS.Reservas, MS.Postventa, MS.Clientes, MS.Admin) **solo** hablan con el ESB, y el ESB habla con los 9 MS.G por REST, gRPC
+    (MS.G.Offers) y SOAP (MS.G.PostSale), y con la Payment API (canal web).
+
+    | Pieza | Qué hace | Fase |
+    |-------|----------|------|
+    | **Enrutador** | Una petición, un MS.G, sin coordinación (`/router/...`) | V2.9 |
+    | **Composición** | Varios MS.G en paralelo, solo lectura (`/composition/...`) | V2.9 |
+    | **Entrada de eventos de Booking** | `payment.confirmed`, `payment.failed`, `package.cancelled` (BKG-01) | V2.9 |
+    | **Orquestador** | Las 11 sagas con compensación (`/sagas/...`) y "Marcar asistencia lista" | V2.10 |
+
+    ### Orquestador (V2.10)
+    Cada saga recibe el cuerpo del contrato v2 (ya validado por el MS de respuesta) y devuelve la forma interna de los MS.G (el
+    MS de respuesta arma la pública, D43). Su estado y sus pasos hechos quedan en `saga_log`:
+    - Si un paso falla **antes del punto sin retorno**, se compensan los pasos hechos en orden inverso y vuelve el error del paso
+      (ya compensado). La compensación de cada paso se registra antes de ejecutarlo: si el paso falló por plazo vencido (no se
+      sabe si se hizo), también se compensa; por eso todas las compensaciones son seguras aunque el paso no haya ocurrido.
+    - **Después del punto sin retorno** (p. ej. "Cancelar" después de PostSale) un MS.G caído no compensa: la saga se reintenta
+      hasta terminar (2 s, 10 s, 30 s, 2 min, 10 min, 30 min). Un error de negocio ahí deja la saga `FAILED` (revisión).
+    - **Plazo de 5 s de Booking:** si la saga no termina en 4,5 s se responde `202` con su estado y sigue en segundo plano. Si la
+      réplica se cae, el trabajador de recuperación la retoma con el mismo `sagaId`: los pasos hechos no se repiten.
+    - Los eventos de la saga se publican en su último paso, con un `id` derivado del `sagaId` (un reintento no duplica el evento
+      en Webhooks).
+    | Saga | Operación | Pasos (compensación) |
+    |------|-----------|----------------------|
+    | Crear reserva | `POST /sagas/bookings` | Offers valida el hold → Bookings valida → pago* (liberar o reembolsar) → Offers consume (liberar) → Bookings crea (`FAILED` + `booking.failed`) → Emitir boletos |
+    | Emitir boletos | `POST /sagas/bookings/{id}/tickets` y `payment.confirmed` | Offers `BOOKED → TICKETED` (volver a `BOOKED`) → Bookings emite; `booking.ticket_failed` si falla |
+    | Pago fallido | `payment.failed` | Offers libera → Bookings `FAILED` (no se deshace) |
+    | Cambiar asientos | `PUT /sagas/bookings/{id}/seats` | Offers ocupa los nuevos (volver a los anteriores) → pago* → Bookings |
+    | Check-in | `POST /sagas/bookings/{id}/check-in` | FlightStatus (ventana, no cancelado) → Offers asiento automático y `CHECKED_IN` (volver a `TICKETED`) → CheckIn (deshacer) → Bookings |
+    | Cancelar | `POST /sagas/bookings/{id}/cancel` y `package.cancelled` | PostSale (cotización o compensación) → **sin retorno** → Offers libera → reembolso → Bookings |
+    | Cambiar fecha | `POST /sagas/bookings/{id}/date-change` | PostSale consume la oferta (liberarla) → pago* → Offers cupos nuevos (liberarlos) → Bookings → Offers libera los viejos |
+    | Agregar maletas | `POST /sagas/bookings/{id}/baggage` | PostSale valida → pago* → Bookings |
+    | Cambiar estado de vuelo | `PATCH /sagas/flights/{n}/status` | FlightStatus (revertir) → Bookings afectadas → `CANCELLED`: Offers cierra la venta (reabrir) → **sin retorno** → Cancelar cada reserva; `DEPARTED`: `BOARDED` |
+    | Guardar precios y descuento | `PUT /sagas/fare-prices`, `PUT /sagas/promotion-agreements/{id}` | Schedule guarda (valores anteriores) → Offers `PublishFarePrices` → `pricing.changed` |
+    | Publicar horario | `POST/PUT/DELETE /sagas/routes…`, `POST /sagas/timetable/publish` | Offers cupos vendidos → Schedule guarda (restaurar la ruta) → Offers `PublishTimetable` → `schedule.published` |
+    | Marcar asistencia lista | `PUT /sagas/bookings/{id}/assistance-ready` | CheckIn (desmarcar) → Bookings |
+
+    ### Seguridad
+    - Toda operación (salvo `/health` y la entrada de eventos por webhook) exige un **token de servicio**
+      (`token_use = service`) verificado con la JWKS de MS.G.Identity: el de cada MS de respuesta (cliente interno propio,
+      scope `ecoairlines:esb`, D44) o el del propio ESB (`ecoairlines:internal`). Un token de usuario o de partner → `403`; sin
+      token → `401`. Los MS.G rechazan `ecoairlines:esb`: un MS de respuesta no puede saltarse el ESB.
+    - **El dueño nunca sale del cuerpo**: el MS de respuesta lo calcula del token y lo envía en `X-Owner-Id` (`sub` del usuario
+      web o `partner:<clientId>:<X-User-Id>`, D29) o `X-Actor-Id` (`sub` del administrador). El ESB lo reenvía sin cambios.
+    - La entrada de eventos por webhook no lleva token: se autentica con `X-Webhook-Signature` (HMAC-SHA256 del cuerpo exacto
+      con el secreto compartido con Booking).
+
+    ### Transversal
+    - **Correlation ID (D31):** `X-Correlation-Id` se propaga SIN cambios a cada MS.G (HTTP, metadata gRPC `x-correlation-id`,
+      cabecera SOAP `CorrelationId`); cada salto lleva un `X-Request-Id` nuevo. Se devuelve en toda respuesta.
+    - **Idempotencia (D6):** en las escrituras del enrutador (`POST`, `PUT`, `PATCH`, `DELETE`; en Offers, `CreateHold` y
+      `ReleaseHold`), `Idempotency-Key` (UUID) se resuelve aquí y **no** se reenvía: misma clave y mismo cuerpo → la respuesta
+      guardada con `Idempotent-Replayed: true`; otro cuerpo → `409 IDEMPOTENCY_KEY_REUSED`; se guarda 24 h por dueño. Un `5xx`
+      no se guarda (el reintento vuelve a intentarlo).
+    - **Plazos:** cada llamada a un MS.G tiene un plazo de 4 s (menor que el timeout de 5 s de Booking) y un **circuit breaker**
+      por MS.G (5 fallas seguidas → abierto 10 s). Un MS.G que no responde → `503 PROVIDER_UNAVAILABLE` con `Retry-After`.
+    - **Errores:** los MS.G REST ya responden `ProblemDetails` v2 y el enrutador los devuelve tal cual; los de gRPC (trailer
+      `x-problem-details-bin`) y SOAP (`PostSaleFault`) se traducen sin perder el `code`.
+
+    ### Enrutador
+    `/router/<servicio><ruta del MS.G>` reenvía la petición (cuerpo, query y `Content-Type`) al MS.G y devuelve su status, su
+    cuerpo y sus cabeceras `Content-Type`, `Location`, `Retry-After`, `WWW-Authenticate` y `Cache-Control`. Solo existen las
+    47 rutas de `x-esb-routes` (copiadas de la tabla del Enrutador del plan, idénticas al contrato de cada MS.G); otra ruta del
+    mismo servicio → `404` (o `405` con otro método): lo que coordina varios MS.G es del orquestador o de la composición.
+    `POST /oauth2/token` se reenvía **sin** el token del ESB: el partner se autentica con su `client_id` y `client_secret` en el
+    cuerpo (`client_secret_post`), que el MS de respuesta arma a partir de su `Authorization: Basic`.
+
+    MS.G.Offers (gRPC) se expone como `POST /router/offers/<Rpc>` con el **mapeo JSON de proto3** (`ms-g-offers.proto`: campos en
+    camelCase, enums por su nombre, p. ej. `CABIN_CLASS_ECONOMY`). Solo los RPC de `x-esb-offers-routes`.
+
+    ### Entrada de eventos de Booking (D34; BKG-01)
+    Por **webhook** (`POST /integraciones/booking/eventos`, que el gateway publica como `/api/integraciones/booking/eventos`) o por
+    **AMQP** (exchange `booking.events`, cola `ecoairlines.esb.booking-inbound`, routing keys `pagos.payment.confirmed`,
+    `pagos.payment.failed` y `paquetes.package.cancelled`). Cada CloudEvent se guarda por su `id` en `inbound_events`: uno
+    repetido responde `202` con `duplicate: true` y **no** se procesa otra vez. Se procesa en segundo plano con el mismo
+    `correlationid`:
+    | Evento | Qué hace el ESB |
+    |--------|-----------------|
+    | `payment.confirmed` | "Emitir boletos": la reserva debe ser del canal Booking y la referencia, la de la reserva (y el monto, si llega). Offers `BOOKED → TICKETED`, Bookings emite (`issued: 0` si ya estaban) y se publica `booking.ticket_issued` |
+    | `payment.failed` | "Pago fallido": Offers libera los asientos, Bookings marca `FAILED` y se publica `booking.failed` (si ya estaba `FAILED`, nada) |
+    | `package.cancelled` | Saga "Cancelar" con `SAGA_COMPENSATION` (100 % sin penalidad, D42) si el combo es el de la reserva |
+    Un error de negocio deja el evento `REJECTED` (con su ProblemDetails); si un MS.G no responde, `RETRY` a los 5 s, 30 s, 2 min,
+    10 min, 30 min y luego cada hora: nunca se descarta.
+
+    **Base de datos propia:** `esb` (tablas `idempotency_claims`, `inbound_events`, `saga_log` y `change_offers`).
+  x-esb-routes:
+  - { service: identity, method: POST, path: '/auth/register', operationId: register, contract: ms-g-identity.openapi.yaml }
+  - { service: identity, method: POST, path: '/auth/login', operationId: login, contract: ms-g-identity.openapi.yaml }
+  - { service: identity, method: POST, path: '/oauth2/token', operationId: issuePartnerToken, contract: ms-g-identity.openapi.yaml, withoutServiceToken: true }
+  - { service: identity, method: GET, path: '/users', operationId: listUsers, contract: ms-g-identity.openapi.yaml }
+  - { service: identity, method: POST, path: '/users', operationId: createUser, contract: ms-g-identity.openapi.yaml }
+  - { service: identity, method: GET, path: '/users/summary', operationId: getUserSummary, contract: ms-g-identity.openapi.yaml }
+  - { service: identity, method: GET, path: '/users/{sub}', operationId: getUser, contract: ms-g-identity.openapi.yaml }
+  - { service: identity, method: PUT, path: '/users/{sub}/role', operationId: changeUserRole, contract: ms-g-identity.openapi.yaml }
+  - { service: identity, method: PUT, path: '/users/{sub}/status', operationId: changeUserStatus, contract: ms-g-identity.openapi.yaml }
+  - { service: identity, method: GET, path: '/partners', operationId: listPartners, contract: ms-g-identity.openapi.yaml }
+  - { service: identity, method: POST, path: '/partners', operationId: createPartner, contract: ms-g-identity.openapi.yaml }
+  - { service: identity, method: GET, path: '/partners/{clientId}', operationId: getPartner, contract: ms-g-identity.openapi.yaml }
+  - { service: identity, method: PUT, path: '/partners/{clientId}/status', operationId: changePartnerStatus, contract: ms-g-identity.openapi.yaml }
+  - { service: identity, method: POST, path: '/partners/{clientId}/secret', operationId: rotatePartnerSecret, contract: ms-g-identity.openapi.yaml }
+  - { service: identity, method: GET, path: '/roles', operationId: listRoles, contract: ms-g-identity.openapi.yaml }
+  - { service: schedule, method: GET, path: '/fare-prices', operationId: getFarePrices, contract: ms-g-schedule.openapi.yaml }
+  - { service: schedule, method: GET, path: '/fare-prices/reference', operationId: getReferenceFarePrices, contract: ms-g-schedule.openapi.yaml }
+  - { service: schedule, method: GET, path: '/fare-prices/history', operationId: getFarePriceHistory, contract: ms-g-schedule.openapi.yaml }
+  - { service: schedule, method: GET, path: '/promotion-agreements/{partnerId}', operationId: getPromotionAgreement, contract: ms-g-schedule.openapi.yaml }
+  - { service: schedule, method: GET, path: '/routes', operationId: listRoutes, contract: ms-g-schedule.openapi.yaml }
+  - { service: schedule, method: GET, path: '/routes/{routeId}', operationId: getRoute, contract: ms-g-schedule.openapi.yaml }
+  - { service: schedule, method: GET, path: '/timetable', operationId: getTimetable, contract: ms-g-schedule.openapi.yaml }
+  - { service: schedule, method: GET, path: '/fleet-schedule', operationId: getFleetSchedule, contract: ms-g-schedule.openapi.yaml }
+  - { service: schedule, method: GET, path: '/aircraft-types', operationId: listAircraftTypes, contract: ms-g-schedule.openapi.yaml }
+  - { service: schedule, method: GET, path: '/aircraft', operationId: listAircraft, contract: ms-g-schedule.openapi.yaml }
+  - { service: schedule, method: POST, path: '/aircraft', operationId: createAircraft, contract: ms-g-schedule.openapi.yaml }
+  - { service: schedule, method: GET, path: '/aircraft/{registration}', operationId: getAircraft, contract: ms-g-schedule.openapi.yaml }
+  - { service: schedule, method: PUT, path: '/aircraft/{registration}', operationId: updateAircraft, contract: ms-g-schedule.openapi.yaml }
+  - { service: schedule, method: DELETE, path: '/aircraft/{registration}', operationId: deleteAircraft, contract: ms-g-schedule.openapi.yaml }
+  - { service: flight-status, method: GET, path: '/flights', operationId: listFlights, contract: ms-g-flight-status.openapi.yaml }
+  - { service: flight-status, method: GET, path: '/flights/{flightNumber}/status', operationId: getFlightStatus, contract: ms-g-flight-status.openapi.yaml }
+  - { service: flight-status, method: GET, path: '/flights/{flightNumber}/status/history', operationId: getFlightStatusHistory, contract: ms-g-flight-status.openapi.yaml }
+  - { service: customers, method: GET, path: '/profile', operationId: getProfile, contract: ms-g-customers.openapi.yaml }
+  - { service: customers, method: PUT, path: '/profile', operationId: saveProfile, contract: ms-g-customers.openapi.yaml }
+  - { service: webhooks, method: GET, path: '/subscriptions', operationId: listSubscriptions, contract: ms-g-webhooks.openapi.yaml }
+  - { service: webhooks, method: POST, path: '/subscriptions', operationId: createSubscription, contract: ms-g-webhooks.openapi.yaml }
+  - { service: webhooks, method: DELETE, path: '/subscriptions/{id}', operationId: deleteSubscription, contract: ms-g-webhooks.openapi.yaml }
+  - { service: webhooks, method: GET, path: '/events', operationId: listOutboxEvents, contract: ms-g-webhooks.openapi.yaml }
+  - { service: webhooks, method: GET, path: '/history', operationId: listEventHistory, contract: ms-g-webhooks.openapi.yaml }
+  - { service: webhooks, method: GET, path: '/stats', operationId: getDeliveryStats, contract: ms-g-webhooks.openapi.yaml }
+  - { service: bookings, method: GET, path: '/bookings', operationId: listBookings, contract: ms-g-bookings.openapi.yaml }
+  - { service: bookings, method: GET, path: '/bookings/{bookingId}', operationId: getBooking, contract: ms-g-bookings.openapi.yaml }
+  - { service: bookings, method: GET, path: '/bookings/{bookingId}/tickets', operationId: listTickets, contract: ms-g-bookings.openapi.yaml }
+  - { service: bookings, method: GET, path: '/bookings/{bookingId}/tickets/{ticketId}', operationId: getTicket, contract: ms-g-bookings.openapi.yaml }
+  - { service: bookings, method: PUT, path: '/bookings/{bookingId}/passengers/{passengerId}/assistance', operationId: saveAssistance, contract: ms-g-bookings.openapi.yaml }
+  - { service: bookings, method: DELETE, path: '/bookings/{bookingId}/passengers/{passengerId}/assistance', operationId: deleteAssistance, contract: ms-g-bookings.openapi.yaml }
+  - { service: check-in, method: GET, path: '/check-ins/{bookingId}', operationId: getCheckIn, contract: ms-g-check-in.openapi.yaml }
+  x-esb-offers-routes: [Search, GetSeatMap, CreateHold, GetHold, ReleaseHold]
+servers:
+  - url: http://esb:8080
+    description: Red interna (lo llaman los MS de respuesta; el gateway solo publica la entrada de eventos de Booking)
+  - url: http://localhost:4000
+    description: Desarrollo local
+security:
+  - ServiceToken: []
+tags:
+  - name: Enrutador
+    description: Una petición, un MS.G (REST, o gRPC de Offers por HTTP)
+  - name: Composición
+    description: Varios MS.G en paralelo, solo lectura
+  - name: Orquestador
+    description: Las sagas con compensación (V2.10)
+  - name: Entrada de eventos de Booking
+    description: payment.confirmed, payment.failed y package.cancelled (BKG-01)
+  - name: Operación
+    description: Salud del propio ESB
+paths:
+  /health:
+    get:
+      tags: [Operación]
+      operationId: getHealth
+      summary: Salud del ESB (su base y su bus); la del nodo completo es `/composition/health`
+      security: []
+      responses:
+        '200':
+          description: Todo arriba
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: Alguna dependencia caída
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+
+  /router/offers/{rpc}:
+    parameters:
+      - name: rpc
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [Search, GetSeatMap, CreateHold, GetHold, ReleaseHold]
+      - $ref: '#/components/parameters/OwnerId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [Enrutador]
+      operationId: routeOffersRpc
+      summary: Un RPC de MS.G.Offers por HTTP (mapeo JSON de proto3)
+      description: |
+        El cuerpo es el mensaje `<Rpc>Request` de `ms-g-offers.proto` en JSON (camelCase); la respuesta, el `<Rpc>Response`. El
+        dueño del hold va en `X-Owner-Id` (metadata `x-owner-id`). Un error de Offers vuelve con su status y su `code`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Mensaje `<Rpc>Request` de ms-g-offers.proto (mapeo JSON de proto3)
+              additionalProperties: true
+      responses:
+        '200':
+          description: Mensaje `<Rpc>Response` de ms-g-offers.proto
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/Idempotent-Replayed'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '410':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+
+  /router/{service}/{route}:
+    parameters:
+      - name: service
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [identity, customers, webhooks, schedule, flight-status, bookings, check-in]
+      - name: route
+        in: path
+        required: true
+        description: Ruta del MS.G (puede tener varios segmentos y query), una de `x-esb-routes`
+        schema:
+          type: string
+        example: bookings/7c9e6679-7425-40de-944b-e07fc1f90ae7
+      - $ref: '#/components/parameters/OwnerId'
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Enrutador]
+      operationId: routeGet
+      summary: Lectura en un MS.G REST
+      responses:
+        default:
+          $ref: '#/components/responses/Routed'
+    post:
+      tags: [Enrutador]
+      operationId: routePost
+      summary: Escritura en un MS.G REST (idempotente con Idempotency-Key)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        $ref: '#/components/requestBodies/Routed'
+      responses:
+        default:
+          $ref: '#/components/responses/Routed'
+    put:
+      tags: [Enrutador]
+      operationId: routePut
+      summary: Escritura en un MS.G REST (idempotente con Idempotency-Key)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        $ref: '#/components/requestBodies/Routed'
+      responses:
+        default:
+          $ref: '#/components/responses/Routed'
+    delete:
+      tags: [Enrutador]
+      operationId: routeDelete
+      summary: Borrado en un MS.G REST (idempotente con Idempotency-Key)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        default:
+          $ref: '#/components/responses/Routed'
+
+  /composition/health:
+    get:
+      tags: [Composición]
+      operationId: composeNodeHealth
+      summary: Health del nodo de vuelos (contrato v2 `getHealth`), desde caché
+      description: |
+        Se calcula en segundo plano cada 5 s: `/health` de los 9 MS.G (y de la Payment API si está configurada), base y bus del
+        ESB, holds activos (Offers) y vuelos de hoy (FlightStatus). `DOWN` (503) si cae la base del ESB, Identity, Offers o
+        Bookings (sin ellos no se vende a Booking); `DEGRADED` si cae cualquier otra pieza.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: HEALTHY o DEGRADED
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/VuelosHealthResponse'
+        '503':
+          description: DOWN
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/VuelosHealthResponse'
+
+  /composition/services-health:
+    get:
+      tags: [Composición]
+      operationId: composeServicesHealth
+      summary: Salud de cada servicio para el panel (misma caché)
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Un elemento por dependencia
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-admin.openapi.yaml#/components/schemas/ServiceHealth'
+
+  /composition/flight-operations:
+    get:
+      tags: [Composición]
+      operationId: composeFlightOperations
+      summary: Panel de operaciones por vuelo y cabina (contrato v2 `listFlightOperations`) — Offers + FlightStatus
+      description: |
+        Asientos por estado y cabina, ocupación, holds activos y su próximo vencimiento (Offers `GetOccupancy`), estado operativo y
+        check-in abierto (FlightStatus; abre 48 h antes y cierra a la salida) y alertas: `CANCELLED` (crítica), `DELAYED`,
+        `CHECKIN_OPEN`, `OVERBOOKING_RISK` (ocupación ≥ 95 %) y `LOW_AVAILABILITY` (menos de 10 asientos libres en una cabina).
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: origin
+          in: query
+          schema:
+            type: string
+            pattern: ^[A-Z]{3}$
+        - name: destination
+          in: query
+          schema:
+            type: string
+            pattern: ^[A-Z]{3}$
+        - name: status
+          in: query
+          schema:
+            $ref: './vuelos-openapi-v2.yaml#/components/schemas/FlightOperationalStatus'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Vuelos de la fecha
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/FlightOperationsResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+
+  /composition/indicators:
+    get:
+      tags: [Composición]
+      operationId: composeIndicators
+      summary: Indicadores del panel — Bookings + Identity + FlightStatus
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ActorIdRequired'
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Indicadores
+          content:
+            application/json:
+              schema:
+                $ref: './ms-admin.openapi.yaml#/components/schemas/DashboardIndicators'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+
+  /composition/flights/{flightNumber}/assistance:
+    get:
+      tags: [Composición]
+      operationId: composeFlightAssistance
+      summary: Pasajeros con asistencia de un vuelo — FlightStatus (el vuelo existe) + Bookings
+      description: 'Dato de salud: solo con `X-Actor-Id` de un administrador y nunca en logs.'
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ActorIdRequired'
+        - name: flightNumber
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^[A-Z0-9]{2}[0-9]{1,4}$
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Pasajeros con asistencia
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-g-bookings.openapi.yaml#/components/schemas/FlightAssistanceItem'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+
+  /composition/booking-integration:
+    get:
+      tags: [Composición]
+      operationId: composeBookingIntegration
+      summary: Estado de la integración con Booking — Identity + Webhooks + Offers + entrada de eventos
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Estado
+          content:
+            application/json:
+              schema:
+                $ref: './ms-admin.openapi.yaml#/components/schemas/BookingIntegrationStatus'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+
+  /composition/telemetry/latency:
+    get:
+      tags: [Composición]
+      operationId: composeLatency
+      summary: Latencia p50/p95/p99, peticiones y tasa de error por servicio (Prometheus)
+      description: Solo para el panel de administración (exige `X-Actor-Id`). Plataforma de observabilidad (V2.16, D50).
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ActorId'
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Resultado
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-admin.openapi.yaml#/components/schemas/LatencyByService'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+
+  /composition/telemetry/traces/{correlationId}:
+    get:
+      tags: [Composición]
+      operationId: composeCorrelationTrace
+      summary: Todo lo que generó un proceso por su X-Correlation-Id — pasos (Loki), sagas (saga_log) y eventos (Webhooks)
+      description: Solo para el panel de administración (exige `X-Actor-Id`). Plataforma de observabilidad (V2.16, D50).
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ActorId'
+        - name: correlationId
+          in: path
+          required: true
+          schema: { type: string, maxLength: 100 }
+      responses:
+        '200':
+          description: Resultado
+          content:
+            application/json:
+              schema:
+                $ref: './ms-admin.openapi.yaml#/components/schemas/CorrelationTrace'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+
+  /composition/telemetry/queues:
+    get:
+      tags: [Composición]
+      operationId: composeQueues
+      summary: Colas de RabbitMQ con su cola de fallidos (API de administración)
+      description: Solo para el panel de administración (exige `X-Actor-Id`). Plataforma de observabilidad (V2.16, D50).
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ActorId'
+      responses:
+        '200':
+          description: Resultado
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-admin.openapi.yaml#/components/schemas/QueueStats'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+
+  /composition/telemetry/alerts:
+    get:
+      tags: [Composición]
+      operationId: composeAlerts
+      summary: Alertas activas (Alertmanager)
+      description: Solo para el panel de administración (exige `X-Actor-Id`). Plataforma de observabilidad (V2.16, D50).
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ActorId'
+      responses:
+        '200':
+          description: Resultado
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-admin.openapi.yaml#/components/schemas/Alert'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+
+  /integraciones/booking/eventos:
+    post:
+      tags: [Entrada de eventos de Booking]
+      operationId: receiveBookingEvent
+      summary: Recibir un CloudEvent de Booking por webhook (BKG-01)
+      security: []
+      parameters:
+        - name: X-Webhook-Signature
+          in: header
+          required: true
+          description: '`sha256=<HMAC-SHA256(secreto compartido, cuerpo exacto)>` en hexadecimal'
+          schema:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/cloudevents+json:
+            schema:
+              $ref: '#/components/schemas/BookingInboundEvent'
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingInboundEvent'
+      responses:
+        '202':
+          description: Guardado (o repetido, que no se vuelve a procesar)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboundAccepted'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+
+  /inbound-events:
+    get:
+      tags: [Entrada de eventos de Booking]
+      operationId: listInboundEvents
+      summary: Eventos recibidos de Booking y qué se hizo con cada uno (panel de administración)
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ActorIdRequired'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/InboundStatus'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Del más reciente al más antiguo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboundEventPage'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+
+  # ============================================================================================ Orquestador (V2.10)
+  /sagas/bookings:
+    post:
+      tags: [Orquestador]
+      operationId: sagaCreateBooking
+      summary: Saga "Crear reserva" (+ asistencia opcional)
+      description: |
+        Offers valida el hold y el descuento → Bookings valida los pasajeros → pago* → Offers consume el hold (asientos `BOOKED`)
+        → Bookings crea la reserva → "Emitir boletos" → `booking.confirmed` y `booking.ticket_issued`. El `bookingId` lo genera el
+        ESB. `201` con la reserva `CONFIRMED`; si la emisión no termina en el plazo, `202` con la reserva `TICKET_ISSUING` (la saga
+        sigue). Si un paso falla antes de emitir, se compensa todo (LIFO) y se publica `booking.failed`.
+      parameters:
+        - $ref: '#/components/parameters/OwnerIdRequired'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBookingSagaRequest'
+      responses:
+        '201':
+          $ref: '#/components/responses/SagaBooking'
+        '202':
+          $ref: '#/components/responses/SagaBooking'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '410':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+
+  /sagas/bookings/{bookingId}/tickets:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/OwnerId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [Orquestador]
+      operationId: sagaIssueTickets
+      summary: Saga "Emitir boletos" (Offers BOOKED → TICKETED, Bookings emite; `issued 0` si ya estaban)
+      responses:
+        '200':
+          description: Boletos emitidos (o ya emitidos)
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/TicketIssuanceResponse'
+        '202':
+          $ref: '#/components/responses/SagaPending'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+
+  /sagas/bookings/{bookingId}/seats:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/OwnerId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    put:
+      tags: [Orquestador]
+      operationId: sagaChangeSeats
+      summary: Saga "Cambiar asientos" (varios, atómico; el pago solo si se envía un monto)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './vuelos-openapi-v2.yaml#/components/schemas/SeatChangeRequest'
+      responses:
+        '200':
+          description: Asientos cambiados
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/SeatChangeResponse'
+        '202':
+          $ref: '#/components/responses/SagaPending'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+
+  /sagas/bookings/{bookingId}/check-in:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/OwnerId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [Orquestador]
+      operationId: sagaCheckIn
+      summary: Saga "Check-in" (48 h antes y hasta la salida; asiento automático a quien no tiene)
+      responses:
+        '200':
+          description: Check-in hecho
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/CheckInResponse'
+        '202':
+          $ref: '#/components/responses/SagaPending'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+
+  /sagas/bookings/{bookingId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/OwnerId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [Orquestador]
+      operationId: sagaCancelBooking
+      summary: Saga "Cancelar" (no se deshace; `SAGA_COMPENSATION` y `FLIGHT_CANCELLED` sin cotización y sin penalidad)
+      description: |
+        Reembolso: canal Booking → `CALCULATED` (lo ejecuta Booking); canal web → `SETTLED` en la Payment API. Si después de
+        PostSale un MS.G no responde, `202 CANCELLATION_PENDING` y la saga se reintenta hasta terminar.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: './vuelos-openapi-v2.yaml#/components/schemas/CancelBookingRequest'
+      responses:
+        '200':
+          description: Cancelada
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/CancelBookingResponse'
+        '202':
+          description: La cancelación sigue en curso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancellationPending'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '410':
+          $ref: '#/components/responses/Problem'
+
+  /sagas/bookings/{bookingId}/date-change:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/OwnerId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [Orquestador]
+      operationId: sagaChangeDate
+      summary: Saga "Cambiar fecha" (con una oferta de `/composition/bookings/{id}/date-change/search`)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './vuelos-openapi-v2.yaml#/components/schemas/DateChangeRequest'
+      responses:
+        '200':
+          description: Reserva con los itinerarios nuevos
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-bookings.openapi.yaml#/components/schemas/BookingView'
+        '202':
+          $ref: '#/components/responses/SagaPending'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '410':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+
+  /sagas/bookings/{bookingId}/baggage:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/OwnerId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [Orquestador]
+      operationId: sagaAddBaggage
+      summary: Saga "Agregar maletas" (PostSale valida el límite y el monto; el pago va al final)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './vuelos-openapi-v2.yaml#/components/schemas/AddBaggageRequest'
+      responses:
+        '200':
+          description: Maletas agregadas
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/BaggageAddedResponse'
+        '202':
+          $ref: '#/components/responses/SagaPending'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+
+  /sagas/bookings/{bookingId}/assistance-ready:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/ActorIdRequired'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    put:
+      tags: [Orquestador]
+      operationId: sagaAssistanceReady
+      summary: '"Marcar asistencia lista" (administrador): CheckIn y luego Bookings'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-admin.openapi.yaml#/components/schemas/AssistanceReadyRequest'
+      responses:
+        '200':
+          description: Marcada
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+
+  /sagas/flights/{flightNumber}/status:
+    parameters:
+      - name: flightNumber
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Z0-9]{2}[0-9]{1,4}$
+      - $ref: '#/components/parameters/ActorIdRequired'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    patch:
+      tags: [Orquestador]
+      operationId: sagaUpdateFlightStatus
+      summary: Saga "Cambiar estado de vuelo" (D37)
+      description: |
+        FlightStatus valida y guarda → Bookings da las reservas afectadas → si es `CANCELLED`, Offers cierra la venta (stock 0) y se
+        cancela cada reserva con `FLIGHT_CANCELLED` (sagas hijas); si es `DEPARTED`, `CHECKED_IN → BOARDED` →
+        `flight.status_changed` (+ `flight.cancelled`). `affectedBookingIds` del evento solo lleva las reservas de Booking (D40).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './vuelos-openapi-v2.yaml#/components/schemas/FlightStatusUpdateRequest'
+      responses:
+        '200':
+          description: Estado cambiado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlightStatusSagaResult'
+        '202':
+          $ref: '#/components/responses/SagaPending'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+
+  /sagas/fare-prices:
+    put:
+      tags: [Orquestador]
+      operationId: sagaSaveFarePrices
+      summary: Saga "Guardar precios" (Schedule → Offers → `pricing.changed`)
+      parameters:
+        - $ref: '#/components/parameters/ActorIdRequired'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-schedule.openapi.yaml#/components/schemas/SaveFarePricesRequest'
+      responses:
+        '200':
+          description: Precios guardados y publicados
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-schedule.openapi.yaml#/components/schemas/FarePriceTable'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+
+  /sagas/promotion-agreements/{partnerId}:
+    parameters:
+      - name: partnerId
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Z][A-Z0-9_]{2,39}$
+      - $ref: '#/components/parameters/ActorIdRequired'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    put:
+      tags: [Orquestador]
+      operationId: sagaSavePromotionAgreement
+      summary: Saga "Guardar descuento máximo" (acuerdo de promociones, ≤ 50 %, D35)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './vuelos-openapi-v2.yaml#/components/schemas/ContratoPromocionesRequest'
+      responses:
+        '200':
+          description: Acuerdo guardado y publicado en Offers
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+
+  /sagas/routes:
+    post:
+      tags: [Orquestador]
+      operationId: sagaCreateRoute
+      summary: Saga "Publicar horario" — ruta nueva
+      parameters:
+        - $ref: '#/components/parameters/ActorIdRequired'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-schedule.openapi.yaml#/components/schemas/ScheduledRouteRequest'
+      responses:
+        '201':
+          $ref: '#/components/responses/TimetablePublished'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+
+  /sagas/routes/{routeId}:
+    parameters:
+      - name: routeId
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^EA[0-9]{1,4}-EA[0-9]{1,4}$
+      - $ref: '#/components/parameters/ActorIdRequired'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    put:
+      tags: [Orquestador]
+      operationId: sagaUpdateRoute
+      summary: Saga "Publicar horario" — modificar (sin cupos vendidos)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-schedule.openapi.yaml#/components/schemas/ScheduledRouteRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/TimetablePublished'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+    delete:
+      tags: [Orquestador]
+      operationId: sagaDeleteRoute
+      summary: Saga "Publicar horario" — borrar (sin cupos vendidos)
+      responses:
+        '200':
+          $ref: '#/components/responses/TimetablePublished'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+
+  /sagas/timetable/publish:
+    post:
+      tags: [Orquestador]
+      operationId: sagaPublishTimetable
+      summary: Saga "Publicar horario" — la ventana de venta completa y los precios
+      parameters:
+        - $ref: '#/components/parameters/ActorIdRequired'
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          $ref: '#/components/responses/TimetablePublished'
+        '400':
+          $ref: '#/components/responses/Problem'
+
+  /sagas/{sagaId}:
+    get:
+      tags: [Orquestador]
+      operationId: getSaga
+      summary: Estado de una saga (sin su entrada); solo su dueño o un administrador
+      parameters:
+        - name: sagaId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/OwnerId'
+        - $ref: '#/components/parameters/ActorId'
+      responses:
+        '200':
+          description: Saga
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SagaView'
+        '404':
+          $ref: '#/components/responses/Problem'
+
+  /sagas:
+    get:
+      tags: [Orquestador]
+      operationId: listSagas
+      summary: Sagas (panel de administración)
+      parameters:
+        - $ref: '#/components/parameters/ActorIdRequired'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [RUNNING, COMPLETED, COMPENSATING, COMPENSATED, FAILED]
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: parentSagaId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: De la más reciente a la más antigua
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SagaView'
+        '400':
+          $ref: '#/components/responses/Problem'
+
+  /composition/bookings/{bookingId}/cancellation-quote:
+    get:
+      tags: [Composición]
+      operationId: composeCancellationQuote
+      summary: Cotización de cancelación (Bookings + PostSale; válida 15 min)
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+        - $ref: '#/components/parameters/OwnerId'
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Cotización
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/CancellationQuoteResponse'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+
+  /composition/bookings/{bookingId}/baggage-options:
+    get:
+      tags: [Composición]
+      operationId: composeBaggageOptions
+      summary: Opciones de maletas extra (Bookings + PostSale)
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+        - $ref: '#/components/parameters/OwnerId'
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Por pasajero e itinerario no volado
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/BaggageOptionsResponse'
+        '404':
+          $ref: '#/components/responses/Problem'
+
+  /composition/bookings/{bookingId}/boarding-passes:
+    get:
+      tags: [Composición]
+      operationId: composeBoardingPasses
+      summary: Pases de abordar con la puerta vigente (Bookings + CheckIn + FlightStatus)
+      description: |
+        Bookings comprueba el dueño (`404` si la reserva es de otro: CheckIn no conoce dueños); CheckIn da los pases (`409
+        BOARDING_PASS_NOT_AVAILABLE` sin check-in); FlightStatus, la puerta de cada vuelo, que puede cambiar después del check-in.
+        Si FlightStatus no responde, el pase sale con la puerta que tenía. Reemplaza la ruta directa a CheckIn del enrutador (V2.12).
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+        - $ref: '#/components/parameters/OwnerId'
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Pases de la reserva
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/BoardingPassListResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+
+  /composition/bookings/{bookingId}/date-change/search:
+    post:
+      tags: [Composición]
+      operationId: composeDateChangeSearch
+      summary: Alternativas de cambio de fecha (Bookings + Offers + PostSale; el ESB recuerda cada oferta)
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+        - $ref: '#/components/parameters/OwnerId'
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './vuelos-openapi-v2.yaml#/components/schemas/DateChangeSearchRequest'
+      responses:
+        '200':
+          description: Ofertas de cambio (vencen a los 15 min)
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/DateChangeSearchResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+
+components:
+  securitySchemes:
+    ServiceToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de servicio (`token_use = service`, scope `ecoairlines:esb` de un MS de respuesta, D44, o `ecoairlines:internal`), verificado con la JWKS de MS.G.Identity.
+
+  parameters:
+    OwnerId:
+      name: X-Owner-Id
+      in: header
+      required: false
+      description: |
+        Dueño (D29), calculado del token por el MS de respuesta: `sub` del usuario web, `partner:<clientId>:<X-User-Id>` (reservas
+        y holds) o `partner:<clientId>` (lo que es del partner completo: sus suscripciones de webhooks). Se reenvía sin cambios.
+      schema:
+        type: string
+        maxLength: 200
+        pattern: ^([0-9a-f-]{36}|partner:[A-Z][A-Z0-9_]{2,39}(:[\x21-\x7E]{1,120})?)$
+    ActorId:
+      name: X-Actor-Id
+      in: header
+      required: false
+      description: '`sub` del administrador (auditoría y datos de cualquier dueño). Se reenvía al MS.G sin cambios.'
+      schema:
+        type: string
+        format: uuid
+    OwnerIdRequired:
+      name: X-Owner-Id
+      in: header
+      required: true
+      description: Dueño de la reserva (D29), calculado del token por el MS de respuesta.
+      schema:
+        type: string
+        maxLength: 200
+    BookingId:
+      name: bookingId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ActorIdRequired:
+      name: X-Actor-Id
+      in: header
+      required: true
+      description: '`sub` del administrador.'
+      schema:
+        type: string
+        format: uuid
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador del proceso de negocio (D31). Se propaga sin cambios; si no llega, el ESB crea uno.
+      schema:
+        type: string
+        maxLength: 100
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: UUID; lo resuelve el ESB (D6) y no se reenvía al MS.G.
+      schema:
+        type: string
+        format: uuid
+
+  headers:
+    Idempotent-Replayed:
+      description: '`true` si es la respuesta guardada de un reintento con la misma Idempotency-Key.'
+      schema:
+        type: string
+        enum: ['true']
+    X-Correlation-Id:
+      description: El mismo recibido (o el creado por el ESB).
+      schema:
+        type: string
+
+  requestBodies:
+    Routed:
+      required: false
+      description: El cuerpo del contrato del MS.G para esa ruta, tal cual (JSON o, en `/oauth2/token`, formulario).
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+        application/x-www-form-urlencoded:
+          schema:
+            type: object
+            additionalProperties: true
+
+  responses:
+    SagaBooking:
+      description: La reserva (`BookingView` de ms-g-bookings) — `201` CONFIRMED, `202` TICKET_ISSUING. `X-Saga-Id` es la saga.
+      headers:
+        X-Saga-Id:
+          schema:
+            type: string
+            format: uuid
+        Location:
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: './ms-g-bookings.openapi.yaml#/components/schemas/BookingView'
+              - $ref: '#/components/schemas/SagaPending'
+    SagaPending:
+      description: La saga no terminó en el plazo (o espera un reintento); sigue en segundo plano
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SagaPending'
+    TimetablePublished:
+      description: Ruta guardada y horario publicado en Offers
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TimetablePublished'
+    Routed:
+      description: |
+        La respuesta del MS.G (status, cuerpo y su schema según `ms-g-<servicio>.openapi.yaml`). Además, del ESB: `404`/`405` si la
+        ruta no es del enrutador, `409 IDEMPOTENCY_KEY_REUSED` y `503 PROVIDER_UNAVAILABLE`.
+      headers:
+        X-Correlation-Id:
+          $ref: '#/components/headers/X-Correlation-Id'
+        Idempotent-Replayed:
+          $ref: '#/components/headers/Idempotent-Replayed'
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    Problem:
+      description: Error (ProblemDetails v2)
+      headers:
+        X-Correlation-Id:
+          $ref: '#/components/headers/X-Correlation-Id'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+  schemas:
+    Health:
+      type: object
+      required: [status, service, version, dependencies]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        service:
+          type: string
+          example: esb
+        version:
+          type: string
+        uptime_seconds:
+          type: integer
+        dependencies:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              status:
+                type: string
+                enum: [up, down, memory]
+              latency_ms:
+                type: integer
+
+    ProblemDetails:
+      type: object
+      additionalProperties: false
+      description: |
+        ProblemDetails del contrato v2 (RFC 7807). `code` es el del contrato o el del MS.G que respondió (sin cambios); propios del
+        ESB: `PROVIDER_UNAVAILABLE` (503), `IDEMPOTENCY_KEY_REUSED` (409), `METHOD_NOT_ALLOWED` (405), `NOT_FOUND` (404),
+        `VALIDATION_FAILED` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403).
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        code:
+          type: string
+          pattern: ^[A-Z][A-Z0-9_]+$
+        correlation_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        invalidParams:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              reason:
+                type: string
+
+    BookingInboundEvent:
+      description: CloudEvent de Booking (contrato v2 §8)
+      oneOf:
+        - $ref: './vuelos-openapi-v2.yaml#/components/schemas/EventPaymentConfirmed'
+        - $ref: './vuelos-openapi-v2.yaml#/components/schemas/EventPackageCancelled'
+
+    CreateBookingSagaRequest:
+      type: object
+      additionalProperties: false
+      description: '`BookingRequest` del contrato v2 más la asistencia opcional (solo la web). Se declara completo: un `allOf` con `additionalProperties: false` rechazaría `assistance`.'
+      required: [holdId, passengers, payment]
+      properties:
+        holdId:
+          type: string
+          format: uuid
+        passengers:
+          type: array
+          minItems: 1
+          maxItems: 9
+          items:
+            $ref: './vuelos-openapi-v2.yaml#/components/schemas/PassengerItem'
+        payment:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/PaymentReference'
+        salesChannel:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/SalesChannel'
+        assistance:
+          type: array
+          description: Dato de salud (nunca en logs ni en eventos externos)
+          # `AssistanceRequest` + `passengerId`, declarado completo: un `allOf` con su `additionalProperties: false` rechazaría
+          # `passengerId` (corregido en 1.2.0, V2.12).
+          items:
+            type: object
+            additionalProperties: false
+            required: [passengerId, type]
+            properties:
+              passengerId:
+                type: string
+                maxLength: 20
+              type:
+                $ref: './ms-g-bookings.openapi.yaml#/components/schemas/AssistanceType'
+              needsCompanion:
+                type: boolean
+                default: false
+              notes:
+                type: string
+                maxLength: 200
+
+    SagaPending:
+      type: object
+      required: [sagaId, status]
+      properties:
+        sagaId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [RUNNING, PENDING]
+        type:
+          type: string
+        bookingId:
+          type: string
+          format: uuid
+
+    CancellationPending:
+      type: object
+      additionalProperties: false
+      required: [bookingId, status, sagaId]
+      properties:
+        bookingId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [CANCELLATION_PENDING]
+        sagaId:
+          type: string
+          format: uuid
+
+    SagaView:
+      type: object
+      additionalProperties: false
+      required: [sagaId, type, status, steps, correlationId, attempts, createdAt, updatedAt]
+      properties:
+        sagaId:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [CREATE_BOOKING, ISSUE_TICKETS, PAYMENT_FAILED, CHANGE_SEATS, CHECK_IN, CANCEL_BOOKING, CHANGE_DATE, ADD_BAGGAGE, ASSISTANCE_READY, UPDATE_FLIGHT_STATUS, SAVE_PRICES, PUBLISH_TIMETABLE]
+        status:
+          type: string
+          enum: [RUNNING, COMPLETED, COMPENSATING, COMPENSATED, FAILED]
+        steps:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, status, at]
+            properties:
+              name:
+                type: string
+              status:
+                type: string
+                enum: [STARTED, DONE, COMPENSATED]
+              at:
+                type: string
+                format: date-time
+        result:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Solo si está COMPLETED
+        error:
+          type: object
+          nullable: true
+          additionalProperties: true
+        correlationId:
+          type: string
+        parentSagaId:
+          type: string
+          format: uuid
+          nullable: true
+        attempts:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    FlightStatusSagaResult:
+      type: object
+      required: [previousStatus, flight, affectedBookings, eventId, changeId]
+      description: '`FlightStatusUpdateResponse` del contrato v2 más el `changeId` y el resultado de cada cancelación.'
+      properties:
+        previousStatus:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/FlightOperationalStatus'
+        flight:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/FlightStatus'
+        affectedBookings:
+          type: integer
+        eventId:
+          type: string
+        changeId:
+          type: string
+          format: uuid
+        cancellations:
+          type: array
+          items:
+            type: object
+            properties:
+              bookingId:
+                type: string
+                format: uuid
+              pnr:
+                type: string
+              status:
+                type: string
+                enum: [CANCELLED, NOT_CANCELLED]
+              error:
+                type: string
+
+    TimetablePublished:
+      type: object
+      required: [flights]
+      properties:
+        route:
+          $ref: './ms-g-schedule.openapi.yaml#/components/schemas/ScheduledRoute'
+        deletedRouteId:
+          type: string
+        published:
+          type: object
+          additionalProperties: true
+          description: '`PublishResult` de ms-g-offers.proto'
+        flights:
+          type: integer
+          description: Vuelos publicados en Offers
+
+    InboundAccepted:
+      type: object
+      additionalProperties: false
+      required: [accepted, id, duplicate]
+      properties:
+        accepted:
+          type: boolean
+          enum: [true]
+        id:
+          type: string
+          description: '`id` del CloudEvent'
+        duplicate:
+          type: boolean
+          description: '`true` si ese `id` ya había llegado: no se vuelve a procesar'
+
+    InboundStatus:
+      type: string
+      enum: [PENDING, PROCESSING, RETRY, PROCESSED, REJECTED, WAITING_SAGA]
+
+    InboundEvent:
+      type: object
+      additionalProperties: false
+      required: [id, type, source, bookingId, correlationId, channel, event, status, attempts, nextAttemptAt, outcome, receivedAt, processedAt]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [ec.edu.epn.booking.pagos.payment.confirmed, ec.edu.epn.booking.pagos.payment.failed, ec.edu.epn.booking.paquetes.package.cancelled]
+        source:
+          type: string
+        bookingId:
+          type: string
+          format: uuid
+          nullable: true
+        correlationId:
+          type: string
+        channel:
+          type: string
+          enum: [WEBHOOK, AMQP]
+        event:
+          type: object
+          additionalProperties: true
+          description: El CloudEvent tal como llegó
+        status:
+          $ref: '#/components/schemas/InboundStatus'
+        attempts:
+          type: integer
+          minimum: 0
+        nextAttemptAt:
+          type: string
+          format: date-time
+        outcome:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Resultado (PROCESSED), ProblemDetails del rechazo (REJECTED) o del último intento (RETRY)
+        receivedAt:
+          type: string
+          format: date-time
+        processedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    InboundEventPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/InboundEvent'

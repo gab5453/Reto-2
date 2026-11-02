@@ -16,9 +16,11 @@ on:
       - 'ecoairlines-web/**'
   workflow_dispatch:
 
+# La clave pública de la pasarela es la PAYMENT_PUBLISHABLE_KEY de infra/cloud/.env, en una variable del repositorio (no es secreta).
 env:
-  VITE_API_URL: https://ecoairlines-api-gv-fjfaa7b5geg3hphs.brazilsouth-01.azurewebsites.net
-  VITE_AUTH_URL: https://ecoairlines-auth-gv-fscaa6e6gqbcb7ew.brazilsouth-01.azurewebsites.net
+  VITE_GRAPHQL_URL: https://ecoairlines-reto2.northcentralus.cloudapp.azure.com/api/graphql
+  VITE_PAYMENT_API_URL: https://ecoairlines-reto2.northcentralus.cloudapp.azure.com/payment-api
+  VITE_PAYMENT_PUBLIC_KEY: ${{ vars.PAYMENT_PUBLISHABLE_KEY }}
 
 jobs:
   build_and_deploy_job:

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { createHold, searchFlights } from '../api/endpoints';
+import { createHold, searchFlights } from '../api/operations';
 import type { CabinPricing, FlightOffer, PassengerBreakdown, SearchResponse } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { useBookingFlow, type FareChoice } from '../booking/BookingFlowContext';

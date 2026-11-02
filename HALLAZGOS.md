@@ -12,9 +12,14 @@
 > - **Resueltos:** los hallazgos de nube (NUBE-01 a 04) y el de persistencia (PLT-03).
 > - **Siguen abiertos**, porque requieren decisión del grupo o cambiar el contrato: la plantilla del booking (PLT-01, PLT-02), las
 >   extensiones (EXT-01 a 04) y los del contrato (HALL).
+>
+> **Actualización 25/10/2026 (Reto 2):** el grupo entregó el **contrato de Vuelos v2** (`contract/vuelos-openapi-v2.yaml`), que pasa
+> a ser la fuente de verdad. Fija la ruta base `/api/v2/vuelos` (responde a PLT-01) y agrega las operaciones que en v1 eran
+> extensiones (cambio de asiento, estado de vuelo, eventos: EXT-01 en parte). Las preguntas nuevas para el grupo están en la
+> **sección 8 (serie `BKG`)**. Las series anteriores se refieren al contrato v1 y se conservan como historial.
 
 **Estados:** 🔴 bloquea ver, usar o desplegar · 🟠 importante · 🟡 menor · ⚪ informativo · ✅ resuelto.
-**Prefijos:** `OPS` = entorno local · `NUBE` = despliegue RDA1 · `PLT` = plantilla del booking · `EXT` = extensiones fuera del contrato · `HALL` = contrato · `DOC` = documentación y proceso.
+**Prefijos:** `OPS` = entorno local · `NUBE` = despliegue RDA1 · `PLT` = plantilla del booking · `EXT` = extensiones fuera del contrato · `HALL` = contrato · `DOC` = documentación y proceso · `BKG` = contrato v2 de Booking (Reto 2).
 
 ---
 
@@ -44,6 +49,20 @@
 | EXT-02 | ⚪ | La plantilla del grupo expone la administración sin autenticación; aquí exige `ecoairlines:admin` | Informativo | |
 | EXT-03 | 🟡 | El estado que fija el administrador no se refleja en `FlightSegment.status` de la búsqueda | Sí (si se quiere reflejar) | |
 | HALL-01…26 | — | Inconsistencias del contrato (sección 6). 2 resueltas, 24 abiertas | Sí | ver tabla |
+| BKG-01 | 🔴 | Contrato v2: no dice por qué canal llegan `payment.*` y `package.cancelled` | **Sí**: preguntar al grupo | |
+| BKG-02 | 🟠 | Contrato v2: no hay forma de verificar un `paymentReference` de Booking | **Sí** | |
+| BKG-03 | 🟠 | Contrato v2: `tokenUrl` relativa y entrega de credenciales del partner | **Sí** | |
+| BKG-04 | ✅ | Contrato v2: quién llama a `PUT /promociones/contrato` | Resuelto internamente (D35) | Lo define nuestro admin; Booking consulta |
+| BKG-05 | 🟡 | Contrato v2: ningún endpoint lleva un asiento a `BOARDED` | Informativo | `DEPARTED` → `BOARDED` |
+| BKG-06 | 🟠 | Contrato v2: forma del stock por gRPC (absoluto o delta, hora, TLS) | **Sí** | |
+| BKG-07 | ✅ | Contrato v2: qué eventos recibe cada suscriptor | Resuelto internamente (D40) | Solo sus reservas + vuelos; stock por gRPC |
+| BKG-08 | 🟠 | Contrato v2: sobre qué precio se aplica `discountPercentage` | **Sí** | |
+| BKG-09 | ⚪ | Contrato v2: la firma del webhook no lleva marca de tiempo | Informativo | |
+| BKG-10 | ⚪ | Contrato v2: inconsistencias menores de nombres y `additionalProperties` | Informativo | Se implementa tal cual |
+| BKG-11 | 🟡 | Contrato v2: zona horaria de `vuelos_programados_hoy` | Sí | |
+| BKG-12 | ⚪ | Nuestro descuento máximo (50 %) es más estricto que el contrato (0–100) | Informativo | D35 |
+| BKG-13 | 🔴 | `booking.epn.edu.ec` no resuelve en el DNS público: el stock gRPC no puede llegar a Booking desde la nube | **Sí**: pedir su dirección pública | Envíos pendientes y reintentados (D33) |
+| BKG-14 | 🟠 | Contrato v2: `extraBaggage` al crear la reserva no dice si su precio va incluido en el pago | **Sí** | Se ignora al crear; las maletas se compran con `addBaggage` |
 
 ---
 
@@ -260,3 +279,104 @@
 - **Reiniciar la API borra reservas y holds** mientras la persistencia sea en memoria (NUBE-02).
 - **Endpoints protegidos en Swagger:** generar un token con `cd vuelos; npm run token` y usarlo en *Authorize* → `DevBearer`.
 - **`POST /bookings/{id}/cancel` nunca devuelve `202`:** la cancelación del GDS simulado es síncrona.
+
+---
+
+## 8. Contrato de Vuelos v2 de Booking (`BKG`) *(nuevo, 25/10/2026 — Reto 2)*
+
+> Revisión de `contract/vuelos-openapi-v2.yaml` (v2.0.0) y `contract/README-vuelos-v2.md`. **El contrato no se modifica.** Cada
+> hallazgo trae la solución que aplica EcoAirlines mientras el grupo responde (decisiones D26–D40 de `PLAN/PLAN.md`).
+> **Para enviar al grupo:** BKG-01, 02, 03, 06, 08 y 11. Los demás son informativos o ya se resolvieron internamente.
+
+### BKG-01 🔴 No se define el canal de los eventos que publica Booking
+- **Contrato:** §8 «Eventos que CONSUME la aerolínea»: `ec.edu.epn.booking.pagos.payment.confirmed`, `…payment.failed` y
+  `ec.edu.epn.booking.paquetes.package.cancelled`. Hay schemas (`EventPaymentConfirmed`, `EventPackageCancelled`) pero **ningún
+  endpoint ni cola** para recibirlos.
+- **Impacto:** sin canal no podemos emitir boletos al confirmarse el pago ni compensar un combo cancelado.
+- **Pregunta:** ¿nos los envían por webhook (¿a qué URL y con qué firma?), por el RabbitMQ `booking.events` (¿URL, credenciales,
+  cola?) o por Kafka `topic-ordenes-b2b`?
+- **Mientras tanto:** el ESB acepta las dos primeras vías, verifica el origen y descarta duplicados por el `id` del CloudEvent
+  (`inbound_events`, D34). Nada se cobra ni se vende dos veces aunque el evento llegue repetido. Propuesta documentada en
+  `contract/events.asyncapi.yaml`: AMQP en el exchange `booking.events` (routing keys `pagos.payment.confirmed`,
+  `pagos.payment.failed`, `paquetes.package.cancelled`) o webhook firmado `POST /api/integraciones/booking/eventos`.
+
+### BKG-02 🟠 No hay forma de verificar un `paymentReference` de Booking
+- **Contrato:** §4: la aerolínea «solo valida la referencia» (`PAYMENT_REFERENCE_INVALID`, `AMOUNT_MISMATCH`); `amount` es
+  opcional en `PaymentReference`. Booking no expone un endpoint de verificación.
+- **Impacto:** solo podemos validar el formato y que no se haya usado; sin `amount` no se detecta `AMOUNT_MISMATCH`.
+- **Pregunta:** ¿el formato es siempre `PAY-BKP-AAAAMMDD-NNNNNN`? ¿Pueden enviar siempre `amount`? ¿O hay un endpoint para verificar?
+- **Mientras tanto:** se valida el formato, el uso único (`payment_records`) y el monto cuando llega (D28).
+
+### BKG-03 🟠 `tokenUrl` relativa y entrega de credenciales
+- **Contrato:** `PartnerOAuth2.flows.clientCredentials.tokenUrl: /oauth2/token`, relativa a un servidor `/api/v2`.
+- **Pregunta:** ¿la ruta es `/api/v2/oauth2/token` o `/oauth2/token` en la raíz? ¿Cómo prefieren recibir `client_id` y
+  `client_secret`?
+- **Mientras tanto:** se publican las dos rutas; las credenciales se entregan por un canal privado, nunca en el repositorio.
+
+### BKG-04 ✅ Quién llama a `PUT /vuelos/promociones/contrato` *(resuelto internamente)*
+- **Contrato:** exige `flights:admin` con token de partner y «responde una sola vez el cuestionario de la cátedra».
+- **Decisión (D35):** el acuerdo lo define **nuestro administrador** en la pantalla de precios por clase. El token del partner no
+  tiene `flights:admin`; Booking lo **consulta** con `GET`.
+
+### BKG-05 🟡 Ningún endpoint lleva un asiento a `BOARDED`
+- **Contrato:** §10, `SeatStatus` termina en `BOARDED`, pero no hay operación de embarque.
+- **Mientras tanto:** cuando el vuelo pasa a `DEPARTED` (`PATCH status`), los asientos `CHECKED_IN` pasan a `BOARDED` (D37).
+
+### BKG-06 🟠 Forma del stock por gRPC
+- **Contrato:** §9, `PushStockUpdate` (valor absoluto) y `StreamInventoryChanges` (delta).
+- **Pregunta:** ¿cuál prefieren? ¿`date` y `time_slot` en hora local del aeropuerto de salida? ¿Conexión con TLS en la nube?
+- **Mientras tanto:** `PushStockUpdate` desde MS.G.Offers (D33): un envío perdido no deja el stock mal, porque el siguiente
+  lleva el valor completo. Hora local del aeropuerto de salida.
+
+### BKG-07 ✅ Qué eventos recibe cada suscriptor *(resuelto internamente)*
+- **Contrato:** define los eventos y el suscriptor elige cuáles quiere (`WebhookSubscription.events`), pero no dice de qué
+  reservas.
+- **Decisión (D40):** Booking recibe el ciclo de **sus** reservas y holds y los cambios de estado de vuelo. Las reservas de
+  nuestra web no se le notifican (son datos de nuestros clientes); conoce la disponibilidad por el **stock gRPC**, que incluye
+  todos los canales.
+
+### BKG-08 🟠 Sobre qué precio se aplica `discountPercentage`
+- **Contrato:** `SalesChannel.discountPercentage` «debe ser ≤ `porcentaje_descuento_maximo`»; no dice cómo cambia el monto
+  que se compara con `payment.amount`.
+- **Pregunta:** ¿el monto cobrado es `lockedPrice × (1 − descuento)`? ¿Se aplica a la tarifa base o al total con impuestos?
+- **Mientras tanto:** monto esperado = `lockedPrice.total × (1 − descuento)`, redondeado a 2 decimales.
+
+### BKG-09 ⚪ La firma del webhook no lleva marca de tiempo
+- **Contrato:** `X-Webhook-Signature: sha256=<HMAC-SHA256(secret, body)>`.
+- **Observación:** un mensaje capturado se podría reenviar. Se sugiere al grupo un `X-Webhook-Timestamp` dentro de la firma.
+  Mientras tanto, el consumidor deduplica por el `id` del CloudEvent.
+
+### BKG-10 ⚪ Inconsistencias menores
+- `ProblemDetails` mezcla `snake_case` (`correlation_id`) y `camelCase` (`invalidParams`).
+- `HoldRequest` no tiene `additionalProperties: false`; `BookingRequest` y `SearchRequest` sí.
+- **Mientras tanto:** se implementa **tal cual** el contrato.
+
+### BKG-11 🟡 Zona horaria de `vuelos_programados_hoy` (health)
+- **Pregunta:** ¿«hoy» en UTC o en hora local?
+- **Mientras tanto:** `America/Guayaquil`.
+
+### BKG-12 ⚪ Nuestro descuento máximo es más estricto que el contrato
+- **Contrato:** `porcentaje_descuento_maximo` entre 0 y 100.
+- **EcoAirlines (D35):** máximo **50 %**. `GET /promociones/contrato` nunca mostrará más de 50; un `PUT` con más de 50 responde
+  `422 PROMOTION_DISCOUNT_OUT_OF_RANGE`. Es una regla de negocio propia, compatible con el contrato.
+
+### BKG-13 🔴 `booking.epn.edu.ec` no existe en el DNS público (V2.14, 26/10)
+- **Contrato:** §9, el stock se envía por gRPC a `booking.epn.edu.ec:50051`.
+- **Hallazgo:** desde la nube (Azure, North Central US) el nombre **no resuelve** (`Name or service not known`): el servidor de
+  Booking no está publicado en Internet o solo existe dentro de la red de la EPN.
+- **Impacto:** nuestro stock no llega a Booking. No bloquea nada: cada cambio queda en `stock_sync` y se reintenta en segundo
+  plano (D33); al conectarse se envía el valor absoluto vigente (el último gana).
+- **Pregunta:** ¿cuál es la dirección pública (host y puerto) de su `InventoryStockService`? ¿Con TLS (BKG-06)?
+- **Mientras tanto:** `BOOKING_GRPC_ADDRESS` de la nube se cambia en `infra/cloud/.env` cuando respondan (y se reinicia Offers).
+
+### BKG-14 🟠 Maletas extra al crear la reserva: ¿se cobran en el mismo pago? (V2.17, 26/10)
+- **Contrato:** el `PassengerItem` de `POST /bookings` admite `extraBaggage` (maletas extra por itinerario), pero el pago es
+  un `paymentReference` con `amount` = precio congelado del hold (BKG-08) y no dice si incluye el precio de esas maletas.
+- **Hallazgo:** el ESB nunca guardó ni cobró `extraBaggage` al crear la reserva (lo descartaba sin avisar). El monto que
+  valida y captura es solo el del hold. Lo encontró el recorrido de la web: las maletas elegidas en el checkout no llegaban a
+  la reserva.
+- **Impacto:** si Booking las manda, no se agregan y tampoco se cobran (nadie paga por algo que no recibe).
+- **Pregunta:** ¿Booking enviará maletas al crear la reserva? Si sí, ¿el `amount` del pago incluye su precio, o prefieren
+  agregarlas después con `POST /bookings/{id}/baggage`, que sí cobra y valida el monto?
+- **Mientras tanto:** se mantiene el comportamiento (se ignoran al crear). La web ya no las ofrece en el checkout: se compran
+  desde «Mis viajes» con su propio pago (`addBaggage`). Los **asientos** elegidos (`assignedSeats`) sí se respetan desde V2.17.

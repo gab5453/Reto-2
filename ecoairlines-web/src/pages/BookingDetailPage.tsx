@@ -1,22 +1,24 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
-import { getBooking } from '../api/endpoints';
+import { getBooking } from '../api/operations';
 import type { BookingDetail, PassengerItem } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { ItinerarySummary } from '../components/ItinerarySummary';
 import { ProblemAlert } from '../components/ProblemAlert';
 import { PASSENGER_LABELS, STATUS_LABELS, formatDateTime, formatMoney } from '../lib/format';
+import { AssistancePanel } from './booking/AssistancePanel';
 import { BaggagePanel } from './booking/BaggagePanel';
 import { CancelPanel } from './booking/CancelPanel';
 import { CheckInPanel } from './booking/CheckInPanel';
 import { DateChangePanel } from './booking/DateChangePanel';
 import { SeatChangePanel } from './booking/SeatChangePanel';
 
-type Panel = 'CHECK_IN' | 'SEAT' | 'BAGGAGE' | 'DATE_CHANGE' | 'CANCEL';
+type Panel = 'CHECK_IN' | 'SEAT' | 'BAGGAGE' | 'ASSISTANCE' | 'DATE_CHANGE' | 'CANCEL';
 const PANELS: { id: Panel; label: string }[] = [
   { id: 'CHECK_IN', label: 'Check-in y pases' },
-  { id: 'SEAT', label: 'Cambiar asiento' },
+  { id: 'SEAT', label: 'Cambiar asientos' },
   { id: 'BAGGAGE', label: 'Maletas' },
+  { id: 'ASSISTANCE', label: 'Asistencia' },
   { id: 'DATE_CHANGE', label: 'Cambiar fecha' },
   { id: 'CANCEL', label: 'Cancelar' },
 ];
@@ -154,6 +156,45 @@ export function BookingDetailPage() {
         </div>
       </section>
 
+      {(booking.tickets?.length ?? 0) > 0 && (
+        <section className="card" aria-labelledby="tickets-title">
+          <h2 id="tickets-title">Estado de los boletos</h2>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Boleto</th>
+                  <th scope="col">Pasajero</th>
+                  <th scope="col">Estado</th>
+                  <th scope="col">Tramos</th>
+                </tr>
+              </thead>
+              <tbody>
+                {booking.tickets?.map((ticket) => (
+                  <tr key={ticket.ticketId}>
+                    <td>{ticket.eTicketNumber ?? '—'}</td>
+                    <td>{ticket.passengerName ?? passengerName(booking, ticket.passengerId)}</td>
+                    <td>
+                      <span className={`status status-${ticket.status.toLowerCase()}`}>{STATUS_LABELS[ticket.status] ?? ticket.status}</span>
+                      {ticket.failureReason && <span className="muted small"> · {ticket.failureReason}</span>}
+                    </td>
+                    <td className="small">
+                      {ticket.segments?.map((segment) => (
+                        <div key={segment.segmentId}>
+                          {segment.flightNumber ?? segment.segmentId}
+                          {segment.departureIataCode && ` ${segment.departureIataCode} → ${segment.arrivalIataCode}`}
+                          {segment.seatNumber && ` · asiento ${segment.seatNumber}`} · {STATUS_LABELS[segment.status] ?? segment.status}
+                        </div>
+                      ))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       {confirmed && (
         <section className="card" aria-label="Gestionar reserva">
           <div className="tabs" role="tablist" aria-label="Gestionar reserva">
@@ -176,6 +217,7 @@ export function BookingDetailPage() {
             {panel === 'CHECK_IN' && <CheckInPanel booking={booking} onChanged={refresh} />}
             {panel === 'SEAT' && <SeatChangePanel booking={booking} onChanged={refresh} />}
             {panel === 'BAGGAGE' && <BaggagePanel booking={booking} onChanged={refresh} />}
+            {panel === 'ASSISTANCE' && <AssistancePanel booking={booking} />}
             {panel === 'DATE_CHANGE' && <DateChangePanel booking={booking} onChanged={refresh} />}
             {panel === 'CANCEL' && <CancelPanel booking={booking} onChanged={refresh} />}
           </div>
@@ -197,6 +239,11 @@ export function BookingDetailPage() {
       )}
     </div>
   );
+}
+
+function passengerName(booking: BookingDetail, passengerId: string): string {
+  const passenger = booking.passengers?.find((candidate) => candidate.passengerId === passengerId);
+  return passenger ? `${passenger.firstName} ${passenger.lastName}` : passengerId;
 }
 
 /**

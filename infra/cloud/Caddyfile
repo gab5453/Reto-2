@@ -1,0 +1,41 @@
+# HTTPS público de la ruta de Booking (V2.14). Caddy obtiene y renueva el certificado de Let's Encrypt para {$DOMAIN}
+# (el nombre DNS de la IP pública de Azure: ecoairlines-reto2.northcentralus.cloudapp.azure.com). Sin correo: es opcional en
+# Let's Encrypt.
+
+{$DOMAIN} {
+	encode gzip
+
+	# La única puerta de Booking y de la web: el gateway (REST del contrato v2, token, GraphQL, Swagger y su health).
+	@gateway path /api/* /oauth2/* /health
+	handle @gateway {
+		reverse_proxy gateway:8080
+	}
+
+	# Entrada de los eventos de Booking (payment.*, package.cancelled; BKG-01): webhook firmado con HMAC que verifica el ESB.
+	handle /integraciones/booking/eventos {
+		reverse_proxy esb:8080
+	}
+
+	# Payment API simulada (D49): sistema externo que el navegador llama con la clave pública. Se quita el prefijo.
+	handle_path /payment-api/* {
+		reverse_proxy payment-api:8080
+	}
+
+	# Grafana (D50): tableros, trazas y logs; pide usuario y contraseña. Sirve desde /grafana/ (sin quitar el prefijo).
+	handle /grafana* {
+		reverse_proxy grafana:3000
+	}
+
+	# Nada más se publica (ni el ESB ni los MS).
+	handle {
+		respond "No existe." 404
+	}
+
+	log {
+		# Sin cabeceras: nunca se registran tokens (Authorization) ni cookies.
+		format filter {
+			request>headers delete
+			request>tls delete
+		}
+	}
+}

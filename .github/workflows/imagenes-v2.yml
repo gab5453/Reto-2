@@ -1,0 +1,111 @@
+name: Imágenes v2 (GitHub Container Registry)
+
+# V2.20: prueba el monorepo y compila por servicio, solo lo que cambió, en amd64 y arm64 (la VM de Azure es ARM). Las imágenes van a
+# ghcr.io/<dueño>/ecoairlines-<servicio>:<sha>-<arch> y :latest-<arch>, para que el servidor las descargue en vez de compilarlas
+# (PASOS_FINALES.md §3). Cambiar packages/shared, el Dockerfile o las dependencias recompila todos los servicios.
+#
+# EN PAUSA (02/11): solo se ejecuta a mano. Por ahora el sistema se mantiene en la VM y compila allí (scripts/cloud/desplegar.sh).
+on:
+  workflow_dispatch:
+    inputs:
+      todas:
+        description: Compilar todos los servicios aunque no hayan cambiado
+        type: boolean
+        default: false
+
+concurrency:
+  group: imagenes-v2-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Tipos, lint y pruebas v2
+        run: |
+          npm run typecheck
+          npm run lint
+          npm run test:v2
+
+  servicios:
+    runs-on: ubuntu-latest
+    outputs:
+      lista: ${{ steps.lista.outputs.lista }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Elegir los servicios que cambiaron
+        id: lista
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          TODAS: ${{ inputs.todas }}
+        run: |
+          todos=$(find services -name package.json -not -path '*/node_modules/*' -printf '%h\n' | sort)
+          cambios=""
+          if [ "$TODAS" != "true" ] && [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            cambios=$(git diff --name-only "$BASE" "$GITHUB_SHA")
+          else
+            cambios="packages/"
+          fi
+          if echo "$cambios" | grep -qE '^(packages/|contract/|infra/docker/|package\.json|package-lock\.json|tsconfig\.base\.json)'; then
+            elegidos="$todos"
+          else
+            elegidos=$(for dir in $todos; do echo "$cambios" | grep -q "^$dir/" && echo "$dir"; done || true)
+          fi
+          echo "lista=$(echo "$elegidos" | grep . | jq -R . | jq -sc 'map({dir: ., nombre: (split("/") | last)})')" >> "$GITHUB_OUTPUT"
+
+  compilar:
+    needs: [pruebas, servicios]
+    if: needs.servicios.outputs.lista != '[]'
+    runs-on: ${{ matrix.plataforma.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        servicio: ${{ fromJson(needs.servicios.outputs.lista) }}
+        plataforma:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compilar ${{ matrix.servicio.nombre }} (${{ matrix.plataforma.arch }})
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/node-service.Dockerfile
+          build-args: SERVICE_DIR=${{ matrix.servicio.dir }}
+          platforms: linux/${{ matrix.plataforma.arch }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/ecoairlines-${{ matrix.servicio.nombre }}:${{ github.sha }}-${{ matrix.plataforma.arch }}
+            ghcr.io/${{ github.repository_owner }}/ecoairlines-${{ matrix.servicio.nombre }}:latest-${{ matrix.plataforma.arch }}
+          cache-from: type=gha,scope=${{ matrix.servicio.nombre }}-${{ matrix.plataforma.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.servicio.nombre }}-${{ matrix.plataforma.arch }}

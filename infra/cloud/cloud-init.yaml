@@ -1,0 +1,12 @@
+#cloud-config
+# Preparación de la VM de la ruta de Booking (V2.14, Ubuntu 24.04 LTS): Docker con Compose y 2 GB de swap (la VM B2s tiene
+# 4 GB; compilar las imágenes con npm y tsc los necesita). Se pasa a `az vm create --custom-data`.
+package_update: true
+packages:
+  - docker.io
+  - docker-compose-v2
+runcmd:
+  - fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  - usermod -aG docker azureuser
+  - systemctl enable --now docker

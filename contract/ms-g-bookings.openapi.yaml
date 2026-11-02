@@ -1,0 +1,1602 @@
+openapi: 3.0.3
+info:
+  title: MS.G.Bookings — reservas, pasajeros, boletos, pagos recibidos, reembolsos y asistencia (interno)
+  version: 1.1.0
+  license:
+    name: Uso académico — Integración de Sistemas (sin licencia de distribución)
+  description: |
+    Microservicio de gestión **MS.G.Bookings** de EcoAirlines (Reto 2). Reemplaza a `BookingsFacade`, `booking-records`,
+    `passenger-rules` y `passenger-identity-rules` del monolito.
+
+    **Responsabilidad:** la **reserva** y todo lo que le pertenece: pasajeros, segmentos, tarifas compradas, asientos asignados,
+    maletas extra, **boletos y cupones**, historial de cambios, **canal de venta**, **referencias de pago recibidas**,
+    **reembolsos** y **asistencia médica**.
+
+    **Contrato interno.** Solo lo llama el **ESB**, con su token de servicio. Casi todo lo llama el **orquestador**, como un paso
+    de una saga (ver `PLAN/PLAN.md` §4.2); los pasos de Offers (asientos, cupos, stock) y de PostSale (cotizaciones) ocurren
+    entre estas llamadas. Bookings **nunca** llama a otro servicio.
+
+    **Base de datos propia:** `bookings` (tablas `bookings`, `segments`, `passengers`, `seat_assignments`, `extra_baggage`,
+    `purchased_fares`, `tickets`, `ticket_coupons`, `booking_changes`, `sales_channels`, `payment_records`, `refunds`,
+    `passenger_assistance`).
+
+    ### Dueño y contexto (D29)
+    - `X-Owner-Id`: dueño calculado por el MS de respuesta desde el token (`sub` en la web, `partner:<clientId>:<X-User-Id>` en
+      Booking). Si llega, la reserva **debe** ser de ese dueño (si no, `404`, nunca `403`, para no revelar que existe).
+    - `X-Actor-Id`: administrador que consulta o cambia (panel). Permite ver reservas de cualquier dueño.
+    - Sin ninguno de los dos: llamada de una saga sin usuario (p. ej. `payment.confirmed`); solo se permite en los pasos de
+      saga, nunca en los listados.
+    - El **canal** sale del dueño: `partner:…` → `BOOKING`; si no → `WEB`.
+
+    ### Sin duplicados (D34)
+    - `POST /bookings` es idempotente por `bookingId` (lo genera el ESB al iniciar la saga): repetirlo con los mismos datos
+      devuelve la reserva existente; con otro `holdId` responde `409 BOOKING_ID_CONFLICT`. Un hold ya usado por otra reserva
+      responde `409 HOLD_ALREADY_CONSUMED`.
+    - `POST /payment-references/claim`: una referencia de pago se usa **una sola vez** en todo el sistema.
+    - `POST /bookings/{id}/tickets`: si ya estaban emitidos responde `200` con `issued: 0`.
+    - `POST /bookings/{id}/cancellation`: una reserva ya cancelada responde `409 ALREADY_CANCELLED` con el resultado original en
+      `detail`; la saga lo trata como éxito.
+
+    ### Estados de la reserva (contrato v2, §10)
+    `PENDING` (creándose) → `TICKET_ISSUING` (creada, emitiendo) → `CONFIRMED` (boletos emitidos). Además `FAILED` (pago fallido o
+    saga compensada), `CHANGE_PENDING`, `CANCELLATION_PENDING` y `CANCELLED`. Boletos: `ISSUED` → `VOIDED` al cancelar.
+
+    ### Datos sensibles
+    La asistencia médica es un **dato de salud**: solo la ven el dueño y el administrador, y nunca aparece en logs, trazas ni
+    eventos externos. Las referencias de pago no son secretas, pero nunca se registran junto con datos de tarjeta (no los hay).
+
+    ### Trazabilidad
+    Toda operación acepta `X-Correlation-Id` y `X-Request-Id` y devuelve `X-Correlation-Id`. Errores con el `ProblemDetails` del
+    contrato v2, con sus mismos `code` cuando existen.
+servers:
+  - url: http://ms-g-bookings:8080
+    description: Red interna (Docker Compose / nube)
+  - url: http://localhost:4006
+    description: Desarrollo local
+security:
+  - EsbService: []
+tags:
+  - name: Pasajeros
+    description: Validación de pasajeros (antes de crear la reserva)
+  - name: Pagos recibidos
+    description: Referencias de pago (uso único) — saga "Crear reserva" y postventa
+  - name: Reservas
+    description: Crear, consultar y marcar como fallida
+  - name: Boletos
+    description: Emisión y consulta (saga "Emitir boletos")
+  - name: Asientos
+    description: Cambio de asientos y asientos automáticos del check-in
+  - name: Postventa
+    description: Aplicar maletas, cambio de fecha y cancelación
+  - name: Vuelos
+    description: Reservas y asistencia de un vuelo (saga "Cambiar estado de vuelo" y composición)
+  - name: Asistencia
+    description: Asistencia médica por pasajero
+  - name: Indicadores
+    description: Totales para el panel de administración
+  - name: Operación
+    description: Salud del servicio
+paths:
+  /health:
+    get:
+      tags: [Operación]
+      operationId: getHealth
+      summary: Estado del servicio y de su base de datos
+      security: []
+      responses:
+        '200':
+          description: En funcionamiento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: La base de datos no responde
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+
+  # ================================================================= PASAJEROS
+  /passengers/validate:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [Pasajeros]
+      operationId: validatePassengers
+      summary: Validar los pasajeros contra el hold (paso de "Crear reserva")
+      description: |
+        Reglas: cantidad por tipo igual al `passengersBreakdown` del hold, infante con adulto asociado (y no más infantes que
+        adultos), documento vigente a la fecha del último vuelo, pasaporte en vuelos internacionales, y un mismo documento
+        **una sola vez por vuelo** (entre todas las reservas no canceladas).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidatePassengersRequest'
+      responses:
+        '200':
+          description: Pasajeros válidos
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [valid]
+                properties:
+                  valid:
+                    type: boolean
+                    enum: [true]
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: |
+            Regla incumplida: `INFANT_WITHOUT_ADULT`, `PASSENGER_COUNT_MISMATCH`, `DOCUMENT_EXPIRED`,
+            `PASSPORT_REQUIRED_INTERNATIONAL` o `PASSENGER_ALREADY_ON_FLIGHT` (documento repetido en el vuelo; el ESB lo publica
+            como `VALIDATION_FAILED`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: Infante sin adulto asociado.
+                status: 422
+                code: INFANT_WITHOUT_ADULT
+                detail: El pasajero PAX-3 (INFANT) debe indicar associatedAdultId de un ADULT de la misma reserva.
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+
+  # ================================================================= PAGOS RECIBIDOS
+  /payment-references/claim:
+    parameters:
+      - $ref: '#/components/parameters/OwnerIdOptional'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [Pagos recibidos]
+      operationId: claimPaymentReference
+      summary: Registrar una referencia de pago recibida (uso único) — paso "pago*" de las sagas
+      description: |
+        **Canal Booking** (`BOOKING_PROTOTIPO`): Booking ya cobró. Se valida el formato (`^PAY-[A-Z0-9-]{6,60}$`, hallazgo
+        BKG-02), que no se haya usado y, si llega `amount`, que sea igual a `expectedAmount` (`AMOUNT_MISMATCH`).
+        **Canal web** (`AIRLINE_DIRECT`): el ESB ya verificó la referencia en la Payment API; aquí solo se registra el uso único.
+        Repetir el claim con la **misma** referencia, operación y `sagaId` devuelve el registro existente (reintento de la saga).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimPaymentRequest'
+            example:
+              sagaId: 1f0c8a8e-61d0-4b1e-9d0e-6f2b5c9a7d31
+              paymentReference: PAY-BKP-20261023-000981
+              provider: BOOKING_PROTOTIPO
+              operation: BOOKING
+              amount: { currency: USD, total: '239.00' }
+              expectedAmount: { currency: USD, total: '239.00' }
+      responses:
+        '201':
+          description: Referencia registrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentRecord'
+        '200':
+          description: Reintento de la misma saga — devuelve el registro existente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentRecord'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: '`PAYMENT_REFERENCE_INVALID` (formato o ya usada) o `AMOUNT_MISMATCH`'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: La referencia de pago no es válida o ya fue usada.
+                status: 422
+                code: PAYMENT_REFERENCE_INVALID
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+
+  /payment-references/{paymentReference}:
+    parameters:
+      - name: paymentReference
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 80
+      - name: sagaId
+        in: query
+        required: true
+        description: Solo libera el registro que creó esa misma saga
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+    delete:
+      tags: [Pagos recibidos]
+      operationId: releasePaymentReference
+      summary: Compensación — liberar una referencia que no llegó a usarse
+      description: |
+        Solo si la referencia no quedó unida a una reserva confirmada (si no, `409`). Así Booking puede reintentar la compra con
+        la misma referencia después de un fallo. Liberar algo ya liberado responde `204` (idempotente).
+      responses:
+        '204':
+          description: Liberada
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: La referencia ya pertenece a una reserva confirmada
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  # ================================================================= RESERVAS
+  /bookings:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Reservas]
+      operationId: listBookings
+      summary: Reservas de un dueño (o de todos, para el administrador)
+      description: Exige `X-Owner-Id` o `X-Actor-Id`. Responde la forma `BookingListResponse` del contrato v2 (sin `_links`).
+      parameters:
+        - $ref: '#/components/parameters/OwnerIdOptional'
+        - $ref: '#/components/parameters/ActorIdOptional'
+        - name: pnr
+          in: query
+          schema:
+            type: string
+            pattern: ^[A-Z0-9]{6}$
+        - name: status
+          in: query
+          schema:
+            $ref: './vuelos-openapi-v2.yaml#/components/schemas/BookingStatus'
+        - name: channel
+          in: query
+          description: Solo con `X-Actor-Id`
+          schema:
+            $ref: '#/components/schemas/SalesChannelCode'
+        - name: createdFrom
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: createdTo
+          in: query
+          schema:
+            type: string
+            format: date
+        - $ref: './vuelos-openapi-v2.yaml#/components/parameters/Limit'
+        - $ref: './vuelos-openapi-v2.yaml#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Lista resumida
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/BookingListResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Reservas]
+      operationId: createBooking
+      summary: Crear la reserva (paso de "Crear reserva", después de validar pasajeros, pago y asientos)
+      description: |
+        Crea la reserva en `TICKET_ISSUING`, con su PNR. El ESB ya validó el hold y el descuento (Offers), los pasajeros (este
+        servicio) y el pago (`claim`), y Offers ya pasó los asientos a `BOOKED`. El siguiente paso es "Emitir boletos".
+      parameters:
+        - $ref: '#/components/parameters/OwnerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBookingCommand'
+      responses:
+        '201':
+          description: Reserva creada
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/X-Correlation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingView'
+        '200':
+          description: Reintento con el mismo `bookingId` y los mismos datos — devuelve la reserva existente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingView'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: '`BOOKING_ID_CONFLICT` (mismo `bookingId`, otro hold) o `HOLD_ALREADY_CONSUMED`'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /bookings/{bookingId}:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/OwnerIdOptional'
+      - $ref: '#/components/parameters/ActorIdOptional'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Reservas]
+      operationId: getBooking
+      summary: Detalle de la reserva (forma `BookingDetail` del contrato v2 + datos internos)
+      description: El MS de respuesta quita los campos internos (`ownerId`, `channel`, `fares`) y agrega los `_links`.
+      responses:
+        '200':
+          description: Reserva
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingView'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/BookingNotFound'
+
+  /bookings/{bookingId}/fail:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/CorrelationId'
+    post:
+      tags: [Reservas]
+      operationId: failBooking
+      summary: Marcar la reserva como FAILED (saga "Pago fallido" o compensación de "Crear reserva")
+      description: |
+        Solo desde `PENDING`, `PENDING_PAYMENT` o `TICKET_ISSUING`. Si ya está `FAILED` responde `200` (idempotente). Desde
+        `CONFIRMED` responde `409 BOOKING_NOT_CANCELLABLE` (una reserva emitida se cancela, no falla) y desde `CANCELLED`,
+        `409 ALREADY_CANCELLED`. Libera la referencia de pago y los documentos de los vuelos.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [errorCode]
+              properties:
+                errorCode:
+                  type: string
+                  enum: [PAYMENT_NOT_AUTHORIZED, TICKET_ISSUANCE_FAILED, PNR_CREATION_FAILED, SAGA_COMPENSATED]
+                reason:
+                  type: string
+                  maxLength: 200
+      responses:
+        '200':
+          description: Reserva en FAILED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingView'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/BookingNotFound'
+        '409':
+          $ref: '#/components/responses/BookingStateConflict'
+
+  /bookings/{bookingId}/fares:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/OwnerIdOptional'
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Postventa]
+      operationId: getBookingFares
+      summary: Tarifas compradas, itinerarios no volados y maletas (lo que PostSale necesita para cotizar)
+      responses:
+        '200':
+          description: Datos para cotizar
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingFares'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/BookingNotFound'
+
+  # ================================================================= BOLETOS
+  /bookings/{bookingId}/tickets:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/OwnerIdOptional'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [Boletos]
+      operationId: issueTickets
+      summary: Emitir los boletos (último paso de "Emitir boletos", después de que Offers pasa los asientos a TICKETED)
+      description: |
+        Un boleto por pasajero con un cupón por segmento; la reserva pasa a `CONFIRMED`. Si ya estaban emitidos responde `200`
+        con `issued: 0`. Una reserva `FAILED` o `CANCELLED` responde `409 BOOKING_NOT_CONFIRMED`.
+      responses:
+        '200':
+          description: Boletos emitidos (o ya emitidos)
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/TicketIssuanceResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/BookingNotFound'
+        '409':
+          $ref: '#/components/responses/BookingStateConflict'
+    get:
+      tags: [Boletos]
+      operationId: listTickets
+      summary: Boletos de la reserva
+      responses:
+        '200':
+          description: Boletos
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/TicketListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/BookingNotFound'
+
+  /bookings/{bookingId}/tickets/{ticketId}:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - name: ticketId
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Za-z0-9-]+$
+      - $ref: '#/components/parameters/OwnerIdOptional'
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Boletos]
+      operationId: getTicket
+      summary: Un boleto
+      responses:
+        '200':
+          description: Boleto
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/Ticket'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/BookingNotFound'
+
+  # ================================================================= ASIENTOS
+  /bookings/{bookingId}/seats/plan:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/OwnerIdOptional'
+      - $ref: '#/components/parameters/CorrelationId'
+    post:
+      tags: [Asientos]
+      operationId: planSeatChange
+      summary: Validar un cambio de asientos y devolver el plan (primer paso de "Cambiar asientos")
+      description: |
+        Recibe el `SeatChangeRequest` del contrato v2. Valida que el segmento no tenga check-in (`409 CUTOFF_PASSED`), que no sea
+        un infante (`422 INFANT_SEAT_NOT_ALLOWED`) y que el pasajero y el segmento sean de la reserva. Devuelve, por cada cambio,
+        el asiento anterior, la cabina comprada (Offers valida `SEAT_CABIN_MISMATCH`) y el estado que debe tener el asiento
+        nuevo (`BOOKED` o `TICKETED`). No cambia nada.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './vuelos-openapi-v2.yaml#/components/schemas/SeatChangeRequest'
+      responses:
+        '200':
+          description: Plan del cambio
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeatChangePlan'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/BookingNotFound'
+        '409':
+          $ref: '#/components/responses/BookingStateConflict'
+        '422':
+          description: '`INFANT_SEAT_NOT_ALLOWED`'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /bookings/{bookingId}/seats:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/OwnerIdOptional'
+      - $ref: '#/components/parameters/CorrelationId'
+    put:
+      tags: [Asientos]
+      operationId: applySeats
+      summary: Guardar los asientos nuevos (último paso de "Cambiar asientos" y de "Check-in")
+      description: |
+        Todos o ninguno. Con `reason = CHECK_IN_AUTO` (último paso de la saga "Check-in", sin pago) el ESB envía el asiento de
+        **cada pasajero que hizo check-in** en ese segmento (automático o el que ya tenía): Bookings guarda los asientos y marca
+        esos pasajeros y segmentos con check-in, para responder `CUTOFF_PASSED` a cambios posteriores de asiento o asistencia.
+        Responde el `SeatChangeResponse` del contrato v2 (sin `_links`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplySeatsRequest'
+      responses:
+        '200':
+          description: Asientos guardados
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/SeatChangeResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/BookingNotFound'
+        '409':
+          $ref: '#/components/responses/BookingStateConflict'
+
+  # ================================================================= POSTVENTA
+  /bookings/{bookingId}/baggage:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/OwnerIdOptional'
+      - $ref: '#/components/parameters/CorrelationId'
+    post:
+      tags: [Postventa]
+      operationId: applyBaggage
+      summary: Agregar maletas (último paso de "Agregar maletas", después de PostSale y del pago)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyBaggageRequest'
+      responses:
+        '200':
+          description: Maletas agregadas
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/BaggageAddedResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/BookingNotFound'
+        '409':
+          $ref: '#/components/responses/BookingStateConflict'
+
+  /bookings/{bookingId}/date-change:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/OwnerIdOptional'
+      - $ref: '#/components/parameters/CorrelationId'
+    post:
+      tags: [Postventa]
+      operationId: applyDateChange
+      summary: Aplicar un cambio de fecha (último paso de "Cambiar fecha", después de que Offers movió cupos y asientos)
+      description: Reemplaza el itinerario y su tarifa, reemite los boletos del itinerario cambiado y agrega el cambio al historial.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyDateChangeRequest'
+      responses:
+        '200':
+          description: Reserva con el itinerario nuevo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingView'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/BookingNotFound'
+        '409':
+          $ref: '#/components/responses/BookingStateConflict'
+
+  /bookings/{bookingId}/cancellation:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/OwnerIdOptional'
+      - $ref: '#/components/parameters/CorrelationId'
+    post:
+      tags: [Postventa]
+      operationId: applyCancellation
+      summary: Registrar la cancelación (último paso de "Cancelar", después de PostSale, Offers y el reembolso)
+      description: |
+        La reserva pasa a `CANCELLED`, los boletos a `VOIDED` y se guarda el reembolso: `CALCULATED` en el canal Booking (lo
+        ejecuta Booking), `SETTLED` en el canal web (ya lo ejecutó la Payment API) o `NOT_REFUNDABLE`. Responde el
+        `CancelBookingResponse` del contrato v2 (sin `_links`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyCancellationRequest'
+      responses:
+        '200':
+          description: Reserva cancelada
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/CancelBookingResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/BookingNotFound'
+        '409':
+          description: '`ALREADY_CANCELLED` (la saga lo trata como éxito) o `BOOKING_NOT_CANCELLABLE`'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  # ================================================================= VUELOS
+  /flights/{flightNumber}/{date}/bookings:
+    parameters:
+      - $ref: './vuelos-openapi-v2.yaml#/components/parameters/FlightNumber'
+      - $ref: '#/components/parameters/FlightDate'
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Vuelos]
+      operationId: listFlightBookings
+      summary: Reservas activas de un vuelo (saga "Cambiar estado de vuelo")
+      description: Reservas no canceladas con al menos un segmento en ese vuelo y fecha. Sirve para `affectedBookings`.
+      responses:
+        '200':
+          description: Reservas afectadas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlightBookings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /flights/{flightNumber}/{date}/assistance:
+    parameters:
+      - $ref: './vuelos-openapi-v2.yaml#/components/parameters/FlightNumber'
+      - $ref: '#/components/parameters/FlightDate'
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Vuelos]
+      operationId: listFlightAssistance
+      summary: Pasajeros con asistencia de un vuelo (composición "Asistencia por vuelo", solo administrador)
+      responses:
+        '200':
+          description: Pasajeros con asistencia
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FlightAssistanceItem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ================================================================= ASISTENCIA
+  /bookings/{bookingId}/passengers/{passengerId}/assistance:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - name: passengerId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 20
+        example: PAX-1
+      - $ref: '#/components/parameters/OwnerIdOptional'
+      - $ref: '#/components/parameters/ActorIdOptional'
+      - $ref: '#/components/parameters/CorrelationId'
+    put:
+      tags: [Asistencia]
+      operationId: saveAssistance
+      summary: Pedir o cambiar la asistencia de un pasajero
+      description: |
+        No se puede después del check-in del pasajero en algún segmento (`409 CUTOFF_PASSED`). El ESB publica
+        `booking.assistance_requested` (evento interno, nunca sale a Booking).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssistanceRequest'
+      responses:
+        '200':
+          description: Asistencia guardada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PassengerAssistance'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/BookingNotFound'
+        '409':
+          $ref: '#/components/responses/BookingStateConflict'
+    delete:
+      tags: [Asistencia]
+      operationId: deleteAssistance
+      summary: Quitar la asistencia de un pasajero
+      responses:
+        '204':
+          description: Quitada (o no tenía)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/BookingNotFound'
+        '409':
+          $ref: '#/components/responses/BookingStateConflict'
+
+  /bookings/{bookingId}/passengers/{passengerId}/assistance/status:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - name: passengerId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 20
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/CorrelationId'
+    put:
+      tags: [Asistencia]
+      operationId: setAssistanceStatus
+      summary: Marcar la asistencia como lista (READY) o volver a REQUESTED
+      description: |
+        Último paso de "Asistencia lista": el administrador la confirma en CheckIn (`PUT /check-ins/{bookingId}/assistance-ready`)
+        y el ESB actualiza aquí el estado que ve el cliente.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [REQUESTED, READY]
+      responses:
+        '200':
+          description: Estado guardado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PassengerAssistance'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: La reserva, el pasajero o su asistencia no existen
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  # ================================================================= INDICADORES
+  /indicators:
+    parameters:
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Indicadores]
+      operationId: getBookingSummary
+      summary: Totales para el panel (composición "Indicadores")
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Totales
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    EsbService:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de servicio del ESB (`token_use = service`, scope `ecoairlines:internal`), verificado con la JWKS de MS.G.Identity.
+
+  parameters:
+    OwnerId:
+      name: X-Owner-Id
+      in: header
+      required: true
+      description: Dueño (D29) — `sub` del usuario web o `partner:<clientId>:<X-User-Id>`. Solo lo envía el ESB.
+      schema:
+        $ref: '#/components/schemas/OwnerId'
+    OwnerIdOptional:
+      name: X-Owner-Id
+      in: header
+      required: false
+      description: Si llega, el recurso debe ser de ese dueño (si no, `404`). Sin él, es un paso de saga sin usuario.
+      schema:
+        $ref: '#/components/schemas/OwnerId'
+    ActorId:
+      name: X-Actor-Id
+      in: header
+      required: true
+      description: '`sub` del administrador (auditoría y acceso a datos de cualquier dueño). Solo lo envía el ESB.'
+      schema:
+        type: string
+        format: uuid
+    ActorIdOptional:
+      name: X-Actor-Id
+      in: header
+      required: false
+      description: '`sub` del administrador, cuando la operación viene del panel.'
+      schema:
+        type: string
+        format: uuid
+    BookingId:
+      $ref: './vuelos-openapi-v2.yaml#/components/parameters/BookingId'
+    FlightDate:
+      name: date
+      in: path
+      required: true
+      description: Fecha local de salida
+      schema:
+        type: string
+        format: date
+      example: '2026-11-20'
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador del proceso completo (contrato v2, §6). Se propaga sin cambios.
+      schema:
+        type: string
+        maxLength: 100
+      example: corr-vuelos-7f3a9c
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 100
+
+  headers:
+    X-Correlation-Id:
+      description: El mismo valor recibido (o el creado si no llegó).
+      schema:
+        type: string
+
+  responses:
+    ValidationFailed:
+      description: Datos inválidos
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    Unauthorized:
+      description: Falta el token del ESB o no es válido
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    BookingNotFound:
+      description: La reserva no existe o es de otro dueño
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: Reserva no encontrada.
+            status: 404
+            code: NOT_FOUND
+            correlation_id: corr-vuelos-7f3a9c
+            timestamp: '2026-10-25T10:00:00Z'
+    BookingStateConflict:
+      description: |
+        El estado de la reserva no permite la operación: `BOOKING_NOT_CONFIRMED`, `CUTOFF_PASSED`, `ALREADY_CANCELLED`,
+        `BOOKING_NOT_CANCELLABLE` o `FLIGHT_ALREADY_DEPARTED`. En un cambio de fecha, `PASSENGER_ALREADY_ON_FLIGHT` si un
+        documento de la reserva ya viaja en el vuelo nuevo en otra reserva.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+  schemas:
+    OwnerId:
+      type: string
+      maxLength: 200
+      pattern: ^([0-9a-f-]{36}|partner:[A-Z][A-Z0-9_]{2,39}:.{1,120})$
+      example: partner:BOOKING_PROTOTIPO:usr-4f9a2c
+
+    SalesChannelCode:
+      type: string
+      enum: [WEB, BOOKING]
+
+    AssistanceType:
+      type: string
+      enum: [WCHR, WCHS, WCHC, BLND, DEAF, DPNA, MEDA]
+      description: Códigos IATA de servicio especial (ver `ms-g-customers.openapi.yaml`).
+
+    AssistanceRequest:
+      type: object
+      additionalProperties: false
+      required: [type]
+      description: Asistencia médica o de movilidad. **Dato de salud.**
+      properties:
+        type:
+          $ref: '#/components/schemas/AssistanceType'
+        needsCompanion:
+          type: boolean
+          default: false
+        notes:
+          type: string
+          maxLength: 200
+
+    PassengerAssistance:
+      type: object
+      additionalProperties: false
+      required: [passengerId, type, needsCompanion, status, updatedAt]
+      description: |
+        `AssistanceRequest` más su estado. Se declara completo (no con `allOf`): `AssistanceRequest` tiene
+        `additionalProperties: false` y en un `allOf` rechazaría `passengerId`. **Dato de salud.**
+      properties:
+        passengerId:
+          type: string
+        type:
+          $ref: '#/components/schemas/AssistanceType'
+        needsCompanion:
+          type: boolean
+        notes:
+          type: string
+          maxLength: 200
+        status:
+          type: string
+          enum: [REQUESTED, READY]
+          description: '`READY` cuando CheckIn confirma que el aeropuerto la preparó'
+        updatedAt:
+          type: string
+          format: date-time
+
+    ValidatePassengersRequest:
+      type: object
+      additionalProperties: false
+      required: [passengers, passengersBreakdown, segments]
+      properties:
+        passengers:
+          type: array
+          minItems: 1
+          maxItems: 9
+          items:
+            $ref: './vuelos-openapi-v2.yaml#/components/schemas/PassengerItem'
+        passengersBreakdown:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/PassengerBreakdown'
+        segments:
+          type: array
+          minItems: 1
+          description: Segmentos del hold (para la fecha del último vuelo, si es internacional y el documento único por vuelo)
+          items:
+            type: object
+            additionalProperties: false
+            required: [segmentId, flightNumber, departureAt, international]
+            properties:
+              segmentId:
+                type: string
+              flightNumber:
+                type: string
+              departureAt:
+                type: string
+                format: date-time
+              international:
+                type: boolean
+
+    ClaimPaymentRequest:
+      type: object
+      additionalProperties: false
+      required: [sagaId, paymentReference, provider, operation, expectedAmount]
+      properties:
+        sagaId:
+          type: string
+          format: uuid
+        paymentReference:
+          type: string
+          maxLength: 80
+        provider:
+          type: string
+          enum: [BOOKING_PROTOTIPO, AIRLINE_DIRECT]
+        operation:
+          $ref: '#/components/schemas/PaymentOperation'
+        bookingId:
+          type: string
+          format: uuid
+          description: Obligatorio en postventa; en "Crear reserva" se une después, al crearla
+        amount:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/MoneyAmount'
+        expectedAmount:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/MoneyAmount'
+
+    PaymentOperation:
+      type: string
+      enum: [BOOKING, SEATS, BAGGAGE, DATE_CHANGE]
+
+    PaymentRecord:
+      type: object
+      additionalProperties: false
+      required: [paymentReference, provider, operation, amount, sagaId, claimedAt]
+      properties:
+        paymentReference:
+          type: string
+        provider:
+          type: string
+          enum: [BOOKING_PROTOTIPO, AIRLINE_DIRECT]
+        operation:
+          $ref: '#/components/schemas/PaymentOperation'
+        amount:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/MoneyAmount'
+        bookingId:
+          type: string
+          format: uuid
+          nullable: true
+        sagaId:
+          type: string
+          format: uuid
+        claimedAt:
+          type: string
+          format: date-time
+
+    PurchasedFare:
+      type: object
+      additionalProperties: false
+      required: [itineraryId, cabinClass, fareBrand, segmentIds, price, isRefundable, isChangeable]
+      properties:
+        itineraryId:
+          type: string
+        cabinClass:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/CabinClass'
+        fareBrand:
+          type: string
+          example: BROTE
+        segmentIds:
+          type: array
+          items:
+            type: string
+        price:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/MoneyAmount'
+        isRefundable:
+          type: boolean
+        isChangeable:
+          type: boolean
+        changeFeeUsd:
+          type: string
+          example: '50.00'
+
+    CreateBookingCommand:
+      type: object
+      additionalProperties: false
+      required: [bookingId, sagaId, holdId, offerId, passengersBreakdown, passengers, itineraries, fares, grandTotal, payment]
+      properties:
+        bookingId:
+          type: string
+          format: uuid
+          description: Lo genera el ESB al iniciar la saga (idempotencia)
+        sagaId:
+          type: string
+          format: uuid
+        holdId:
+          type: string
+          format: uuid
+        offerId:
+          type: string
+        passengersBreakdown:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/PassengerBreakdown'
+        passengers:
+          type: array
+          minItems: 1
+          maxItems: 9
+          description: Con los asientos que Offers confirmó en `assignedSeats`
+          items:
+            $ref: './vuelos-openapi-v2.yaml#/components/schemas/PassengerItem'
+        itineraries:
+          type: array
+          minItems: 1
+          description: Los itinerarios del hold (Offers)
+          items:
+            $ref: './vuelos-openapi-v2.yaml#/components/schemas/ItineraryOption'
+        fares:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/PurchasedFare'
+        grandTotal:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/MoneyAmount'
+        payment:
+          type: object
+          additionalProperties: false
+          required: [paymentReference, provider]
+          properties:
+            paymentReference:
+              type: string
+            provider:
+              type: string
+              enum: [BOOKING_PROTOTIPO, AIRLINE_DIRECT]
+        salesChannel:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/SalesChannel'
+        assistance:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [passengerId, type]
+            properties:
+              passengerId:
+                type: string
+              type:
+                $ref: '#/components/schemas/AssistanceType'
+              needsCompanion:
+                type: boolean
+                default: false
+              notes:
+                type: string
+                maxLength: 200
+
+    BookingView:
+      description: '`BookingDetail` del contrato v2 más los datos internos que el MS de respuesta quita antes de responder.'
+      allOf:
+        - $ref: './vuelos-openapi-v2.yaml#/components/schemas/BookingDetail'
+        - type: object
+          required: [ownerId, channel]
+          properties:
+            ownerId:
+              $ref: '#/components/schemas/OwnerId'
+            channel:
+              $ref: '#/components/schemas/SalesChannelCode'
+            fares:
+              type: array
+              items:
+                $ref: '#/components/schemas/PurchasedFare'
+            refunds:
+              type: array
+              items:
+                $ref: '#/components/schemas/Refund'
+            assistance:
+              type: array
+              description: Solo si el llamador es el dueño o un administrador
+              items:
+                $ref: '#/components/schemas/PassengerAssistance'
+
+    BookingFares:
+      type: object
+      additionalProperties: false
+      required: [bookingId, status, channel, fares, unflownItineraryIds, baggage]
+      properties:
+        bookingId:
+          type: string
+          format: uuid
+        status:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/BookingStatus'
+        channel:
+          $ref: '#/components/schemas/SalesChannelCode'
+        partnerId:
+          type: string
+          nullable: true
+        fares:
+          type: array
+          items:
+            $ref: '#/components/schemas/PurchasedFare'
+        unflownItineraryIds:
+          type: array
+          items:
+            type: string
+        baggage:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [passengerId, itineraryId, included, purchased]
+            properties:
+              passengerId:
+                type: string
+              itineraryId:
+                type: string
+              included:
+                type: integer
+              purchased:
+                type: integer
+        paymentReference:
+          type: string
+          nullable: true
+
+    SeatChangePlan:
+      type: object
+      additionalProperties: false
+      required: [bookingId, changes]
+      properties:
+        bookingId:
+          type: string
+          format: uuid
+        changes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [passengerId, segmentId, seatNumber, cabinClass, targetStatus]
+            properties:
+              passengerId:
+                type: string
+              segmentId:
+                type: string
+              previousSeatNumber:
+                type: string
+                nullable: true
+              seatNumber:
+                type: string
+              cabinClass:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/CabinClass'
+              targetStatus:
+                type: string
+                enum: [BOOKED, TICKETED]
+
+    ApplySeatsRequest:
+      type: object
+      additionalProperties: false
+      required: [reason, seats]
+      properties:
+        reason:
+          type: string
+          enum: [CUSTOMER_CHANGE, CHECK_IN_AUTO]
+        seats:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [passengerId, segmentId, seatNumber]
+            properties:
+              passengerId:
+                type: string
+              segmentId:
+                type: string
+              seatNumber:
+                type: string
+        amountCharged:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/MoneyAmount'
+        paymentReference:
+          type: string
+
+    ApplyBaggageRequest:
+      type: object
+      additionalProperties: false
+      required: [passengerId, itineraryId, quantity, amountCharged, paymentReference]
+      properties:
+        passengerId:
+          type: string
+        itineraryId:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        amountCharged:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/MoneyAmount'
+        paymentReference:
+          type: string
+
+    ApplyDateChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [changeOfferId, replacedItineraryIds, newItineraries, newFares, priceDifference]
+      properties:
+        changeOfferId:
+          type: string
+        replacedItineraryIds:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        newItineraries:
+          type: array
+          minItems: 1
+          items:
+            $ref: './vuelos-openapi-v2.yaml#/components/schemas/ItineraryOption'
+        newFares:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/PurchasedFare'
+        priceDifference:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/MoneyAmount'
+        paymentReference:
+          type: string
+          nullable: true
+        assignedSeats:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [passengerId, segmentId, seatNumber]
+            properties:
+              passengerId:
+                type: string
+              segmentId:
+                type: string
+              seatNumber:
+                type: string
+
+    Refund:
+      type: object
+      additionalProperties: false
+      required: [refundId, amount, penaltyAmount, currency, status]
+      properties:
+        refundId:
+          type: string
+          example: REF-VUE-3302
+        amount:
+          type: string
+          example: '94.50'
+        penaltyAmount:
+          type: string
+          example: '25.00'
+        penaltyWaived:
+          type: boolean
+          default: false
+        currency:
+          type: string
+          pattern: ^[A-Z]{3}$
+        percentage:
+          type: number
+        originalPaymentReference:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [CALCULATED, SETTLED, NOT_REFUNDABLE]
+        settledAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    ApplyCancellationRequest:
+      type: object
+      additionalProperties: false
+      required: [reasonCode, refund, seatsReleased]
+      properties:
+        reasonCode:
+          type: string
+          enum: [CUSTOMER_REQUEST, SAGA_COMPENSATION, FLIGHT_CANCELLED, OTHER]
+        reason:
+          type: string
+          maxLength: 200
+        quoteId:
+          type: string
+          nullable: true
+        refund:
+          $ref: '#/components/schemas/Refund'
+        seatsReleased:
+          type: integer
+          minimum: 0
+
+    FlightBookings:
+      type: object
+      additionalProperties: false
+      required: [flightNumber, date, total, items]
+      properties:
+        flightNumber:
+          type: string
+        date:
+          type: string
+          format: date
+        total:
+          type: integer
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [bookingId, pnr, status, channel]
+            properties:
+              bookingId:
+                type: string
+                format: uuid
+              pnr:
+                type: string
+              status:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/BookingStatus'
+              channel:
+                $ref: '#/components/schemas/SalesChannelCode'
+              partnerId:
+                type: string
+                nullable: true
+              passengers:
+                type: integer
+
+    FlightAssistanceItem:
+      type: object
+      additionalProperties: false
+      required: [bookingId, pnr, passengerId, passengerName, segmentId, assistance]
+      properties:
+        bookingId:
+          type: string
+          format: uuid
+        pnr:
+          type: string
+        passengerId:
+          type: string
+        passengerName:
+          type: string
+        segmentId:
+          type: string
+        seatNumber:
+          type: string
+          nullable: true
+        assistance:
+          $ref: '#/components/schemas/PassengerAssistance'
+
+    BookingSummary:
+      type: object
+      additionalProperties: false
+      required: [totalBookings, byStatus, byChannel, totalPassengers, revenue, byRoute]
+      properties:
+        totalBookings:
+          type: integer
+        byStatus:
+          type: object
+          additionalProperties:
+            type: integer
+          example: { CONFIRMED: 120, CANCELLED: 8, FAILED: 2 }
+        byChannel:
+          type: object
+          additionalProperties: false
+          required: [WEB, BOOKING]
+          properties:
+            WEB:
+              type: integer
+            BOOKING:
+              type: integer
+        totalPassengers:
+          type: integer
+        revenue:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/MoneyAmount'
+        refundsCalculated:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/MoneyAmount'
+        byRoute:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [origin, destination, bookings, revenue]
+            properties:
+              origin:
+                type: string
+              destination:
+                type: string
+              bookings:
+                type: integer
+              revenue:
+                type: string
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        database:
+          type: string
+          enum: [up, down, memory]
+        latency_ms:
+          type: integer
+          minimum: 0
+
+    ProblemDetails:
+      type: object
+      additionalProperties: false
+      description: Formato del `ProblemDetails` del contrato v2 (RFC 7807) con los códigos de este servicio.
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        code:
+          type: string
+          enum:
+            - VALIDATION_FAILED
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - NOT_FOUND
+            - INTERNAL_ERROR
+            - HOLD_ALREADY_CONSUMED
+            - INFANT_SEAT_NOT_ALLOWED
+            - INFANT_WITHOUT_ADULT
+            - PASSENGER_COUNT_MISMATCH
+            - DOCUMENT_EXPIRED
+            - PASSPORT_REQUIRED_INTERNATIONAL
+            - PAYMENT_REFERENCE_INVALID
+            - AMOUNT_MISMATCH
+            - BOOKING_NOT_CONFIRMED
+            - TICKET_ISSUANCE_FAILED
+            - ALREADY_CANCELLED
+            - BOOKING_NOT_CANCELLABLE
+            - CUTOFF_PASSED
+            - FLIGHT_ALREADY_DEPARTED
+            - PASSENGER_ALREADY_ON_FLIGHT
+            - BOOKING_ID_CONFLICT
+        correlation_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        invalidParams:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              reason:
+                type: string

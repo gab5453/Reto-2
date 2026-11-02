@@ -1,0 +1,559 @@
+openapi: 3.0.3
+info:
+  title: MS.G.Webhooks — suscripciones, entrega de CloudEvents y feed de eventos (interno)
+  version: 1.2.0
+  license:
+    name: Uso académico — Integración de Sistemas (sin licencia de distribución)
+  description: |
+    Microservicio de gestión **MS.G.Webhooks** de EcoAirlines (Reto 2). Reemplaza al dominio `webhooks` del monolito
+    (`WebhooksService`, `WebhookDeliveryService`, `HttpWebhookDispatcher`).
+
+    **Responsabilidad:**
+    - Guardar las **suscripciones** (`/vuelos/webhooks` del contrato v2).
+    - **Consumir** los eventos del bus interno (RabbitMQ, exchange `ecoairlines.events`; ver `events.asyncapi.yaml`), guardarlos
+      en `event_log` y **entregarlos** a cada suscriptor como CloudEvents firmados.
+    - Servir el **feed de respaldo** `GET /vuelos/eventos` (contrato v2, §8) y el historial del panel de administración.
+
+    **Contrato interno.** Solo lo llama el **ESB** (enrutador y composición), con su token de servicio. La entrega de webhooks
+    es la única llamada que este servicio hace hacia afuera (a la URL de cada suscriptor).
+
+    **Base de datos propia:** `webhooks` (tablas `subscriptions`, `event_log`, `deliveries`).
+
+    ### Quién recibe qué (decisión D40)
+    | Evento | Lo recibe un suscriptor partner (Booking) | Lo recibe un suscriptor de EcoAirlines (`sub` de un ADMIN) |
+    |--------|-------------------------------------------|-------------------------------------------------------------|
+    | `hold.*`, `booking.*` | Solo si la reserva o el hold es **de su canal** (`ownerId` empieza con `partner:<clientId>:`) | Todos |
+    | `flight.*` | Todos | Todos |
+    | Internos (`schedule.published`, `pricing.changed`, `user.*`, `partner.*`, `booking.assistance_requested`) | **Nunca** | **Nunca** (solo historial) |
+
+    Las reservas de nuestra web no se notifican a Booking: Booking conoce la disponibilidad por el stock gRPC de Offers.
+
+    **Feed (`GET /events`, 1.1.0, V2.13):** el partner lee lo mismo que recibe por webhook. Un usuario de la web lee **solo los
+    eventos de sus reservas** (`ownerId` = su `sub`); un ADMIN lee todo lo público si el ESB envía `X-Actor-Id` = su `sub`.
+    Antes de 1.1.0 cualquier `sub` leía todo lo público (un CLIENTE veía los eventos de otros canales).
+
+    ### Entrega (contrato v2, `POST /vuelos/webhooks` → callback `vuelosEvent`)
+    - `POST {url}` con `Content-Type: application/cloudevents+json` y el CloudEvent completo como cuerpo.
+    - Cabeceras: `X-Webhook-Signature: sha256=<HMAC-SHA256(secret, cuerpo)>` (hex) y `X-Correlation-Id` (= `correlationid`).
+    - Éxito: cualquier `2xx` en menos de 5 s. Si no, reintentos a **1 min, 5 min, 30 min, 2 h y 6 h**; después la entrega queda
+      `EXHAUSTED` y el evento sigue disponible en el feed.
+    - Una entrega por evento y suscripción; el suscriptor deduplica por el `id` del CloudEvent.
+    - URL permitida: `https` y host público en la nube (`http` y `localhost` solo en desarrollo), para evitar SSRF.
+
+    ### Trazabilidad
+    Toda operación acepta `X-Correlation-Id` y `X-Request-Id` y devuelve `X-Correlation-Id`. `event_log` y `deliveries` guardan
+    el `correlation_id` del proceso que originó cada evento.
+servers:
+  - url: http://ms-g-webhooks:8080
+    description: Red interna (Docker Compose / nube)
+  - url: http://localhost:4003
+    description: Desarrollo local
+security:
+  - EsbService: []
+tags:
+  - name: Suscripciones
+    description: Alta, consulta y baja de suscripciones
+  - name: Eventos
+    description: Feed de respaldo e historial
+  - name: Operación
+    description: Salud y estadísticas del servicio
+paths:
+  /health:
+    get:
+      tags: [Operación]
+      operationId: getHealth
+      summary: Estado del servicio, de su base y de su conexión al bus
+      security: []
+      responses:
+        '200':
+          description: En funcionamiento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: La base o el bus no responden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+
+  /subscriptions:
+    parameters:
+      - $ref: '#/components/parameters/OwnerId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Suscripciones]
+      operationId: listSubscriptions
+      summary: Suscripciones del dueño
+      description: La forma de `GET /vuelos/webhooks` del contrato v2 más `secretHint` (1.2.0). El `secret` nunca se devuelve (`writeOnly`).
+      responses:
+        '200':
+          description: Suscripciones
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/X-Correlation-Id'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SubscriptionView'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Suscripciones]
+      operationId: createSubscription
+      summary: Registrar una suscripción
+      description: El `secret` se guarda cifrado (se necesita en claro para firmar) y nunca se devuelve.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './vuelos-openapi-v2.yaml#/components/schemas/WebhookSubscription'
+            example:
+              url: https://rda1-backend-integracion-sistemas.onrender.com/api/v2/webhooks/vuelos
+              events: [hold.expired, booking.confirmed, booking.ticket_issued, booking.cancelled, flight.status_changed]
+              secret: un-secreto-de-al-menos-16
+      responses:
+        '201':
+          description: Suscripción registrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionView'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: URL no permitida (no es `https` o apunta a una red privada)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: La URL del webhook debe ser https y pública.
+                status: 422
+                code: WEBHOOK_URL_NOT_ALLOWED
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+
+  /subscriptions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/OwnerId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    delete:
+      tags: [Suscripciones]
+      operationId: deleteSubscription
+      summary: Eliminar una suscripción
+      description: Una suscripción de otro dueño responde `404`. Las entregas pendientes de esa suscripción se cancelan.
+      responses:
+        '204':
+          description: Eliminada
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/SubscriptionNotFound'
+
+  /events:
+    parameters:
+      - $ref: '#/components/parameters/OwnerId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Eventos]
+      operationId: listOutboxEvents
+      summary: Feed de eventos para el dueño (respaldo de los webhooks)
+      description: |
+        Implementa `GET /vuelos/eventos` del contrato v2. Orden cronológico (por `seq`), solo eventos **públicos** y filtrados
+        por la tabla "Quién recibe qué". `after` es el `id` del último CloudEvent procesado; si no existe responde `400`.
+      parameters:
+        - name: X-Actor-Id
+          in: header
+          description: '`sub` del ADMIN que lee el feed (= `X-Owner-Id`): ve todo lo público. Sin ella, un usuario solo ve sus reservas.'
+          schema:
+            type: string
+            format: uuid
+        - name: after
+          in: query
+          schema:
+            type: string
+            maxLength: 100
+          example: 0b7c4c4e-2f8e-4c41-9a39-5f6f2a7e1b10
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: type
+          in: query
+          schema:
+            $ref: './vuelos-openapi-v2.yaml#/components/schemas/VuelosEventName'
+      responses:
+        '200':
+          description: Página de eventos
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/VuelosEventosResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /history:
+    parameters:
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Eventos]
+      operationId: listEventHistory
+      summary: Historial completo de eventos y entregas (panel de administración)
+      description: |
+        Incluye los eventos **internos** (sin sus datos de salud: `booking.assistance_requested` se muestra sin `data`). Del más
+        reciente al más antiguo. Se puede buscar por `correlationId` para ver todo lo que generó un proceso.
+      parameters:
+        - name: type
+          in: query
+          description: Tipo corto (público o interno)
+          schema:
+            type: string
+            maxLength: 60
+        - name: correlationId
+          in: query
+          schema:
+            type: string
+            maxLength: 100
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Página del historial
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventHistoryPage'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /stats:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Operación]
+      operationId: getDeliveryStats
+      summary: Estado de las entregas (telemetría e integración con Booking)
+      responses:
+        '200':
+          description: Totales
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryStats'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    EsbService:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de servicio del ESB (`token_use = service`, scope `ecoairlines:internal`), verificado con la JWKS de MS.G.Identity.
+
+  parameters:
+    OwnerId:
+      name: X-Owner-Id
+      in: header
+      required: true
+      description: |
+        Dueño de las suscripciones, calculado por el MS de respuesta desde el token (D29): `partner:<clientId>` para un token
+        de partner (el suscriptor es el sistema, no un usuario final) o el `sub` de un ADMIN. Solo lo envía el ESB.
+      schema:
+        type: string
+        maxLength: 200
+      example: partner:BOOKING_PROTOTIPO
+    ActorId:
+      name: X-Actor-Id
+      in: header
+      required: true
+      description: '`sub` del administrador que consulta (auditoría). Solo lo envía el ESB.'
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKeyOptional:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Opcional, como en el contrato v2. La resuelve el ESB; aquí solo se registra.
+      schema:
+        type: string
+        format: uuid
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador del proceso completo (contrato v2, §6). Se propaga sin cambios.
+      schema:
+        type: string
+        maxLength: 100
+      example: corr-vuelos-7f3a9c
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 100
+
+  headers:
+    X-Correlation-Id:
+      description: El mismo valor recibido (o el creado si no llegó).
+      schema:
+        type: string
+
+  responses:
+    ValidationFailed:
+      description: Datos inválidos
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    Unauthorized:
+      description: Falta el token del ESB o no es válido
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    Forbidden:
+      description: El token no es del ESB
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    SubscriptionNotFound:
+      description: No existe o es de otro dueño
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: Suscripción no encontrada.
+            status: 404
+            code: NOT_FOUND
+            correlation_id: corr-vuelos-7f3a9c
+            timestamp: '2026-10-25T10:00:00Z'
+
+  schemas:
+    SubscriptionView:
+      description: |
+        `WebhookSubscription` del contrato v2 más `secretHint` (1.2.0, V2.14): los últimos 4 caracteres del secreto, para que el
+        administrador de la web reconozca cuál configuró. Los MS de respuesta lo quitan al responder `GET /vuelos/webhooks`
+        (el contrato v2 no lo publica); solo lo muestra la web (`••••1234`).
+      allOf:
+        - $ref: './vuelos-openapi-v2.yaml#/components/schemas/WebhookSubscription'
+        - type: object
+          required: [secretHint]
+          properties:
+            secretHint:
+              type: string
+              minLength: 4
+              maxLength: 4
+              readOnly: true
+              example: '9f3a'
+    DeliveryOutcome:
+      type: string
+      enum: [PENDING, DELIVERED, RETRYING, EXHAUSTED, CANCELLED]
+
+    Delivery:
+      type: object
+      additionalProperties: false
+      required: [subscriptionId, outcome, attempts]
+      properties:
+        subscriptionId:
+          type: string
+          format: uuid
+        target:
+          type: string
+          description: Host de la URL (sin ruta ni query, para no exponer tokens)
+          example: rda1-backend-integracion-sistemas.onrender.com
+        outcome:
+          $ref: '#/components/schemas/DeliveryOutcome'
+        httpStatus:
+          type: integer
+          nullable: true
+        attempts:
+          type: integer
+          minimum: 0
+        lastAttemptAt:
+          type: string
+          format: date-time
+          nullable: true
+        nextRetryAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    EventHistoryItem:
+      type: object
+      additionalProperties: false
+      required: [seq, id, type, time, public, deliveries]
+      properties:
+        seq:
+          type: integer
+        id:
+          type: string
+        type:
+          type: string
+          description: '`type` completo del CloudEvent (`ec.edu.epn.booking.vuelos.*` o `ec.ecoairlines.internal.*`)'
+        subject:
+          type: string
+          nullable: true
+        time:
+          type: string
+          format: date-time
+        correlationId:
+          type: string
+          nullable: true
+        public:
+          type: boolean
+          description: '`true` si puede salir a Booking'
+        data:
+          type: object
+          nullable: true
+          description: Datos del evento; `null` en los eventos con datos de salud
+        deliveries:
+          type: array
+          items:
+            $ref: '#/components/schemas/Delivery'
+
+    EventHistoryPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventHistoryItem'
+        nextCursor:
+          type: string
+
+    DeliveryStats:
+      type: object
+      additionalProperties: false
+      required: [subscriptions, pending, retrying, exhaustedLast24h, deliveredLast24h]
+      properties:
+        subscriptions:
+          type: integer
+        pending:
+          type: integer
+        retrying:
+          type: integer
+        exhaustedLast24h:
+          type: integer
+        deliveredLast24h:
+          type: integer
+        lastDeliveredAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        database:
+          type: string
+          enum: [up, down, memory]
+        bus:
+          type: string
+          enum: [up, down, memory]
+        latency_ms:
+          type: integer
+          minimum: 0
+
+    ProblemDetails:
+      type: object
+      additionalProperties: false
+      description: Formato del `ProblemDetails` del contrato v2 (RFC 7807) con los códigos de este servicio.
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        code:
+          type: string
+          enum: [VALIDATION_FAILED, UNAUTHORIZED, FORBIDDEN, NOT_FOUND, INTERNAL_ERROR, WEBHOOK_URL_NOT_ALLOWED]
+        correlation_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        invalidParams:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              reason:
+                type: string

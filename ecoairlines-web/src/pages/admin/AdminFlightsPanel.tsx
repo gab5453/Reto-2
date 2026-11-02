@@ -1,17 +1,45 @@
-import { useEffect, useState } from 'react';
-import { getAdminFlights, getFlightPassengers, updateFlightStatus, type FlightOccupancy } from '../../api/extensions';
-import type { FlightOperationalStatus, PassengerItem } from '../../api/types';
+import { useEffect, useState, type FormEvent } from 'react';
+import { getFlightOperations, updateFlightStatus, type FlightOperation } from '../../api/admin';
+import type { FlightOperationalStatus } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
 import { ProblemAlert } from '../../components/ProblemAlert';
 import { AIRPORTS, cityOf } from '../../data/airports';
-import { PASSENGER_LABELS, STATUS_LABELS, lastSaleDate, localDate, localTime, todayIso } from '../../lib/format';
+import { STATUS_LABELS, lastSaleDate, localDate, localTime, todayIso } from '../../lib/format';
 
-const FLIGHT_STATUSES: FlightOperationalStatus[] = ['SCHEDULED', 'BOARDING', 'DEPARTED', 'DELAYED', 'ARRIVED', 'CANCELLED', 'DIVERTED'];
+/** Transiciones válidas del contrato (MS.G.FlightStatus las vuelve a validar: `INVALID_STATUS_TRANSITION`). */
+const TRANSITIONS: Record<FlightOperationalStatus, FlightOperationalStatus[]> = {
+  SCHEDULED: ['DELAYED', 'BOARDING', 'CANCELLED'],
+  DELAYED: ['DELAYED', 'BOARDING', 'CANCELLED'],
+  BOARDING: ['DEPARTED', 'DELAYED', 'CANCELLED'],
+  DEPARTED: ['ARRIVED', 'DIVERTED'],
+  DIVERTED: ['ARRIVED'],
+  ARRIVED: [],
+  CANCELLED: [],
+};
+const EMPTY_CHANGE = { status: '' as FlightOperationalStatus | '', departureGate: '', estimatedDepartureAt: '', estimatedArrivalAt: '', reason: '' };
+/**
+ * Vuelos por página. El esquema admite 50, pero cada vuelo con sus cabinas y alertas suma ~29 de complejidad y el gateway
+ * rechaza más de 1000 por consulta: con 30 queda en ~870. Un día tiene pocos cientos de vuelos.
+ */
+const PAGE = 30;
+const MAX_PAGES = 20;
+
+/** Asientos de un vuelo por estado (suma de sus cabinas). */
+function seats(flight: FlightOperation) {
+  return flight.cabins.reduce(
+    (acc, cabin) => ({
+      available: acc.available + cabin.seatsByStatus.available,
+      held: acc.held + cabin.seatsByStatus.held,
+      sold: acc.sold + cabin.seatsByStatus.booked + cabin.seatsByStatus.ticketed + cabin.seatsByStatus.checkedIn + cabin.seatsByStatus.boarded,
+    }),
+    { available: 0, held: 0, sold: 0 },
+  );
+}
 
 /**
- * Vuelos del panel de administración (extensión `GET /admin/flights`): ocupación por **fecha** (hoy por defecto),
- * **aeropuerto de origen** o **ruta** (origen + destino), para observar cómo se reservan los asientos de cualquier día
- * publicado. Distingue los cupos tomados por clientes (holds y reservas) de los pasajeros simulados de la primera semana.
+ * Vuelos del panel de administración (`flightOperations` del contrato v2, → MS.Vuelos): ocupación por **fecha** (hoy por
+ * defecto), **aeropuerto de origen** o **ruta**, con los asientos por estado, los holds vigentes y las alertas de cada vuelo.
+ * El estado operativo se cambia con `updateFlightStatus` (saga "Cambiar estado de vuelo"; al cancelar se reembolsan las reservas).
  */
 export function AdminFlightsPanel() {
   const { token } = useAuth();
@@ -20,18 +48,29 @@ export function AdminFlightsPanel() {
   const [destination, setDestination] = useState('');
   const [filter, setFilter] = useState('');
   const [reload, setReload] = useState(0);
-  const [loaded, setLoaded] = useState<{ key: string; flights?: FlightOccupancy[]; error?: unknown }>({ key: '' });
+  const [loaded, setLoaded] = useState<{ key: string; flights?: FlightOperation[]; error?: unknown }>({ key: '' });
   const [updating, setUpdating] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [actionError, setActionError] = useState<unknown>(null);
-  const [selected, setSelected] = useState<FlightOccupancy>();
-  const [passengers, setPassengers] = useState<PassengerItem[] | null>(null);
+  /** Vuelo abierto en el detalle (por clave: al recargar la lista se ven sus datos nuevos). */
+  const [selectedKey, setSelectedKey] = useState<string>();
+  const [change, setChange] = useState(EMPTY_CHANGE);
 
   const requestKey = `${date}|${origin}|${destination}|${reload}`;
   useEffect(() => {
     if (!token) return;
     let active = true;
-    getAdminFlights(token, { date, origin: origin || undefined, destination: destination || undefined })
+    (async () => {
+      const flights: FlightOperation[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const result = await getFlightOperations(token, { date, origin: origin || undefined, destination: destination || undefined, limit: PAGE, cursor });
+        flights.push(...result.items);
+        if (!result.nextCursor) break;
+        cursor = result.nextCursor;
+      }
+      return flights;
+    })()
       .then((flights) => active && setLoaded({ key: requestKey, flights }))
       .catch((error: unknown) => active && setLoaded({ key: requestKey, error }));
     return () => {
@@ -41,41 +80,51 @@ export function AdminFlightsPanel() {
 
   const current = loaded.key === requestKey ? loaded : undefined;
   const query = filter.trim().toUpperCase();
-  const flights = (current?.flights ?? []).filter((flight) => !query || `${flight.flightNumber} ${flight.route}`.toUpperCase().includes(query));
+  const flights = (current?.flights ?? []).filter((flight) => !query || `${flight.flightNumber} ${flight.origin}-${flight.destination}`.includes(query));
   const totals = flights.reduce(
-    (acc, flight) => ({
-      seats: acc.seats + flight.totalSeats,
-      booked: acc.booked + flight.bookedSeats,
-      reserved: acc.reserved + flight.reservedSeats,
-      simulated: acc.simulated + flight.simulatedSeats,
-    }),
-    { seats: 0, booked: 0, reserved: 0, simulated: 0 },
+    (acc, flight) => {
+      const byStatus = seats(flight);
+      return { seats: acc.seats + flight.totalSeats, available: acc.available + byStatus.available, held: acc.held + byStatus.held, sold: acc.sold + byStatus.sold };
+    },
+    { seats: 0, available: 0, held: 0, sold: 0 },
   );
 
-  const changeStatus = async (flight: FlightOccupancy, status: FlightOperationalStatus) => {
-    if (!token) return;
-    setUpdating(flight.flightId);
+  const selected = flights.find((flight) => `${flight.flightNumber}|${flight.date}` === selectedKey);
+  const nextStatuses = selected ? TRANSITIONS[selected.status] : [];
+
+  const open = (flight: FlightOperation) => {
+    setSelectedKey(`${flight.flightNumber}|${flight.date}`);
+    setChange({ ...EMPTY_CHANGE, status: TRANSITIONS[flight.status][0] ?? '' });
+    setNotice(undefined);
+    setActionError(null);
+  };
+
+  const submitChange = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!token || !selected || !change.status) return;
+    const previous = selected.status;
+    const status = change.status;
+    setUpdating(selectedKey);
     setNotice(undefined);
     setActionError(null);
     try {
-      await updateFlightStatus(token, flight.flightNumber, flight.date, status);
-      setNotice(`${flight.flightNumber} del ${localDate(flight.date)}: estado cambiado a ${STATUS_LABELS[status] ?? status}.`);
+      const result = await updateFlightStatus(token, selected.flightNumber, {
+        date: selected.date,
+        status,
+        ...(change.departureGate.trim() ? { departureGate: change.departureGate.trim().toUpperCase() } : {}),
+        ...(change.estimatedDepartureAt ? { estimatedDepartureAt: new Date(change.estimatedDepartureAt).toISOString() } : {}),
+        ...(change.estimatedArrivalAt ? { estimatedArrivalAt: new Date(change.estimatedArrivalAt).toISOString() } : {}),
+        ...(change.reason.trim() ? { reason: change.reason.trim() } : {}),
+      });
+      const affected = status === 'CANCELLED' ? ` Reservas canceladas con reembolso: ${result.affectedBookings}.` : '';
+      setNotice(`${selected.flightNumber} del ${localDate(selected.date)}: ${STATUS_LABELS[previous] ?? previous} → ${STATUS_LABELS[status] ?? status}.${affected}`);
+      setChange(EMPTY_CHANGE);
+      setSelectedKey(undefined);
       setReload((value) => value + 1);
     } catch (caught) {
       setActionError(caught);
     } finally {
       setUpdating(undefined);
-    }
-  };
-
-  const showPassengers = async (flight: FlightOccupancy) => {
-    if (!token) return;
-    setSelected(flight);
-    setPassengers(null);
-    try {
-      setPassengers(await getFlightPassengers(token, flight.flightNumber, flight.date));
-    } catch (caught) {
-      setActionError(caught);
     }
   };
 
@@ -124,14 +173,95 @@ export function AdminFlightsPanel() {
       {notice && <p className="alert alert-success" role="status">{notice}</p>}
       {!current && <p className="muted">Cargando vuelos…</p>}
 
+      {selected && (
+        <section className="card" aria-labelledby="flight-detail-title">
+          <div className="admin-head">
+            <h2 id="flight-detail-title">{selected.flightNumber} · {selected.origin}-{selected.destination} · {localDate(selected.date)} · {localTime(selected.departureAt)}</h2>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setSelectedKey(undefined)}>Cerrar</button>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <caption>Asientos por estado</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Cabina</th>
+                  <th scope="col">Total</th>
+                  <th scope="col">Libres</th>
+                  <th scope="col">Retenidos</th>
+                  <th scope="col">Reservados</th>
+                  <th scope="col">Con boleto</th>
+                  <th scope="col">Check-in</th>
+                  <th scope="col">A bordo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {selected.cabins.map(({ cabinClass, totalSeats, seatsByStatus }) => (
+                  <tr key={cabinClass}>
+                    <td>{cabinClass}</td>
+                    <td>{totalSeats}</td>
+                    <td>{seatsByStatus.available}</td>
+                    <td>{seatsByStatus.held}</td>
+                    <td>{seatsByStatus.booked}</td>
+                    <td>{seatsByStatus.ticketed}</td>
+                    <td>{seatsByStatus.checkedIn}</td>
+                    <td>{seatsByStatus.boarded}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {nextStatuses.length === 0 ? (
+            <p className="muted">El vuelo está {STATUS_LABELS[selected.status] ?? selected.status}: es un estado final y ya no cambia.</p>
+          ) : (
+            <form className="panel-form" onSubmit={submitChange}>
+              <div className="grid-2">
+                <label className="field">
+                  Nuevo estado (ahora: {STATUS_LABELS[selected.status] ?? selected.status})
+                  <select value={change.status} onChange={(event) => setChange({ ...change, status: event.target.value as FlightOperationalStatus })}>
+                    {nextStatuses.map((status) => <option key={status} value={status}>{STATUS_LABELS[status] ?? status}</option>)}
+                  </select>
+                </label>
+                <label className="field">
+                  Puerta de salida (opcional)
+                  <input value={change.departureGate} maxLength={8} placeholder="A12" onChange={(event) => setChange({ ...change, departureGate: event.target.value })} />
+                </label>
+                <label className="field">
+                  Salida estimada{change.status === 'DELAYED' ? '' : ' (opcional)'}
+                  <input type="datetime-local" required={change.status === 'DELAYED'} value={change.estimatedDepartureAt} onChange={(event) => setChange({ ...change, estimatedDepartureAt: event.target.value })} />
+                </label>
+                <label className="field">
+                  Llegada estimada (opcional)
+                  <input type="datetime-local" value={change.estimatedArrivalAt} onChange={(event) => setChange({ ...change, estimatedArrivalAt: event.target.value })} />
+                </label>
+                {change.status === 'CANCELLED' && (
+                  <label className="field">
+                    Motivo de la cancelación
+                    <input value={change.reason} required maxLength={200} onChange={(event) => setChange({ ...change, reason: event.target.value })} />
+                  </label>
+                )}
+              </div>
+              {change.status === 'CANCELLED' && (
+                <p className="alert alert-error" role="alert">
+                  Cancelar es definitivo: se reembolsarán las reservas de los {seats(selected).sold} asientos vendidos y se liberarán {seats(selected).held} retenidos.
+                </p>
+              )}
+              <button type="submit" className={`btn ${change.status === 'CANCELLED' ? 'btn-danger' : 'btn-primary'}`} disabled={updating === selectedKey}>
+                {updating === selectedKey ? 'Aplicando…' : `Cambiar a ${STATUS_LABELS[change.status] ?? change.status}`}
+              </button>
+            </form>
+          )}
+        </section>
+      )}
+
       {current?.flights && (
         <>
           <div className="stats-grid" aria-label="Resumen de la selección">
             <div className="stat-card"><p className="muted small">Vuelos</p><p className="stat-value">{flights.length}</p></div>
-            <div className="stat-card"><p className="muted small">Tomados por clientes (holds + reservas)</p><p className="stat-value">{totals.reserved}</p></div>
-            <div className="stat-card"><p className="muted small">Simulados (1.ª semana)</p><p className="stat-value">{totals.simulated}</p></div>
-            <div className="stat-card"><p className="muted small">Asientos libres</p><p className="stat-value">{totals.seats - totals.booked}</p></div>
-            <div className="stat-card"><p className="muted small">Ocupación</p><p className="stat-value">{totals.seats ? Math.round((totals.booked / totals.seats) * 1000) / 10 : 0}%</p></div>
+            <div className="stat-card"><p className="muted small">Vendidos</p><p className="stat-value">{totals.sold}</p></div>
+            <div className="stat-card"><p className="muted small">Retenidos (holds)</p><p className="stat-value">{totals.held}</p></div>
+            <div className="stat-card"><p className="muted small">Asientos libres</p><p className="stat-value">{totals.available}</p></div>
+            <div className="stat-card"><p className="muted small">Ocupación</p><p className="stat-value">{totals.seats ? Math.round(((totals.seats - totals.available) / totals.seats) * 1000) / 10 : 0}%</p></div>
           </div>
 
           <div className="table-wrap">
@@ -143,87 +273,44 @@ export function AdminFlightsPanel() {
                   <th scope="col">Ruta</th>
                   <th scope="col">Salida</th>
                   <th scope="col">Ocupación</th>
-                  <th scope="col" title="Asientos retenidos (holds vigentes) o vendidos a clientes de EcoAirlines">Clientes</th>
-                  <th scope="col">Simulados</th>
+                  <th scope="col" title="Asientos retenidos por holds vigentes">Holds</th>
+                  <th scope="col">Check-in</th>
+                  <th scope="col">Alertas</th>
                   <th scope="col">Estado</th>
-                  <th scope="col">Pasajeros</th>
+                  <th scope="col">Acción</th>
                 </tr>
               </thead>
               <tbody>
                 {flights.length === 0 ? (
-                  <tr><td colSpan={8} className="muted">No hay vuelos para este filtro.</td></tr>
+                  <tr><td colSpan={9} className="muted">No hay vuelos para este filtro.</td></tr>
                 ) : (
-                  flights.map((flight) => (
-                    <tr key={flight.flightId} className={flight.reservedSeats > 0 ? 'row-highlight' : undefined}>
-                      <td><strong>{flight.flightNumber}</strong></td>
-                      <td>{flight.route}</td>
-                      <td>{localTime(flight.scheduledDeparture)}</td>
-                      <td>
-                        <div className="occupancy" title={`${flight.bookedSeats} de ${flight.totalSeats} asientos`}>
-                          <span className="occupancy-bar"><span style={{ width: `${Math.min(100, flight.occupancyPercentage)}%` }} /></span>
-                          <span className="small">{flight.occupancyPercentage}% · {flight.availableSeats} libres de {flight.totalSeats}</span>
-                        </div>
-                      </td>
-                      <td>{flight.reservedSeats}</td>
-                      <td>{flight.simulatedSeats}</td>
-                      <td>
-                        <select
-                          aria-label={`Estado del vuelo ${flight.flightNumber}`}
-                          value={flight.status}
-                          disabled={updating === flight.flightId}
-                          onChange={(event) => void changeStatus(flight, event.target.value as FlightOperationalStatus)}
-                        >
-                          {FLIGHT_STATUSES.map((status) => (
-                            <option key={status} value={status}>{STATUS_LABELS[status] ?? status}</option>
-                          ))}
-                        </select>
-                      </td>
-                      <td>
-                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void showPassengers(flight)}>Ver</button>
-                      </td>
-                    </tr>
-                  ))
+                  flights.map((flight) => {
+                    const byStatus = seats(flight);
+                    const key = `${flight.flightNumber}|${flight.date}`;
+                    return (
+                      <tr key={key} className={byStatus.sold + byStatus.held > 0 ? 'row-highlight' : undefined}>
+                        <td><strong>{flight.flightNumber}</strong>{flight.aircraft && <span className="muted small"> · {flight.aircraft}</span>}</td>
+                        <td>{flight.origin}-{flight.destination}</td>
+                        <td>{localTime(flight.departureAt)}</td>
+                        <td>
+                          <div className="occupancy" title={`${byStatus.sold} vendidos y ${byStatus.held} retenidos de ${flight.totalSeats}`}>
+                            <span className="occupancy-bar"><span style={{ width: `${Math.min(100, flight.loadFactor)}%` }} /></span>
+                            <span className="small">{Math.round(flight.loadFactor * 10) / 10}% · {byStatus.available} libres de {flight.totalSeats}</span>
+                          </div>
+                        </td>
+                        <td>{flight.activeHolds}</td>
+                        <td>{flight.checkInOpen ? 'Abierto' : 'Cerrado'}</td>
+                        <td className="small">{flight.alerts.length ? flight.alerts.map((alert) => alert.message).join(' · ') : '—'}</td>
+                        <td>{STATUS_LABELS[flight.status] ?? flight.status}</td>
+                        <td><button type="button" className="btn btn-ghost btn-sm" onClick={() => open(flight)}>Gestionar</button></td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
           </div>
         </>
-      )}
-
-      {selected && (
-        <section className="admin-passengers" aria-labelledby="pax-admin-title">
-          <h2 id="pax-admin-title">Pasajeros de {selected.flightNumber} ({selected.route}) · {localDate(selected.date)}</h2>
-          {passengers === null ? (
-            <p className="muted">Cargando pasajeros…</p>
-          ) : passengers.length === 0 ? (
-            <p className="muted">No hay pasajeros con reserva confirmada en este vuelo.</p>
-          ) : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th scope="col">Pasajero</th>
-                    <th scope="col">Tipo</th>
-                    <th scope="col">Documento</th>
-                    <th scope="col">Asiento</th>
-                    <th scope="col">Contacto</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {passengers.map((passenger, index) => (
-                    <tr key={`${passenger.passengerId}-${index}`}>
-                      <td>{passenger.firstName} {passenger.lastName}</td>
-                      <td>{PASSENGER_LABELS[passenger.passengerType] ?? passenger.passengerType}</td>
-                      <td>{passenger.documentType === 'PASSPORT' ? 'Pasaporte' : 'Cédula'} {passenger.documentNumber}</td>
-                      <td>{passenger.assignedSeats?.[0]?.seatNumber ?? (passenger.passengerType === 'INFANT' ? 'En brazos' : 'Sin asignar')}</td>
-                      <td className="small">{passenger.contact.email} · {passenger.contact.phone}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
       )}
     </>
   );

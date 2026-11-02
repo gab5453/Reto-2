@@ -1,0 +1,1321 @@
+openapi: 3.0.3
+info:
+  title: MS.Admin — panel de administración de EcoAirlines (respuesta)
+  version: 1.3.0
+  license:
+    name: Uso académico — Integración de Sistemas (sin licencia de distribución)
+  description: |
+    Microservicio de respuesta **MS.Admin** de EcoAirlines (Reto 2, D14). **No implementa operaciones del contrato del grupo**:
+    todas sus operaciones son propias, bajo `/ecoairlines/admin/...`, y solo las usa la web (vía GraphQL, D23) con el scope
+    `ecoairlines:admin` (rol ADMIN). Para el **estado de vuelo**, el **panel de operaciones** y el **acuerdo de promociones** del
+    contrato, el panel usa las operaciones de **MS.Vuelos** (D32).
+
+    Los schemas se **referencian** desde los contratos internos de los MS.G (`ms-g-*.openapi.yaml`) y del grupo
+    (`vuelos-openapi-v2.yaml`), salvo los de telemetría, que son de este servicio.
+
+    | Grupo | Cadena en el ESB |
+    |-------|------------------|
+    | Usuarios, roles y partners | Enrutador → Identity (`X-Actor-Id` = `sub` del administrador) |
+    | Precios y promociones | Enrutador (lectura) y saga "Guardar precios y descuento máximo" |
+    | Rutas | Saga "Publicar horario" · flota y horario: enrutador → Schedule |
+    | Asistencia por vuelo · indicadores | Composición |
+    | Eventos | Enrutador → Webhooks (`GET /history`) |
+    | Telemetría | Composición → plataforma de observabilidad (OpenTelemetry) e integración con Booking |
+
+    ### Seguridad
+    Solo **token de usuario** con el scope `ecoairlines:admin`. Un token de partner o de servicio responde `401`/`403`. Cada
+    cambio lleva al ESB `X-Actor-Id` = `sub` del administrador (auditoría). Mismo procesamiento que los demás MS de respuesta
+    (DTO, límite de peticiones, `X-Correlation-Id`, `ProblemDetails` v2).
+servers:
+  - url: http://ms-admin:8080/api/v2
+    description: Red interna (detrás del gateway, que publica /api/v2/vuelos/* y /api/graphql)
+  - url: http://localhost:5005/api/v2
+    description: Desarrollo local
+security:
+  - UserJwt: [ecoairlines:admin]
+tags:
+  - name: Administración
+    description: Panel de administración (solo vía GraphQL)
+paths:
+  /ecoairlines/admin/indicators:
+    get:
+      tags: [Administración]
+      operationId: getIndicators
+      summary: "Indicadores del panel"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardIndicators'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+  /ecoairlines/admin/users:
+    get:
+      tags: [Administración]
+      operationId: listUsers
+      summary: "Listar y buscar usuarios"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/UserSearch'
+        - $ref: '#/components/parameters/RoleFilter'
+        - $ref: '#/components/parameters/StatusFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-identity.openapi.yaml#/components/schemas/UserList'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+    post:
+      tags: [Administración]
+      operationId: createUser
+      summary: "Crear un usuario con rol"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-identity.openapi.yaml#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: Usuario creado
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-identity.openapi.yaml#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '409':
+          $ref: '#/components/responses/Problem409'
+  /ecoairlines/admin/users/{sub}:
+    get:
+      tags: [Administración]
+      operationId: getUser
+      summary: "Detalle de un usuario"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/Sub'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-identity.openapi.yaml#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+  /ecoairlines/admin/users/{sub}/role:
+    put:
+      tags: [Administración]
+      operationId: changeUserRole
+      summary: "Cambiar el rol"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/Sub'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-identity.openapi.yaml#/components/schemas/ChangeRoleRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-identity.openapi.yaml#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+  /ecoairlines/admin/users/{sub}/status:
+    put:
+      tags: [Administración]
+      operationId: changeUserStatus
+      summary: "Bloquear o activar"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/Sub'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-identity.openapi.yaml#/components/schemas/ChangeStatusRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-identity.openapi.yaml#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+  /ecoairlines/admin/roles:
+    get:
+      tags: [Administración]
+      operationId: listRoles
+      summary: "Roles con sus permisos"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-g-identity.openapi.yaml#/components/schemas/Role'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+  /ecoairlines/admin/partners:
+    get:
+      tags: [Administración]
+      operationId: listPartners
+      summary: "Listar partners"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/StatusFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-identity.openapi.yaml#/components/schemas/PartnerList'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+    post:
+      tags: [Administración]
+      operationId: createPartner
+      summary: "Dar de alta un partner (el secreto se muestra una vez)"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-identity.openapi.yaml#/components/schemas/CreatePartnerRequest'
+      responses:
+        '201':
+          description: Partner creado
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-identity.openapi.yaml#/components/schemas/PartnerWithSecret'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '409':
+          $ref: '#/components/responses/Problem409'
+  /ecoairlines/admin/partners/{clientId}:
+    get:
+      tags: [Administración]
+      operationId: getPartner
+      summary: "Detalle de un partner"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ClientId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-identity.openapi.yaml#/components/schemas/Partner'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+  /ecoairlines/admin/partners/{clientId}/status:
+    put:
+      tags: [Administración]
+      operationId: changePartnerStatus
+      summary: "Bloquear o activar un partner"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ClientId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-identity.openapi.yaml#/components/schemas/ChangeStatusRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-identity.openapi.yaml#/components/schemas/Partner'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+  /ecoairlines/admin/partners/{clientId}/secret:
+    post:
+      tags: [Administración]
+      operationId: rotatePartnerSecret
+      summary: "Generar un secreto nuevo"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ClientId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-identity.openapi.yaml#/components/schemas/PartnerWithSecret'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+  /ecoairlines/admin/prices:
+    get:
+      tags: [Administración]
+      operationId: getPrices
+      summary: "Precios por clase y acuerdos de promociones"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PricesView'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+    put:
+      tags: [Administración]
+      operationId: savePrices
+      summary: "Guardar precios y descuento máximo (un solo «Guardar»)"
+      description: "Saga \"Guardar precios y descuento máximo\": Schedule → Offers (`PublishFarePrices`) → `pricing.changed`. Descuento máximo 0–50 %."
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SavePricesRequest'
+      responses:
+        '200':
+          description: Guardado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PricesView'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '422':
+          $ref: '#/components/responses/Problem422'
+  /ecoairlines/admin/prices/reference:
+    get:
+      tags: [Administración]
+      operationId: getReferencePrices
+      summary: "Valores de referencia para «Rellenar» (no guarda)"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-g-schedule.openapi.yaml#/components/schemas/FarePriceItem'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+  /ecoairlines/admin/prices/history:
+    get:
+      tags: [Administración]
+      operationId: getPriceHistory
+      summary: "Historial de cambios de precios"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-schedule.openapi.yaml#/components/schemas/PriceChangePage'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+  /ecoairlines/admin/routes:
+    get:
+      tags: [Administración]
+      operationId: listRoutes
+      summary: "Rutas programadas"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-g-schedule.openapi.yaml#/components/schemas/ScheduledRoute'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+    post:
+      tags: [Administración]
+      operationId: createRoute
+      summary: "Crear una ruta (saga \"Publicar horario\")"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-schedule.openapi.yaml#/components/schemas/ScheduledRouteRequest'
+      responses:
+        '201':
+          description: Ruta creada y publicada
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-schedule.openapi.yaml#/components/schemas/ScheduledRoute'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '422':
+          $ref: '#/components/responses/Problem422'
+  /ecoairlines/admin/routes/{routeId}:
+    get:
+      tags: [Administración]
+      operationId: getRoute
+      summary: "Detalle de una ruta"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/RouteId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-schedule.openapi.yaml#/components/schemas/ScheduledRoute'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+    put:
+      tags: [Administración]
+      operationId: updateRoute
+      summary: "Cambiar una ruta (saga \"Publicar horario\")"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/RouteId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-schedule.openapi.yaml#/components/schemas/ScheduledRouteRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-schedule.openapi.yaml#/components/schemas/ScheduledRoute'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '422':
+          $ref: '#/components/responses/Problem422'
+    delete:
+      tags: [Administración]
+      operationId: deleteRoute
+      summary: "Dar de baja una ruta (saga \"Publicar horario\")"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/RouteId'
+      responses:
+        '204':
+          description: Ruta eliminada
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+  /ecoairlines/admin/aircraft-types:
+    get:
+      tags: [Administración]
+      operationId: listAircraftTypes
+      summary: "Tipos de avión"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-g-schedule.openapi.yaml#/components/schemas/AircraftTypeInfo'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+  /ecoairlines/admin/aircraft:
+    get:
+      tags: [Administración]
+      operationId: listAircraft
+      summary: "Aviones de la flota"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-g-schedule.openapi.yaml#/components/schemas/Aircraft'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+    post:
+      tags: [Administración]
+      operationId: createAircraft
+      summary: "Agregar un avión"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-schedule.openapi.yaml#/components/schemas/AircraftRequest'
+      responses:
+        '201':
+          description: Avión agregado
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-schedule.openapi.yaml#/components/schemas/Aircraft'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+  /ecoairlines/admin/aircraft/{registration}:
+    get:
+      tags: [Administración]
+      operationId: getAircraft
+      summary: "Detalle de un avión"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/Registration'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-schedule.openapi.yaml#/components/schemas/Aircraft'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+    put:
+      tags: [Administración]
+      operationId: updateAircraft
+      summary: "Cambiar la base de un avión"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/Registration'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-schedule.openapi.yaml#/components/schemas/UpdateAircraftRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-schedule.openapi.yaml#/components/schemas/Aircraft'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+    delete:
+      tags: [Administración]
+      operationId: deleteAircraft
+      summary: "Retirar un avión"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/Registration'
+      responses:
+        '204':
+          description: Retirado
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+  /ecoairlines/admin/fleet-schedule:
+    get:
+      tags: [Administración]
+      operationId: getFleetSchedule
+      summary: "Rotación de la flota en una fecha"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/Date'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-schedule.openapi.yaml#/components/schemas/FleetSchedule'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+  /ecoairlines/admin/flights/{flightNumber}/assistance:
+    get:
+      tags: [Administración]
+      operationId: listFlightAssistance
+      summary: "Pasajeros con asistencia de un vuelo"
+      description: "Composición: Bookings + FlightStatus + CheckIn."
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/FlightNumber'
+        - $ref: '#/components/parameters/Date'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-g-bookings.openapi.yaml#/components/schemas/FlightAssistanceItem'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+  /ecoairlines/admin/bookings/{bookingId}/assistance-ready:
+    put:
+      tags: [Administración]
+      operationId: markAssistanceReady
+      summary: "Marcar que el aeropuerto confirmó la asistencia"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssistanceReadyRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-check-in.openapi.yaml#/components/schemas/CheckInState'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+  /ecoairlines/admin/events:
+    get:
+      tags: [Administración]
+      operationId: listEventHistory
+      summary: "Historial de eventos y entregas"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/EventType'
+        - $ref: '#/components/parameters/CorrelationIdFilter'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-webhooks.openapi.yaml#/components/schemas/EventHistoryPage'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+  /ecoairlines/admin/telemetry/services:
+    get:
+      tags: [Administración]
+      operationId: getServicesHealth
+      summary: "Salud de cada servicio"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServiceHealth'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+  /ecoairlines/admin/telemetry/latency:
+    get:
+      tags: [Administración]
+      operationId: getLatency
+      summary: "Latencia y errores por servicio"
+      description: "Datos de la plataforma de observabilidad (V2.16, D50: Prometheus, Loki, RabbitMQ y Alertmanager, por la composición del ESB). Si una pieza no responde: `503 PROVIDER_UNAVAILABLE`."
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LatencyByService'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /ecoairlines/admin/telemetry/traces/{correlationId}:
+    get:
+      tags: [Administración]
+      operationId: getCorrelationTrace
+      summary: "Todo lo que generó un proceso, por su correlation ID"
+      description: "Datos de la plataforma de observabilidad (V2.16, D50: Prometheus, Loki, RabbitMQ y Alertmanager, por la composición del ESB). Si una pieza no responde: `503 PROVIDER_UNAVAILABLE`."
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/CorrelationIdQuery'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrelationTrace'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /ecoairlines/admin/telemetry/queues:
+    get:
+      tags: [Administración]
+      operationId: getQueues
+      summary: "Colas de RabbitMQ"
+      description: "Datos de la plataforma de observabilidad (V2.16, D50: Prometheus, Loki, RabbitMQ y Alertmanager, por la composición del ESB). Si una pieza no responde: `503 PROVIDER_UNAVAILABLE`."
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/QueueStats'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /ecoairlines/admin/telemetry/alerts:
+    get:
+      tags: [Administración]
+      operationId: getAlerts
+      summary: "Alertas activas"
+      description: "Datos de la plataforma de observabilidad (V2.16, D50: Prometheus, Loki, RabbitMQ y Alertmanager, por la composición del ESB). Si una pieza no responde: `503 PROVIDER_UNAVAILABLE`."
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Alert'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /ecoairlines/admin/telemetry/booking-integration:
+    get:
+      tags: [Administración]
+      operationId: getBookingIntegration
+      summary: "Estado de la integración con Booking"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingIntegrationStatus'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+components:
+  securitySchemes:
+    PartnerOAuth2:
+      $ref: './vuelos-openapi-v2.yaml#/components/securitySchemes/PartnerOAuth2'
+    BearerAuth:
+      $ref: './vuelos-openapi-v2.yaml#/components/securitySchemes/BearerAuth'
+    PartnerClientBasic:
+      $ref: './ms-g-identity.openapi.yaml#/components/securitySchemes/PartnerClientBasic'
+    UserJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de usuario de la web (`token_use = user`), emitido por MS.G.Identity. Lo reenvía el gateway GraphQL.
+
+  parameters:
+    CorrelationId:
+      $ref: './vuelos-openapi-v2.yaml#/components/parameters/CorrelationId'
+    Sub:
+      $ref: './ms-g-identity.openapi.yaml#/components/parameters/Sub'
+    ClientId:
+      $ref: './ms-g-identity.openapi.yaml#/components/parameters/ClientId'
+    RouteId:
+      $ref: './ms-g-schedule.openapi.yaml#/components/parameters/RouteId'
+    Registration:
+      $ref: './ms-g-schedule.openapi.yaml#/components/parameters/Registration'
+    FlightNumber:
+      $ref: './vuelos-openapi-v2.yaml#/components/parameters/FlightNumber'
+    BookingId:
+      $ref: './vuelos-openapi-v2.yaml#/components/parameters/BookingId'
+    Date:
+      name: date
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date
+    From:
+      name: from
+      in: query
+      schema:
+        type: string
+        format: date-time
+    To:
+      name: to
+      in: query
+      schema:
+        type: string
+        format: date-time
+    DateFrom:
+      name: from
+      in: query
+      description: Desde (fecha local, inclusive)
+      schema:
+        type: string
+        format: date
+    DateTo:
+      name: to
+      in: query
+      description: Hasta (fecha local, inclusive)
+      schema:
+        type: string
+        format: date
+    UserSearch:
+      name: q
+      in: query
+      description: Busca en el correo y el nombre (sin distinguir mayúsculas)
+      schema:
+        type: string
+        maxLength: 80
+    RoleFilter:
+      name: role
+      in: query
+      schema:
+        $ref: './ms-g-identity.openapi.yaml#/components/schemas/RoleName'
+    StatusFilter:
+      name: status
+      in: query
+      schema:
+        $ref: './ms-g-identity.openapi.yaml#/components/schemas/AccountStatus'
+    Limit:
+      $ref: './ms-g-identity.openapi.yaml#/components/parameters/Limit'
+    Cursor:
+      $ref: './ms-g-identity.openapi.yaml#/components/parameters/Cursor'
+    EventType:
+      name: type
+      in: query
+      description: Tipo corto del evento (público o interno), p. ej. `booking.confirmed`
+      schema:
+        type: string
+        maxLength: 60
+    CorrelationIdFilter:
+      name: correlationId
+      in: query
+      description: Solo los eventos de ese proceso (X-Correlation-Id)
+      schema:
+        type: string
+        maxLength: 100
+    CorrelationIdQuery:
+      name: correlationId
+      in: path
+      required: true
+      description: X-Correlation-Id del proceso a rastrear
+      schema:
+        type: string
+        maxLength: 100
+
+  responses:
+    Problem400:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem400'
+    Problem401:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem401'
+    Problem403:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem403'
+    Problem404:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem404'
+    Problem409:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem409'
+    Problem422:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem422'
+    Problem429:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem429'
+    Problem503:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem503'
+
+  schemas:
+    ProblemDetails:
+      $ref: './vuelos-openapi-v2.yaml#/components/schemas/ProblemDetails'
+    SavePricesRequest:
+      type: object
+      additionalProperties: false
+      description: Un solo «Guardar» de la pantalla «Precios por clase» (D18, D35) → saga "Guardar precios y descuento máximo".
+      properties:
+        prices:
+          $ref: './ms-g-schedule.openapi.yaml#/components/schemas/SaveFarePricesRequest'
+        promotion:
+          type: object
+          additionalProperties: false
+          required: [partnerId, agreement]
+          properties:
+            partnerId:
+              type: string
+              example: BOOKING_PROTOTIPO
+            agreement:
+              $ref: './vuelos-openapi-v2.yaml#/components/schemas/ContratoPromocionesRequest'
+
+    PricesView:
+      type: object
+      additionalProperties: false
+      required: [prices, promotions]
+      properties:
+        prices:
+          $ref: './ms-g-schedule.openapi.yaml#/components/schemas/FarePriceTable'
+        promotions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartnerPromotionAgreement'
+
+    PartnerPromotionAgreement:
+      description: >-
+        El acuerdo del contrato v2 más el partner al que pertenece. `proveedor_codigo` NO sirve para eso: es el código de la
+        aerolínea (la misma en todos los acuerdos).
+      allOf:
+        - $ref: './vuelos-openapi-v2.yaml#/components/schemas/ContratoPromocionesResponse'
+        - type: object
+          required: [partnerId]
+          properties:
+            partnerId:
+              type: string
+              example: BOOKING_PROTOTIPO
+
+    DashboardIndicators:
+      type: object
+      additionalProperties: false
+      required: [generatedAt, bookings, users, flightsToday]
+      description: Composición "Indicadores" (Bookings + Identity + FlightStatus).
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+        bookings:
+          $ref: './ms-g-bookings.openapi.yaml#/components/schemas/BookingSummary'
+        users:
+          $ref: './ms-g-identity.openapi.yaml#/components/schemas/UserSummary'
+        flightsToday:
+          type: integer
+
+    ServiceHealth:
+      type: object
+      additionalProperties: false
+      required: [service, status, checkedAt]
+      properties:
+        service:
+          type: string
+          example: ms-g-offers
+        status:
+          type: string
+          enum: [UP, DEGRADED, DOWN]
+        latency_ms:
+          type: integer
+        version:
+          type: string
+        checkedAt:
+          type: string
+          format: date-time
+
+    LatencyByService:
+      type: object
+      additionalProperties: false
+      required: [service, p50_ms, p95_ms, p99_ms, requests, errorRate]
+      properties:
+        service:
+          type: string
+        p50_ms:
+          type: number
+        p95_ms:
+          type: number
+        p99_ms:
+          type: number
+        requests:
+          type: integer
+        errorRate:
+          type: number
+          description: Porcentaje de respuestas 5xx en la ventana
+
+    TraceStep:
+      type: object
+      additionalProperties: false
+      required: [timestamp, service, operation, status, latency_ms]
+      description: Una fila de `api_request_logs` (contrato v2 §6) o un span de la traza.
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        service:
+          type: string
+        operation:
+          type: string
+        status:
+          type: string
+        latency_ms:
+          type: integer
+        request_id:
+          type: string
+        trace_id:
+          type: string
+        span_id:
+          type: string
+
+    CorrelationTrace:
+      type: object
+      additionalProperties: false
+      required: [correlationId, steps]
+      description: Todo lo que generó un proceso (contrato v2 §6), en orden.
+      properties:
+        correlationId:
+          type: string
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraceStep'
+        sagas:
+          type: array
+          items:
+            type: object
+            properties:
+              sagaId:
+                type: string
+              type:
+                type: string
+              status:
+                type: string
+        events:
+          $ref: './ms-g-webhooks.openapi.yaml#/components/schemas/EventHistoryPage'
+
+    QueueStats:
+      type: object
+      additionalProperties: false
+      required: [queue, messages, consumers]
+      properties:
+        queue:
+          type: string
+        messages:
+          type: integer
+        consumers:
+          type: integer
+        deadLetters:
+          type: integer
+
+    Alert:
+      type: object
+      additionalProperties: false
+      required: [id, rule, severity, startedAt]
+      properties:
+        id:
+          type: string
+        rule:
+          type: string
+          example: servicio-caido
+        severity:
+          type: string
+          enum: [INFO, WARNING, CRITICAL]
+        service:
+          type: string
+        message:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+
+    BookingIntegrationStatus:
+      type: object
+      additionalProperties: false
+      required: [partnerId, webhooks, stock]
+      description: Estado de la integración con Booking para el panel.
+      properties:
+        partnerId:
+          type: string
+        lastTokenAt:
+          type: string
+          format: date-time
+          nullable: true
+        webhooks:
+          $ref: './ms-g-webhooks.openapi.yaml#/components/schemas/DeliveryStats'
+        stock:
+          type: object
+          properties:
+            lastPushAt:
+              type: string
+              format: date-time
+              nullable: true
+            pendingPushes:
+              type: integer
+        lastInboundEventAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    AssistanceReadyRequest:
+      type: object
+      additionalProperties: false
+      required: [passengerId, segmentId, ready]
+      properties:
+        passengerId:
+          type: string
+        segmentId:
+          type: string
+        ready:
+          type: boolean

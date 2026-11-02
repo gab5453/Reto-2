@@ -1,0 +1,447 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MS.G.PostSale — tipos de datos del servicio SOAP (interno) · EcoAirlines · Reto 2 · contrato v1.0.0
+  Lo importa ms-g-post-sale.wsdl. Decisiones D28, D34, D37 y D41 de PLAN/PLAN.md.
+
+  Convenciones:
+  - Importes: xs:decimal con 2 decimales (el ESB los convierte al texto "119.50" del contrato v2).
+  - Fechas: xs:dateTime en UTC; fechas de vuelo: xs:date (fecha local de salida).
+  - Los nombres siguen los del contrato v2 (inglés camelCase) para que el ESB traduzca sin ambigüedad.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:tns="http://ecoairlines.com/soap/post-sale/v1/types"
+           targetNamespace="http://ecoairlines.com/soap/post-sale/v1/types"
+           elementFormDefault="qualified"
+           version="1.0.0">
+
+  <!-- ============================================================== tipos simples -->
+
+  <xs:simpleType name="Uuid">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="CurrencyCode">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[A-Z]{3}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Amount">
+    <xs:annotation><xs:documentation>Importe con 2 decimales; puede ser negativo solo en diferencias de tarifa.</xs:documentation></xs:annotation>
+    <xs:restriction base="xs:decimal">
+      <xs:fractionDigits value="2"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="NonNegativeAmount">
+    <xs:restriction base="tns:Amount">
+      <xs:minInclusive value="0"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="CabinClass">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="ECONOMY"/>
+      <xs:enumeration value="PREMIUM_ECONOMY"/>
+      <xs:enumeration value="BUSINESS"/>
+      <xs:enumeration value="FIRST"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="ReasonCode">
+    <xs:annotation><xs:documentation>reasonCode de CancelBookingRequest (contrato v2).</xs:documentation></xs:annotation>
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="CUSTOMER_REQUEST"/>
+      <xs:enumeration value="SAGA_COMPENSATION"/>
+      <xs:enumeration value="FLIGHT_CANCELLED"/>
+      <xs:enumeration value="OTHER"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="SalesChannel">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="WEB"/>
+      <xs:enumeration value="BOOKING"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="ErrorCode">
+    <xs:annotation><xs:documentation>code del ProblemDetails del contrato v2 que viaja en el SOAP Fault.</xs:documentation></xs:annotation>
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="VALIDATION_FAILED"/>
+      <xs:enumeration value="UNAUTHORIZED"/>
+      <xs:enumeration value="FORBIDDEN"/>
+      <xs:enumeration value="NOT_FOUND"/>
+      <xs:enumeration value="INTERNAL_ERROR"/>
+      <xs:enumeration value="BOOKING_NOT_CONFIRMED"/>
+      <xs:enumeration value="ALREADY_CANCELLED"/>
+      <xs:enumeration value="BOOKING_NOT_CANCELLABLE"/>
+      <xs:enumeration value="QUOTE_EXPIRED"/>
+      <xs:enumeration value="CHANGE_OFFER_EXPIRED"/>
+      <xs:enumeration value="FARE_NOT_CHANGEABLE"/>
+      <xs:enumeration value="FLIGHT_ALREADY_DEPARTED"/>
+      <xs:enumeration value="BAGGAGE_LIMIT_EXCEEDED"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- ============================================================== cabeceras SOAP (contrato v2 §6) -->
+
+  <xs:element name="CorrelationId">
+    <xs:annotation><xs:documentation>
+      X-Correlation-Id del proceso. Va en soap:Header de cada petición y de cada respuesta, sin cambios:
+      &lt;soap:Header&gt;&lt;corr:CorrelationId&gt;corr-123&lt;/corr:CorrelationId&gt;&lt;/soap:Header&gt;
+    </xs:documentation></xs:annotation>
+    <xs:simpleType>
+      <xs:restriction base="xs:string">
+        <xs:minLength value="1"/>
+        <xs:maxLength value="100"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+
+  <xs:element name="RequestId">
+    <xs:annotation><xs:documentation>X-Request-Id del salto anterior; en la respuesta, el de este servicio.</xs:documentation></xs:annotation>
+    <xs:simpleType>
+      <xs:restriction base="xs:string">
+        <xs:maxLength value="100"/>
+      </xs:restriction>
+    </xs:simpleType>
+  </xs:element>
+
+  <!-- ============================================================== tipos comunes -->
+
+  <xs:complexType name="Money">
+    <xs:sequence>
+      <xs:element name="currency" type="tns:CurrencyCode"/>
+      <xs:element name="baseFare" type="tns:NonNegativeAmount" minOccurs="0"/>
+      <xs:element name="taxes" type="tns:NonNegativeAmount" minOccurs="0"/>
+      <xs:element name="total" type="tns:NonNegativeAmount"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="PurchasedFare">
+    <xs:annotation><xs:documentation>Tarifa comprada de un itinerario (la envía el ESB desde Bookings, GET /bookings/{id}/fares).</xs:documentation></xs:annotation>
+    <xs:sequence>
+      <xs:element name="itineraryId" type="xs:string"/>
+      <xs:element name="cabinClass" type="tns:CabinClass"/>
+      <xs:element name="fareBrand" type="xs:string"/>
+      <xs:element name="price" type="tns:Money"/>
+      <xs:element name="isRefundable" type="xs:boolean"/>
+      <xs:element name="isChangeable" type="xs:boolean"/>
+      <xs:element name="changeFeeUsd" type="tns:NonNegativeAmount"/>
+      <xs:element name="departureAt" type="xs:dateTime"/>
+      <xs:element name="departed" type="xs:boolean"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="BookingContext">
+    <xs:sequence>
+      <xs:element name="bookingId" type="tns:Uuid"/>
+      <xs:element name="status" type="xs:string">
+        <xs:annotation><xs:documentation>BookingStatus del contrato v2; las operaciones exigen CONFIRMED, salvo CalculateCompensationRefund, que acepta también TICKET_ISSUING, CHANGE_PENDING y CANCELLATION_PENDING (un combo puede fallar antes de emitir los boletos).</xs:documentation></xs:annotation>
+      </xs:element>
+      <xs:element name="channel" type="tns:SalesChannel"/>
+      <xs:element name="partnerId" type="xs:string" minOccurs="0"/>
+      <xs:element name="currency" type="tns:CurrencyCode"/>
+      <xs:element name="seatedPassengers" type="xs:positiveInteger">
+        <xs:annotation><xs:documentation>Pasajeros que ocupan asiento (el cargo por cambio se cobra por cada uno).</xs:documentation></xs:annotation>
+      </xs:element>
+      <xs:element name="fare" type="tns:PurchasedFare" maxOccurs="6"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="InvalidParam">
+    <xs:sequence>
+      <xs:element name="name" type="xs:string"/>
+      <xs:element name="reason" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- ============================================================== SOAP Fault -->
+
+  <xs:element name="PostSaleFault">
+    <xs:annotation><xs:documentation>
+      Va en soap:Fault/detail. Tiene los campos del ProblemDetails del contrato v2; el ESB lo traduce sin perder `code`.
+      faultcode = soap:Client para errores de negocio o de datos, soap:Server para INTERNAL_ERROR; faultstring = title.
+    </xs:documentation></xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="code" type="tns:ErrorCode"/>
+        <xs:element name="status" type="xs:int"/>
+        <xs:element name="title" type="xs:string"/>
+        <xs:element name="detail" type="xs:string" minOccurs="0"/>
+        <xs:element name="correlationId" type="xs:string" minOccurs="0"/>
+        <xs:element name="timestamp" type="xs:dateTime"/>
+        <xs:element name="invalidParam" type="tns:InvalidParam" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ============================================================== cancelación -->
+
+  <xs:complexType name="CancellationQuote">
+    <xs:sequence>
+      <xs:element name="quoteId" type="tns:Uuid"/>
+      <xs:element name="bookingId" type="tns:Uuid"/>
+      <xs:element name="isRefundable" type="xs:boolean">
+        <xs:annotation><xs:documentation>true si TODAS las tarifas no voladas son reembolsables.</xs:documentation></xs:annotation>
+      </xs:element>
+      <xs:element name="refundAmount" type="tns:NonNegativeAmount"/>
+      <xs:element name="penaltyAmount" type="tns:NonNegativeAmount"/>
+      <xs:element name="penaltyWaived" type="xs:boolean"/>
+      <xs:element name="percentage" type="xs:decimal">
+        <xs:annotation><xs:documentation>refundAmount / total pagado de lo no volado × 100.</xs:documentation></xs:annotation>
+      </xs:element>
+      <xs:element name="currency" type="tns:CurrencyCode"/>
+      <xs:element name="unflownItineraryId" type="xs:string" maxOccurs="6"/>
+      <xs:element name="expiresAt" type="xs:dateTime" minOccurs="0">
+        <xs:annotation><xs:documentation>Ausente en CalculateCompensationRefund (no hay cotización que venza).</xs:documentation></xs:annotation>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="CreateCancellationQuoteRequest">
+    <xs:annotation><xs:documentation>
+      GET /vuelos/bookings/{id}/cancellation-quote. Reglas: solo itinerarios no volados; tarifa reembolsable → se devuelve el
+      total; no reembolsable → se devuelven solo los impuestos y la tarifa base es penalidad. Vence en 15 minutos.
+    </xs:documentation></xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="booking" type="tns:BookingContext"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="CreateCancellationQuoteResponse">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="quote" type="tns:CancellationQuote"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="ConsumeCancellationQuoteRequest">
+    <xs:annotation><xs:documentation>
+      Primer paso de la saga "Cancelar" (CUSTOMER_REQUEST u OTHER). Marca la cotización como usada. Repetirlo con el mismo
+      sagaId devuelve lo mismo (idempotente). Faults: NOT_FOUND (otra reserva o inexistente, 409), QUOTE_EXPIRED (410).
+    </xs:documentation></xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="sagaId" type="tns:Uuid"/>
+        <xs:element name="bookingId" type="tns:Uuid"/>
+        <xs:element name="quoteId" type="tns:Uuid"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="ConsumeCancellationQuoteResponse">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="quote" type="tns:CancellationQuote"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="CalculateCompensationRefundRequest">
+    <xs:annotation><xs:documentation>
+      Saga "Cancelar" sin cotización (CancelBookingRequest.quoteId es opcional con estos motivos):
+      - FLIGHT_CANCELLED (D37): la aerolínea canceló el vuelo → reembolso del 100 % de lo no volado, sin penalidad.
+      - SAGA_COMPENSATION (combo de Booking que falló): también sin penalidad, siempre (D42, decisión del responsable): la
+        cancelación no la pidió el cliente. partnerAgreement se acepta pero no cambia el resultado.
+      No guarda nada que venza; repetirlo con el mismo sagaId devuelve lo mismo.
+    </xs:documentation></xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="sagaId" type="tns:Uuid"/>
+        <xs:element name="reasonCode">
+          <xs:simpleType>
+            <xs:restriction base="tns:ReasonCode">
+              <xs:enumeration value="SAGA_COMPENSATION"/>
+              <xs:enumeration value="FLIGHT_CANCELLED"/>
+            </xs:restriction>
+          </xs:simpleType>
+        </xs:element>
+        <xs:element name="booking" type="tns:BookingContext"/>
+        <xs:element name="partnerAgreement" minOccurs="0">
+          <xs:annotation><xs:documentation>Acuerdo del partner (de Schedule). Opcional e informativo: desde D42 no cambia el resultado.</xs:documentation></xs:annotation>
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="partnerId" type="xs:string"/>
+              <xs:element name="allowsPromotions" type="xs:boolean"/>
+              <xs:element name="validUntil" type="xs:date" minOccurs="0"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="CalculateCompensationRefundResponse">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="quote" type="tns:CancellationQuote"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ============================================================== cambio de fecha -->
+
+  <xs:complexType name="Alternative">
+    <xs:annotation><xs:documentation>Vuelo alternativo con precio, como lo devuelve Offers (FindAlternatives).</xs:documentation></xs:annotation>
+    <xs:sequence>
+      <xs:element name="replacedItineraryId" type="xs:string"/>
+      <xs:element name="newItineraryId" type="xs:string"/>
+      <xs:element name="segmentId" type="xs:string" maxOccurs="6"/>
+      <xs:element name="price" type="tns:Money"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="PriceDifference">
+    <xs:annotation><xs:documentation>
+      priceDifference del contrato v2. Diferencias con signo (negativas si el nuevo vuelo es más barato); cargo por cambio
+      = changeFeeUsd × pasajeros con asiento; totalToPay = max(0, fareDifference + taxDifference) + changeFee (el saldo a
+      favor no se reembolsa).
+    </xs:documentation></xs:annotation>
+    <xs:sequence>
+      <xs:element name="fareDifference" type="tns:Amount"/>
+      <xs:element name="taxDifference" type="tns:Amount"/>
+      <xs:element name="changeFee" type="tns:NonNegativeAmount"/>
+      <xs:element name="totalToPay" type="tns:NonNegativeAmount"/>
+      <xs:element name="currency" type="tns:CurrencyCode"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="DateChangeOffer">
+    <xs:sequence>
+      <xs:element name="changeOfferId" type="tns:Uuid"/>
+      <xs:element name="bookingId" type="tns:Uuid"/>
+      <xs:element name="expiresAt" type="xs:dateTime"/>
+      <xs:element name="replacement" type="tns:Alternative" maxOccurs="6"/>
+      <xs:element name="priceDifference" type="tns:PriceDifference"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="CreateDateChangeOffersRequest">
+    <xs:annotation><xs:documentation>
+      POST /vuelos/bookings/{id}/date-change/search. Exige tarifa cambiable (FARE_NOT_CHANGEABLE) y vuelo no salido
+      (FLIGHT_ALREADY_DEPARTED). Combina las alternativas de cada itinerario (máximo 10 ofertas), cada una vence en 15 minutos.
+      Sin alternativas para algún itinerario, responde una lista vacía.
+    </xs:documentation></xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="booking" type="tns:BookingContext"/>
+        <xs:element name="alternative" type="tns:Alternative" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="CreateDateChangeOffersResponse">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="offer" type="tns:DateChangeOffer" minOccurs="0" maxOccurs="10"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="ConsumeDateChangeOfferRequest">
+    <xs:annotation><xs:documentation>
+      Paso de la saga "Cambiar fecha". Marca la oferta como usada (idempotente por sagaId). Faults: NOT_FOUND (otra reserva o
+      inexistente, 409), CHANGE_OFFER_EXPIRED (410).
+    </xs:documentation></xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="sagaId" type="tns:Uuid"/>
+        <xs:element name="bookingId" type="tns:Uuid"/>
+        <xs:element name="changeOfferId" type="tns:Uuid"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="ConsumeDateChangeOfferResponse">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="offer" type="tns:DateChangeOffer"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="ReleaseDateChangeOfferRequest">
+    <xs:annotation><xs:documentation>Compensación de "Cambiar fecha": la oferta vuelve a estar disponible hasta su vencimiento.</xs:documentation></xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="sagaId" type="tns:Uuid"/>
+        <xs:element name="changeOfferId" type="tns:Uuid"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="ReleaseDateChangeOfferResponse">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="released" type="xs:boolean"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ============================================================== maletas -->
+
+  <xs:complexType name="BaggageLine">
+    <xs:sequence>
+      <xs:element name="passengerId" type="xs:string"/>
+      <xs:element name="itineraryId" type="xs:string"/>
+      <xs:element name="alreadyPurchased" type="xs:nonNegativeInteger"/>
+      <xs:element name="unitPrice" type="tns:Money">
+        <xs:annotation><xs:documentation>extraCheckedBaggagePrice del itinerario (de Offers).</xs:documentation></xs:annotation>
+      </xs:element>
+      <xs:element name="departed" type="xs:boolean"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:element name="GetBaggageOptionsRequest">
+    <xs:annotation><xs:documentation>GET /vuelos/bookings/{id}/baggage-options. Máximo 3 maletas extra por pasajero e itinerario.</xs:documentation></xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="bookingId" type="tns:Uuid"/>
+        <xs:element name="line" type="tns:BaggageLine" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="GetBaggageOptionsResponse">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="option" minOccurs="0" maxOccurs="unbounded">
+          <xs:annotation><xs:documentation>Solo itinerarios no volados (forma de BaggageOptionsResponse del contrato v2).</xs:documentation></xs:annotation>
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="passengerId" type="xs:string"/>
+              <xs:element name="itineraryId" type="xs:string"/>
+              <xs:element name="price" type="tns:Money"/>
+              <xs:element name="maxAllowed" type="xs:nonNegativeInteger"/>
+              <xs:element name="alreadyPurchased" type="xs:nonNegativeInteger"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:element name="ValidateBaggagePurchaseRequest">
+    <xs:annotation><xs:documentation>
+      Paso de la saga "Agregar maletas", antes del pago. Faults: BAGGAGE_LIMIT_EXCEEDED (422), FLIGHT_ALREADY_DEPARTED (409).
+    </xs:documentation></xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="bookingId" type="tns:Uuid"/>
+        <xs:element name="line" type="tns:BaggageLine"/>
+        <xs:element name="quantity" type="xs:positiveInteger"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="ValidateBaggagePurchaseResponse">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="amountToCharge" type="tns:Money">
+          <xs:annotation><xs:documentation>unitPrice × quantity: el monto que debe cubrir el pago (paymentReference).</xs:documentation></xs:annotation>
+        </xs:element>
+        <xs:element name="totalAfterPurchase" type="xs:nonNegativeInteger"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

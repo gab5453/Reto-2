@@ -1,0 +1,105 @@
+# Nube de la ruta de Booking (V2.14, D48): la misma topología probada en local (infra/docker-compose.yml) en UNA VM Linux, con
+# HTTPS de Caddy (Let's Encrypt). Uso, en la VM, desde la carpeta infra/:
+#   docker compose -f docker-compose.yml -f cloud/docker-compose.cloud.yml --env-file cloud/.env up -d --build
+# cloud/.env lo genera scripts/cloud/generar-env.mjs (secretos propios; nunca se sube al repositorio).
+#
+# Lo único público es Caddy (80 y 443). Los demás puertos del compose base quedan en 127.0.0.1 de la VM (no salen de ella).
+services:
+  caddy:
+    image: caddy:2.11.6-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?falta DOMAIN en cloud/.env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./cloud/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      gateway:
+        condition: service_healthy
+      esb:
+        condition: service_healthy
+
+  # Sin el simulador en la nube: Booking es el real (se puede levantar para pruebas con `--profile simulador`).
+  booking-simulado:
+    profiles: ["simulador"]
+
+  # En la nube todo en producción: Identity exige su clave RSA y secretos propios (sin los de desarrollo ni usuarios demo).
+  ms-g-identity:
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+
+  ms-g-offers:
+    restart: unless-stopped
+    environment:
+      # Stock a Booking por gRPC (D33): booking.epn.edu.ec:50051 (BKG-06). Si no responde, se reintenta en segundo plano.
+      BOOKING_GRPC_ADDRESS: ${BOOKING_GRPC_ADDRESS:?falta BOOKING_GRPC_ADDRESS en cloud/.env}
+
+  ms-g-webhooks:
+    restart: unless-stopped
+    environment:
+      # Solo destinos https públicos (sin la excepción local para booking-simulado).
+      WEBHOOKS_ALLOW_PRIVATE_URLS: "false"
+
+  esb:
+    restart: unless-stopped
+    environment:
+      # Bus de Booking (BKG-01): vacío = no se consume (sus eventos llegan por el webhook firmado de Caddy).
+      BOOKING_BUS_URL: ${BOOKING_BUS_URL:-}
+
+  # Payment API (D49): en la misma VM; el navegador la llama por Caddy en /payment-api/ (TRUST_PROXY: la IP real del cliente
+  # para el límite de intentos por IP).
+  payment-api:
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      TRUST_PROXY: "1"
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+
+  gateway:
+    restart: unless-stopped
+    # Tras compilar, la VM (burstable, 4 GiB) queda sin CPU y con swap: el gateway tardó ~3 min en sanar y Compose abortaba antes de Caddy.
+    healthcheck:
+      start_period: 5m
+    environment:
+      # Detrás de Caddy (un salto de confianza): la IP del cliente llega en X-Forwarded-For.
+      TRUST_PROXY: "1"
+      GRAPHQL_INTROSPECTION: "false"
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+
+  # Grafana (D50): público en https://<dominio>/grafana/ con usuario y contraseña (sin acceso anónimo).
+  grafana:
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?falta GRAFANA_ADMIN_PASSWORD en cloud/.env}
+      GF_SERVER_ROOT_URL: https://${DOMAIN}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_COOKIE_SECURE: "true"
+  prometheus: { restart: unless-stopped }
+  alertmanager: { restart: unless-stopped }
+  loki: { restart: unless-stopped }
+  tempo: { restart: unless-stopped }
+
+  # Reinicio automático también para el resto de la ruta de Booking (la VM puede reiniciarse).
+  postgres: { restart: unless-stopped }
+  rabbitmq: { restart: unless-stopped }
+  otel-collector: { restart: unless-stopped }
+  ms-g-schedule: { restart: unless-stopped }
+  ms-g-bookings: { restart: unless-stopped }
+  ms-g-check-in: { restart: unless-stopped }
+  ms-g-post-sale: { restart: unless-stopped }
+  ms-g-flight-status: { restart: unless-stopped }
+  ms-g-customers: { restart: unless-stopped }
+  ms-vuelos: { restart: unless-stopped }
+  ms-reservas: { restart: unless-stopped }
+  ms-postventa: { restart: unless-stopped }
+  ms-clientes: { restart: unless-stopped }
+  ms-admin: { restart: unless-stopped }
+
+volumes:
+  caddy-data:
+  caddy-config:

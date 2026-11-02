@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { getFlightStatus } from '../api/endpoints';
+import { getFlightStatus } from '../api/operations';
 import type { FlightStatus } from '../api/types';
 import { ProblemAlert } from '../components/ProblemAlert';
 import { cityOf } from '../data/airports';

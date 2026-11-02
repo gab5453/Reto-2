@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
+import { AdminNav } from '../components/AdminUi';
 import { useAuth } from './AuthContext';
 import { RequireAuth } from './RequireAuth';
 
@@ -12,7 +13,10 @@ export function RequireAdmin({ children }: { children: ReactNode }) {
   return (
     <RequireAuth>
       {isAdmin ? (
-        children
+        <>
+          <AdminNav />
+          {children}
+        </>
       ) : (
         <div className="container section narrow">
           <h1>Acceso restringido</h1>

@@ -1,0 +1,15 @@
+# Contexto de construcción de las imágenes de infra/docker (se construyen desde la raíz del repositorio).
+**/node_modules
+**/dist
+**/coverage
+.git
+.github
+ecoairlines-web
+EcoAirlines.*
+dev-auth
+PLAN
+Evidencias
+*.md
+!contract/*.md
+.env
+**/.env

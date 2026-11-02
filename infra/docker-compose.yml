@@ -1,0 +1,711 @@
+# Entorno local del Reto 2 (V2.2): `npm run infra:up` (o `docker compose -f infra/docker-compose.yml up -d --build`).
+# Cada fase agrega aquí sus servicios. Las variables vienen de infra/.env (copiar infra/.env.example); los valores por
+# defecto son SOLO de desarrollo. En la nube los secretos se configuran en la plataforma (V2.14 y V2.20).
+#
+# UV_THREADPOOL_SIZE (V2.19): si el Collector no está, cada exportación de telemetría ocupa 5 s un hilo de libuv resolviendo su
+# nombre, y con los 4 hilos por defecto se quedaban esperando las búsquedas DNS de los demás servicios y `scrypt`: el login y el
+# registro llegaban a fallar por tiempo. La observabilidad caída nunca debe degradar las ventas.
+name: ecoairlines
+
+services:
+  postgres:
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-ecoairlines_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-dev-admin-solo-local}
+      # Una base y un usuario por servicio (infra/postgres/01-bases-por-servicio.sh).
+      PG_PASSWORD_IDENTITY: ${PG_PASSWORD_IDENTITY:-dev-identity}
+      PG_PASSWORD_CUSTOMERS: ${PG_PASSWORD_CUSTOMERS:-dev-customers}
+      PG_PASSWORD_WEBHOOKS: ${PG_PASSWORD_WEBHOOKS:-dev-webhooks}
+      PG_PASSWORD_SCHEDULE: ${PG_PASSWORD_SCHEDULE:-dev-schedule}
+      PG_PASSWORD_OFFERS: ${PG_PASSWORD_OFFERS:-dev-offers}
+      PG_PASSWORD_FLIGHT_STATUS: ${PG_PASSWORD_FLIGHT_STATUS:-dev-flight-status}
+      PG_PASSWORD_BOOKINGS: ${PG_PASSWORD_BOOKINGS:-dev-bookings}
+      PG_PASSWORD_POST_SALE: ${PG_PASSWORD_POST_SALE:-dev-post-sale}
+      PG_PASSWORD_CHECK_IN: ${PG_PASSWORD_CHECK_IN:-dev-check-in}
+      PG_PASSWORD_ESB: ${PG_PASSWORD_ESB:-dev-esb}
+      PG_PASSWORD_PAYMENT: ${PG_PASSWORD_PAYMENT:-dev-payment}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/01-bases-por-servicio.sh:/docker-entrypoint-initdb.d/01-bases-por-servicio.sh:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4.1.8-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-ecoairlines}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-dev-rabbitmq-solo-local}
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672" # consola de administración
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    command: ["--config=/etc/otelcol/collector.yaml"]
+    volumes:
+      - ./otel/collector.yaml:/etc/otelcol/collector.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317" # OTLP gRPC
+      - "127.0.0.1:4318:4318" # OTLP HTTP
+    depends_on:
+      - tempo
+      - loki
+
+  # ---------------------------------------------------------------- plataforma de observabilidad (V2.16, D50)
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=7d"]
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"]
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "127.0.0.1:9093:9093"
+
+  loki:
+    image: grafana/loki:3.7.8
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./observability/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "127.0.0.1:3100:3100"
+
+  tempo:
+    image: grafana/tempo:3.1.0
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./observability/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "127.0.0.1:3200:3200"
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-dev-grafana-solo-local}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+
+  # Simulador de Booking (solo pruebas): webhooks CloudEvents firmados, stock por gRPC y emisor de payment.* / package.cancelled.
+  booking-simulado:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/externos/booking-simulado
+    environment:
+      PORT: "4090"
+      GRPC_PORT: "50051"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+      BOOKING_SIM_WEBHOOK_SECRET: ${BOOKING_SIM_WEBHOOK_SECRET:-secreto-de-prueba-booking-simulado}
+      AIRLINE_EVENTS_SECRET: ${AIRLINE_EVENTS_SECRET:-secreto-de-prueba-eventos-booking}
+      # Entrada de eventos del ESB (V2.9, vía webhook de BKG-01). En la nube será la URL pública del gateway (V2.13).
+      AIRLINE_EVENTS_URL: ${AIRLINE_EVENTS_URL:-http://esb:8080/integraciones/booking/eventos}
+    ports:
+      - "127.0.0.1:4090:4090"
+      - "127.0.0.1:50051:50051"
+    depends_on:
+      - otel-collector
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # Payment API simulada (V2.15, D7, D28): pasarela de tarjetas del canal web. Sistema EXTERNO: la llaman el navegador (clave
+  # pública pk_test_…) y el ESB (clave secreta sk_test_…). Nunca guarda el número completo ni el CVV.
+  payment-api:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/externos/payment-api
+    environment:
+      PORT: "8080"
+      # Local: admite las claves de desarrollo. En la nube queda en production y exige claves propias (cloud/.env).
+      NODE_ENV: development
+      DATABASE_URL: postgres://payment_svc:${PG_PASSWORD_PAYMENT:-dev-payment}@postgres:5432/payment
+      PAYMENT_PUBLISHABLE_KEY: ${PAYMENT_PUBLISHABLE_KEY:-pk_test_dev_solo_local_ecoairlines_0001}
+      PAYMENT_SECRET_KEY: ${PAYMENT_SECRET_KEY:-sk_test_dev_solo_local_ecoairlines_0001}
+      CORS_ORIGINS: http://localhost:5173
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+    ports:
+      - "127.0.0.1:4010:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # MS.G.Identity (V2.3): usuarios, roles, partners y tokens RS256 (usuario, partner y servicio del ESB) + JWKS.
+  ms-g-identity:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/gestion/ms-g-identity
+    environment:
+      PORT: "8080"
+      # Entorno local: admite los secretos por defecto y la clave temporal. En la nube queda en production (la imagen).
+      NODE_ENV: development
+      DATABASE_URL: postgres://identity_svc:${PG_PASSWORD_IDENTITY:-dev-identity}@postgres:5432/identity
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+      # Sin IDENTITY_PRIVATE_KEY se usa una clave temporal (solo local). En la nube es obligatoria (NODE_ENV=production).
+      IDENTITY_PRIVATE_KEY: ${IDENTITY_PRIVATE_KEY:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-EcoAdmin2026}
+      BOOKING_CLIENT_SECRET: ${BOOKING_CLIENT_SECRET:-secreto-booking-dev-solo-local-0001}
+      ESB_CLIENT_SECRET: ${ESB_CLIENT_SECRET:-secreto-esb-dev-solo-local-0001}
+      # Clientes internos de los MS de respuesta (D44): token de servicio con ecoairlines:esb, que solo acepta el ESB.
+      MS_VUELOS_CLIENT_SECRET: ${MS_VUELOS_CLIENT_SECRET:-secreto-ms-vuelos-dev-solo-local-0001}
+      MS_RESERVAS_CLIENT_SECRET: ${MS_RESERVAS_CLIENT_SECRET:-secreto-ms-reservas-dev-solo-local-0001}
+      MS_POSTVENTA_CLIENT_SECRET: ${MS_POSTVENTA_CLIENT_SECRET:-secreto-ms-postventa-dev-solo-local-0001}
+      MS_CLIENTES_CLIENT_SECRET: ${MS_CLIENTES_CLIENT_SECRET:-secreto-ms-clientes-dev-solo-local-0001}
+      MS_ADMIN_CLIENT_SECRET: ${MS_ADMIN_CLIENT_SECRET:-secreto-ms-admin-dev-solo-local-0001}
+    ports:
+      - "127.0.0.1:4001:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # MS.G.Schedule (V2.4): rutas, flota, horario, precios por clase y acuerdo de promociones.
+  ms-g-schedule:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/gestion/ms-g-schedule
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://schedule_svc:${PG_PASSWORD_SCHEDULE:-dev-schedule}@postgres:5432/schedule
+      # Verifica el token del ESB con la clave pública de Identity (la URL es configuración, no código).
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+    ports:
+      - "127.0.0.1:4004:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # MS.G.Offers (V2.5): gRPC (búsqueda, holds, inventario por asiento, publicación) y cliente gRPC del stock de Booking.
+  ms-g-offers:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/gestion/ms-g-offers
+    environment:
+      PORT: "8080"
+      GRPC_PORT: "50061"
+      DATABASE_URL: postgres://offers_svc:${PG_PASSWORD_OFFERS:-dev-offers}@postgres:5432/offers
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      # Stock a Booking (D33). En local, el simulador; en la nube, grpc://booking.epn.edu.ec:50051 (V2.14).
+      BOOKING_GRPC_ADDRESS: ${BOOKING_GRPC_ADDRESS:-booking-simulado:50051}
+      # Outbox (V2.11): hold.created y hold.expired al bus interno (de ahí, Webhooks los entrega a Booking).
+      BUS_URL: amqp://${RABBITMQ_USER:-ecoairlines}:${RABBITMQ_PASSWORD:-dev-rabbitmq-solo-local}@rabbitmq:5672
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+    ports:
+      - "127.0.0.1:4009:8080"
+      - "127.0.0.1:50061:50061"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # MS.G.Bookings (V2.6): reservas, boletos, pagos recibidos (uso único), reembolsos y asistencia.
+  ms-g-bookings:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/gestion/ms-g-bookings
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://bookings_svc:${PG_PASSWORD_BOOKINGS:-dev-bookings}@postgres:5432/bookings
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+    ports:
+      - "127.0.0.1:4006:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # MS.G.CheckIn (V2.6): check-in, pases de abordar (BCBP) y asistencia lista.
+  ms-g-check-in:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/gestion/ms-g-check-in
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://check_in_svc:${PG_PASSWORD_CHECK_IN:-dev-check-in}@postgres:5432/check_in
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+    ports:
+      - "127.0.0.1:4007:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # MS.G.PostSale (V2.7): servicio SOAP (WSDL en /soap/post-sale?wsdl): cotizaciones, compensaciones, cambios de fecha y maletas.
+  ms-g-post-sale:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/gestion/ms-g-post-sale
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://post_sale_svc:${PG_PASSWORD_POST_SALE:-dev-post-sale}@postgres:5432/post_sale
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+    ports:
+      - "127.0.0.1:4008:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # MS.G.FlightStatus (V2.8): estado operativo y proyección del horario (consume schedule.published).
+  ms-g-flight-status:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/gestion/ms-g-flight-status
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://flight_status_svc:${PG_PASSWORD_FLIGHT_STATUS:-dev-flight-status}@postgres:5432/flight_status
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+      BUS_URL: amqp://${RABBITMQ_USER:-ecoairlines}:${RABBITMQ_PASSWORD:-dev-rabbitmq-solo-local}@rabbitmq:5672
+    ports:
+      - "127.0.0.1:4005:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # MS.G.Webhooks (V2.8): suscripciones, event_log, entrega de CloudEvents firmados (D40) y feed.
+  ms-g-webhooks:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/gestion/ms-g-webhooks
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://webhooks_svc:${PG_PASSWORD_WEBHOOKS:-dev-webhooks}@postgres:5432/webhooks
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+      BUS_URL: amqp://${RABBITMQ_USER:-ecoairlines}:${RABBITMQ_PASSWORD:-dev-rabbitmq-solo-local}@rabbitmq:5672
+      # Cifra los secretos de las suscripciones. En la nube es obligatoria (V2.14).
+      WEBHOOKS_ENCRYPTION_KEY: ${WEBHOOKS_ENCRYPTION_KEY:-clave-de-cifrado-de-desarrollo-solo-local-0001}
+      # Solo local: permite suscribir http://booking-simulado (red de Docker). En la nube NO se define (https y público).
+      WEBHOOKS_ALLOW_PRIVATE_URLS: "true"
+    ports:
+      - "127.0.0.1:4003:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # MS.G.Customers (V2.8): perfil del cliente de la web y su asistencia predeterminada.
+  ms-g-customers:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/gestion/ms-g-customers
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://customers_svc:${PG_PASSWORD_CUSTOMERS:-dev-customers}@postgres:5432/customers
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+    ports:
+      - "127.0.0.1:4002:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # ESB (V2.9): enrutador, composición (health, operaciones, indicadores, asistencia, integración con Booking), transversal
+  # (idempotencia, referencias de Booking, correlation ID) y entrada de eventos de Booking (webhook firmado y AMQP).
+  esb:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/esb
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://esb_svc:${PG_PASSWORD_ESB:-dev-esb}@postgres:5432/esb
+      BUS_URL: amqp://${RABBITMQ_USER:-ecoairlines}:${RABBITMQ_PASSWORD:-dev-rabbitmq-solo-local}@rabbitmq:5672
+      # Bus del ecosistema de Booking (exchange booking.events, BKG-01). En local se simula en nuestro RabbitMQ.
+      BOOKING_BUS_URL: ${BOOKING_BUS_URL:-amqp://${RABBITMQ_USER:-ecoairlines}:${RABBITMQ_PASSWORD:-dev-rabbitmq-solo-local}@rabbitmq:5672}
+      # Firma de los eventos de Booking: el mismo secreto que usa booking-simulado (en la nube, el que acordemos con Booking).
+      BOOKING_EVENTS_SECRET: ${AIRLINE_EVENTS_SECRET:-secreto-de-prueba-eventos-booking}
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      ESB_CLIENT_SECRET: ${ESB_CLIENT_SECRET:-secreto-esb-dev-solo-local-0001}
+      IDENTITY_URL: http://ms-g-identity:8080
+      CUSTOMERS_URL: http://ms-g-customers:8080
+      WEBHOOKS_URL: http://ms-g-webhooks:8080
+      SCHEDULE_URL: http://ms-g-schedule:8080
+      FLIGHT_STATUS_URL: http://ms-g-flight-status:8080
+      BOOKINGS_URL: http://ms-g-bookings:8080
+      CHECK_IN_URL: http://ms-g-check-in:8080
+      OFFERS_GRPC_ADDRESS: ms-g-offers:50061
+      OFFERS_URL: http://ms-g-offers:8080
+      POST_SALE_URL: http://ms-g-post-sale:8080
+      # Payment API simulada (canal web, V2.15): captura, anula y reembolsa con la clave secreta (nunca llega al navegador).
+      PAYMENT_API_URL: http://payment-api:8080
+      # Plataforma de observabilidad (V2.16, D50): telemetría del panel (latencia, trazas por correlation id, colas, alertas).
+      PROMETHEUS_URL: http://prometheus:9090
+      LOKI_URL: http://loki:3100
+      ALERTMANAGER_URL: http://alertmanager:9093
+      RABBITMQ_MANAGEMENT_URL: http://rabbitmq:15672
+      PAYMENT_API_SECRET_KEY: ${PAYMENT_SECRET_KEY:-sk_test_dev_solo_local_ecoairlines_0001}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+    ports:
+      - "127.0.0.1:4000:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      ms-g-identity:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+      payment-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # Microservicios de respuesta (V2.12): validan el token y el DTO del contrato y llaman SOLO al ESB.
+  ms-vuelos:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/respuesta/ms-vuelos
+    environment:
+      PORT: "8080"
+      # Detrás del gateway (V2.13): la IP del cliente llega en X-Forwarded-For (un salto de confianza).
+      TRUST_PROXY: "1"
+      ESB_URL: http://esb:8080
+      IDENTITY_URL: http://ms-g-identity:8080
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      MS_VUELOS_CLIENT_SECRET: ${MS_VUELOS_CLIENT_SECRET:-secreto-ms-vuelos-dev-solo-local-0001}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+    ports:
+      - "127.0.0.1:5001:8080"
+    depends_on:
+      esb:
+        condition: service_healthy
+      ms-g-identity:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  ms-reservas:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/respuesta/ms-reservas
+    environment:
+      PORT: "8080"
+      # Detrás del gateway (V2.13): la IP del cliente llega en X-Forwarded-For (un salto de confianza).
+      TRUST_PROXY: "1"
+      ESB_URL: http://esb:8080
+      IDENTITY_URL: http://ms-g-identity:8080
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      MS_RESERVAS_CLIENT_SECRET: ${MS_RESERVAS_CLIENT_SECRET:-secreto-ms-reservas-dev-solo-local-0001}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+    ports:
+      - "127.0.0.1:5002:8080"
+    depends_on:
+      esb:
+        condition: service_healthy
+      ms-g-identity:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  ms-postventa:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/respuesta/ms-postventa
+    environment:
+      PORT: "8080"
+      # Detrás del gateway (V2.13): la IP del cliente llega en X-Forwarded-For (un salto de confianza).
+      TRUST_PROXY: "1"
+      ESB_URL: http://esb:8080
+      IDENTITY_URL: http://ms-g-identity:8080
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      MS_POSTVENTA_CLIENT_SECRET: ${MS_POSTVENTA_CLIENT_SECRET:-secreto-ms-postventa-dev-solo-local-0001}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+    ports:
+      - "127.0.0.1:5003:8080"
+    depends_on:
+      esb:
+        condition: service_healthy
+      ms-g-identity:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  ms-clientes:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/respuesta/ms-clientes
+    environment:
+      PORT: "8080"
+      # Detrás del gateway (V2.13): la IP del cliente llega en X-Forwarded-For (un salto de confianza).
+      TRUST_PROXY: "1"
+      ESB_URL: http://esb:8080
+      IDENTITY_URL: http://ms-g-identity:8080
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      MS_CLIENTES_CLIENT_SECRET: ${MS_CLIENTES_CLIENT_SECRET:-secreto-ms-clientes-dev-solo-local-0001}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+    ports:
+      - "127.0.0.1:5004:8080"
+    depends_on:
+      esb:
+        condition: service_healthy
+      ms-g-identity:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  ms-admin:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/respuesta/ms-admin
+    environment:
+      PORT: "8080"
+      # Detrás del gateway (V2.13): la IP del cliente llega en X-Forwarded-For (un salto de confianza).
+      TRUST_PROXY: "1"
+      ESB_URL: http://esb:8080
+      IDENTITY_URL: http://ms-g-identity:8080
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      MS_ADMIN_CLIENT_SECRET: ${MS_ADMIN_CLIENT_SECRET:-secreto-ms-admin-dev-solo-local-0001}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+    ports:
+      - "127.0.0.1:5005:8080"
+    depends_on:
+      esb:
+        condition: service_healthy
+      ms-g-identity:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # Gateway (V2.13): la única puerta pública. REST del contrato v2 (/api/v2/vuelos/*, Booking), GraphQL (/api/graphql, la
+  # web) y Swagger (/api/docs). Solo habla con los 5 MS de respuesta.
+  gateway:
+    build:
+      context: ..
+      dockerfile: infra/docker/node-service.Dockerfile
+      args:
+        SERVICE_DIR: services/gateway
+    environment:
+      PORT: "8080"
+      MS_VUELOS_URL: http://ms-vuelos:8080
+      MS_RESERVAS_URL: http://ms-reservas:8080
+      MS_POSTVENTA_URL: http://ms-postventa:8080
+      MS_CLIENTES_URL: http://ms-clientes:8080
+      MS_ADMIN_URL: http://ms-admin:8080
+      IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
+      CORS_ORIGINS: http://localhost:5173
+      # En local la introspección ayuda a probar; en la nube queda apagada (NODE_ENV=production).
+      GRAPHQL_INTROSPECTION: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      UV_THREADPOOL_SIZE: 16
+      OTEL_BSP_SCHEDULE_DELAY: "1000"
+    ports:
+      # 8088 en el host: Windows suele reservar el 8080 (http.sys). Se cambia con GATEWAY_HOST_PORT.
+      - "127.0.0.1:${GATEWAY_HOST_PORT:-8088}:8080"
+    depends_on:
+      ms-vuelos:
+        condition: service_healthy
+      ms-reservas:
+        condition: service_healthy
+      ms-postventa:
+        condition: service_healthy
+      ms-clientes:
+        condition: service_healthy
+      ms-admin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  postgres-data:
+  prometheus-data:
+  loki-data:
+  tempo-data:
+  grafana-data:

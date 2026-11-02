@@ -1,0 +1,1167 @@
+openapi: 3.0.3
+info:
+  title: MS.G.Schedule — red, flota, horario, precios por clase y acuerdo de promociones (interno)
+  version: 1.1.0
+  license:
+    name: Uso académico — Integración de Sistemas (sin licencia de distribución)
+  description: |
+    Microservicio de gestión **MS.G.Schedule** de EcoAirlines (Reto 2). Reemplaza a `AdminRoutesService`, `AdminFleetService`,
+    `fleet-planner` y `FARE_BRANDS` del monolito.
+
+    **Responsabilidad:**
+    - **Rutas** programadas y **flota** (aviones y tipos), y la **construcción del horario** que se pone a la venta.
+    - **Precios por clase** (multiplicador por cabina y familia, con valores de referencia para «Rellenar») e historial.
+    - **Acuerdo de promociones B2B** (`GET/PUT /vuelos/promociones/contrato` del contrato v2), con descuento máximo **0–50 %**
+      (D35).
+
+    **Contrato interno.** Solo lo llama el **ESB**, con su token de servicio:
+    - **Enrutador:** consultas de rutas, flota, horario, precios y el acuerdo; altas y cambios de la flota.
+    - **Orquestador:** las sagas "Publicar horario" (rutas) y "Guardar precios y descuento máximo". Schedule **guarda y valida**;
+      el ESB luego publica a Offers (`PublishTimetable`, `PublishFarePrices`) y emite `schedule.published` o `pricing.changed`.
+      Para **compensar**, el ESB vuelve a llamar a Schedule con los valores anteriores, que leyó antes de empezar la saga
+      (crear → borrar, borrar → crear **con el mismo `routeId`** (`POST /routes?restoreRouteId=`), cambiar → cambiar al valor
+      anterior).
+
+    **Base de datos propia:** `schedule` (tablas `scheduled_routes`, `route_aircraft`, `aircraft`, `fare_class_prices`,
+    `price_changes`, `promotion_agreements`).
+
+    ### Reglas
+    - Una ruta con **cupos vendidos** de hoy en adelante no se edita ni se da de baja (`409 ROUTE_HAS_SOLD_SEATS`). Los cupos
+      los conoce Offers: el ESB los consulta antes y los envía en `soldSeats`.
+    - Los aviones de una ruta deben ser del mismo tipo y tener base en el origen; si no alcanzan para los días elegidos
+      responde `422 NOT_ENOUGH_AIRCRAFT` con cuántos faltan.
+    - Multiplicador entre **0,5 y 10**. «Rellenar» (`GET /fare-prices/reference`) **no guarda** nada.
+    - Descuento máximo de promociones entre **0 y 50 %** (`422 PROMOTION_DISCOUNT_OUT_OF_RANGE`), aunque el contrato v2 admite
+      hasta 100 (hallazgo BKG-12).
+    - Los cambios se auditan con `X-Actor-Id` (`updated_by`, `changed_by`).
+
+    ### Trazabilidad
+    Toda operación acepta `X-Correlation-Id` y `X-Request-Id` y devuelve `X-Correlation-Id`. Errores con el `ProblemDetails` del
+    contrato v2.
+servers:
+  - url: http://ms-g-schedule:8080
+    description: Red interna (Docker Compose / nube)
+  - url: http://localhost:4004
+    description: Desarrollo local
+security:
+  - EsbService: []
+tags:
+  - name: Rutas
+    description: Rutas programadas (saga "Publicar horario")
+  - name: Flota
+    description: Aviones y tipos de avión
+  - name: Horario
+    description: Vuelos generados para la venta y rotación de la flota
+  - name: Precios
+    description: Multiplicadores por cabina y familia (saga "Guardar precios")
+  - name: Promociones
+    description: Acuerdo B2B de promociones y combos
+  - name: Operación
+    description: Salud del servicio
+paths:
+  /health:
+    get:
+      tags: [Operación]
+      operationId: getHealth
+      summary: Estado del servicio y de su base de datos
+      security: []
+      responses:
+        '200':
+          description: En funcionamiento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: La base de datos no responde
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+
+  # ===================================================================== RUTAS
+  /routes:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Rutas]
+      operationId: listRoutes
+      summary: Rutas programadas
+      responses:
+        '200':
+          description: Rutas
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ScheduledRoute'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Rutas]
+      operationId: createRoute
+      summary: Crear una ruta (paso de la saga "Publicar horario")
+      description: |
+        Los números de vuelo los asigna el servicio (los dos primeros libres desde EA300). Si no se eligen aviones, se usan
+        aviones nuevos con base en el origen (se agregan a la flota). Responde `Location: /routes/{routeId}`.
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+        - name: restoreRouteId
+          in: query
+          required: false
+          description: |
+            **Solo para compensar** un "borrar" de la saga: recrea la ruta con su `routeId` (y sus números de vuelo) originales.
+            Si esos números ya están en uso → `409 ROUTE_ALREADY_EXISTS`.
+          schema:
+            type: string
+            pattern: ^EA[0-9]{1,4}-EA[0-9]{1,4}$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduledRouteRequest'
+      responses:
+        '201':
+          description: Ruta creada; el ESB publica el horario a Offers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduledRoute'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/RouteConflict'
+        '422':
+          $ref: '#/components/responses/RouteRuleViolation'
+
+  /routes/{routeId}:
+    parameters:
+      - $ref: '#/components/parameters/RouteId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Rutas]
+      operationId: getRoute
+      summary: Detalle de una ruta
+      responses:
+        '200':
+          description: Ruta
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduledRoute'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Rutas]
+      operationId: updateRoute
+      summary: Cambiar una ruta (paso de la saga "Publicar horario")
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouteChangeRequest'
+      responses:
+        '200':
+          description: Ruta actualizada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduledRoute'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/RouteConflict'
+        '422':
+          $ref: '#/components/responses/RouteRuleViolation'
+    delete:
+      tags: [Rutas]
+      operationId: deleteRoute
+      summary: Dar de baja una ruta (paso de la saga "Publicar horario")
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+        - name: soldSeats
+          in: query
+          required: true
+          description: Cupos vendidos o retenidos de hoy en adelante, según Offers
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        '204':
+          description: Ruta eliminada
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/RouteConflict'
+
+  # ===================================================================== FLOTA
+  /aircraft-types:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Flota]
+      operationId: listAircraftTypes
+      summary: Tipos de avión con su configuración de cabinas
+      responses:
+        '200':
+          description: Tipos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AircraftTypeInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /aircraft:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Flota]
+      operationId: listAircraft
+      summary: Aviones de la flota
+      responses:
+        '200':
+          description: Aviones
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Aircraft'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Flota]
+      operationId: createAircraft
+      summary: Agregar un avión (la matrícula la asigna el servicio)
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AircraftRequest'
+      responses:
+        '201':
+          description: Avión agregado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Aircraft'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnknownAirport'
+
+  /aircraft/{registration}:
+    parameters:
+      - $ref: '#/components/parameters/Registration'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Flota]
+      operationId: getAircraft
+      summary: Detalle de un avión
+      responses:
+        '200':
+          description: Avión
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Aircraft'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Flota]
+      operationId: updateAircraft
+      summary: Cambiar la base de un avión
+      description: Un avión asignado a rutas (`IN_SERVICE`) no cambia de base (`409 AIRCRAFT_IN_SERVICE`).
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAircraftRequest'
+      responses:
+        '200':
+          description: Avión actualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Aircraft'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/AircraftInService'
+        '422':
+          $ref: '#/components/responses/UnknownAirport'
+    delete:
+      tags: [Flota]
+      operationId: deleteAircraft
+      summary: Retirar un avión
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+      responses:
+        '204':
+          description: Retirado
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/AircraftInService'
+
+  # ===================================================================== HORARIO
+  /timetable:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Horario]
+      operationId: getTimetable
+      summary: Vuelos generados en un rango de fechas
+      description: |
+        Lo usa el ESB para `PublishTimetable` (Offers) y para el evento `schedule.published` (proyección de FlightStatus).
+        Ventana de venta: 91 días desde hoy. Rango máximo por consulta: 92 días.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: routeId
+          in: query
+          description: Solo los vuelos de una ruta (lo usa la saga al publicar un cambio)
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Horario
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Timetable'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /fleet-schedule:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Horario]
+      operationId: getFleetSchedule
+      summary: Rotación de cada avión en una fecha (panel de administración)
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Rotación de la flota
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetSchedule'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ===================================================================== PRECIOS
+  /fare-prices:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Precios]
+      operationId: getFarePrices
+      summary: Multiplicadores vigentes por cabina y familia
+      responses:
+        '200':
+          description: Tabla de precios
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FarePriceTable'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Precios]
+      operationId: saveFarePrices
+      summary: Guardar uno o varios multiplicadores (paso de la saga "Guardar precios y descuento máximo")
+      description: |
+        Solo se envían las filas que cambian. Cada cambio queda en `price_changes`. Responde la tabla completa, que el ESB
+        publica a Offers con `PublishFarePrices` (junto con el descuento máximo del acuerdo).
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveFarePricesRequest'
+            example:
+              items:
+                - cabinClass: ECONOMY
+                  fareBrand: BROTE
+                  multiplier: 1.4
+      responses:
+        '200':
+          description: Tabla actualizada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FarePriceTable'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Combinación de cabina y familia inexistente
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: Multiplicador fuera de 0,5–10
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: El multiplicador debe estar entre 0,5 y 10.
+                status: 422
+                code: MULTIPLIER_OUT_OF_RANGE
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+
+  /fare-prices/reference:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Precios]
+      operationId: getReferenceFarePrices
+      summary: Valores de referencia para el botón «Rellenar» (no guarda nada)
+      responses:
+        '200':
+          description: Multiplicadores de referencia
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FarePriceItem'
+              example:
+                - { cabinClass: ECONOMY, fareBrand: SEMILLA, multiplier: 1 }
+                - { cabinClass: ECONOMY, fareBrand: BROTE, multiplier: 1.35 }
+                - { cabinClass: ECONOMY, fareBrand: BOSQUE, multiplier: 1.8 }
+                - { cabinClass: BUSINESS, fareBrand: DOSEL, multiplier: 3.2 }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /fare-prices/history:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Precios]
+      operationId: getFarePriceHistory
+      summary: Historial de cambios de precios (del más reciente al más antiguo)
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Historial
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PriceChangePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ===================================================================== PROMOCIONES
+  /promotion-agreements/{partnerId}:
+    parameters:
+      - name: partnerId
+        in: path
+        required: true
+        description: '`clientId` del partner (el mismo de `salesChannel.partnerId`)'
+        schema:
+          type: string
+          pattern: ^[A-Z][A-Z0-9_]{2,39}$
+        example: BOOKING_PROTOTIPO
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Promociones]
+      operationId: getPromotionAgreement
+      summary: Acuerdo de promociones con un partner (forma del contrato v2)
+      description: Implementa `GET /vuelos/promociones/contrato`. El ESB toma `partnerId` del token del partner.
+      responses:
+        '200':
+          description: Acuerdo vigente
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/ContratoPromocionesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Todavía no hay acuerdo con ese partner
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+    put:
+      tags: [Promociones]
+      operationId: savePromotionAgreement
+      summary: Guardar el acuerdo (paso de la saga "Guardar precios y descuento máximo")
+      description: |
+        Lo usan la pantalla «Precios por clase» del administrador y `PUT /vuelos/promociones/contrato` (solo `flights:admin`,
+        que tiene nuestro ADMIN, no el partner). Descuento máximo **0–50 %**.
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './vuelos-openapi-v2.yaml#/components/schemas/ContratoPromocionesRequest'
+            example:
+              permite_promociones: true
+              porcentaje_descuento_maximo: 12
+              rutas_habilitadas: [UIO-GYE, GYE-UIO]
+              cabinas_habilitadas: [ECONOMY]
+              vigencia_hasta: '2026-12-31'
+              condiciones_combo: Hasta 12 % en combos vuelo + hotel o vuelo + auto; no aplica en feriados.
+      responses:
+        '200':
+          description: Acuerdo guardado
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/ContratoPromocionesResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: |
+            - `PROMOTION_DISCOUNT_OUT_OF_RANGE`: descuento fuera de 0–50 %.
+            - `VALIDATION_FAILED`: una ruta de `rutas_habilitadas` no se opera, una cabina de `cabinas_habilitadas` no existe en
+              la flota o `vigencia_hasta` ya pasó.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: El descuento máximo debe estar entre 0 y 50 %.
+                status: 422
+                code: PROMOTION_DISCOUNT_OUT_OF_RANGE
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+
+components:
+  securitySchemes:
+    EsbService:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de servicio del ESB (`token_use = service`, scope `ecoairlines:internal`), verificado con la JWKS de MS.G.Identity.
+
+  parameters:
+    ActorId:
+      name: X-Actor-Id
+      in: header
+      required: true
+      description: '`sub` del administrador que hace el cambio (auditoría). Solo lo envía el ESB.'
+      schema:
+        type: string
+        format: uuid
+    RouteId:
+      name: routeId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: ^EA[0-9]{1,4}-EA[0-9]{1,4}$
+      example: EA300-EA301
+    Registration:
+      name: registration
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: ^HC-[A-Z0-9]{2,6}$
+      example: HC-N57
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador del proceso completo (contrato v2, §6). Se propaga sin cambios.
+      schema:
+        type: string
+        maxLength: 100
+      example: corr-vuelos-7f3a9c
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 100
+
+  responses:
+    ValidationFailed:
+      description: Datos inválidos
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    Unauthorized:
+      description: Falta el token del ESB o no es válido
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    NotFound:
+      description: No existe
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    RouteConflict:
+      description: |
+        - `ROUTE_HAS_SOLD_SEATS`: la ruta tiene cupos vendidos de hoy en adelante.
+        - `ROUTE_ALREADY_EXISTS`: uno de sus vuelos ya existe (mismo origen, destino y hora en otra ruta), o el `routeId` de
+          `restoreRouteId` ya está en uso. Puede haber varias rutas entre dos aeropuertos (la red base tiene dos: de mañana y
+          de tarde).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: La ruta tiene cupos vendidos y no se puede cambiar.
+            status: 409
+            code: ROUTE_HAS_SOLD_SEATS
+            detail: 37 cupos vendidos o retenidos desde hoy.
+            correlation_id: corr-vuelos-7f3a9c
+            timestamp: '2026-10-25T10:00:00Z'
+    RouteRuleViolation:
+      description: |
+        - `NOT_ENOUGH_AIRCRAFT`: faltan aviones del tipo y la base para los días elegidos (`detail` dice cuántos).
+        - `AIRCRAFT_RANGE_EXCEEDED`: la distancia supera el alcance del tipo de avión.
+        - `UNKNOWN_AIRPORT`: aeropuerto fuera de la red.
+        - `AIRCRAFT_NOT_IN_FLEET`: un avión elegido no existe.
+        - `AIRCRAFT_MISMATCH`: un avión elegido es de otro tipo o tiene otra base.
+        - `TIMETABLE_CONFLICT`: con los aviones elegidos, alguno quedaría en dos lugares a la vez (`invalidParams` lista cada
+          conflicto).
+        - `VALIDATION_FAILED`: origen igual al destino, o no quedan números de vuelo (EA300–EA999).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    UnknownAirport:
+      description: '`UNKNOWN_AIRPORT`: la base no es un aeropuerto de la red'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    AircraftInService:
+      description: El avión opera rutas (`IN_SERVICE`)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+  schemas:
+    WeekdayCode:
+      type: string
+      enum: [SUN, MON, TUE, WED, THU, FRI, SAT]
+
+    AircraftType:
+      type: string
+      enum: [Airbus A220-300, Airbus A320neo, Boeing 787-9]
+
+    FareBrand:
+      type: string
+      enum: [SEMILLA, BROTE, BOSQUE, DOSEL]
+      description: Familias de EcoAirlines. SEMILLA, BROTE y BOSQUE son de ECONOMY; DOSEL de BUSINESS.
+
+    ScheduledRouteRequest:
+      type: object
+      additionalProperties: false
+      required: [origin, destination, outboundDepartureLocal, inboundDepartureLocal, weekdays]
+      properties:
+        origin:
+          type: string
+          pattern: ^[A-Z]{3}$
+        destination:
+          type: string
+          pattern: ^[A-Z]{3}$
+        outboundDepartureLocal:
+          type: string
+          pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]$
+        inboundDepartureLocal:
+          type: string
+          pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]$
+        weekdays:
+          type: array
+          minItems: 1
+          maxItems: 7
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/WeekdayCode'
+        aircraftType:
+          $ref: '#/components/schemas/AircraftType'
+        aircraft:
+          type: array
+          minItems: 1
+          maxItems: 7
+          uniqueItems: true
+          items:
+            type: string
+            pattern: ^HC-[A-Z0-9]{2,6}$
+
+    RouteChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [route, soldSeats]
+      properties:
+        route:
+          $ref: '#/components/schemas/ScheduledRouteRequest'
+        soldSeats:
+          type: integer
+          minimum: 0
+          description: Cupos vendidos o retenidos de hoy en adelante, según Offers (`SoldSeatsOnFlight`)
+
+    RouteLeg:
+      type: object
+      required: [flightNumber, origin, destination, departureLocal, arrivalLocal, arrivalDayOffset]
+      properties:
+        flightNumber:
+          type: string
+          example: EA300
+        origin:
+          type: string
+        destination:
+          type: string
+        departureLocal:
+          type: string
+          example: '07:00'
+        arrivalLocal:
+          type: string
+          example: '07:45'
+        arrivalDayOffset:
+          type: integer
+
+    ScheduledRoute:
+      type: object
+      required: [routeId, origin, destination, outbound, inbound, weekdays, aircraftType, aircraft, distanceKm, durationMinutes, source, createdAt, updatedAt]
+      properties:
+        routeId:
+          type: string
+          example: EA300-EA301
+        origin:
+          type: string
+        destination:
+          type: string
+        outbound:
+          $ref: '#/components/schemas/RouteLeg'
+        inbound:
+          $ref: '#/components/schemas/RouteLeg'
+        weekdays:
+          type: array
+          items:
+            $ref: '#/components/schemas/WeekdayCode'
+        aircraftType:
+          $ref: '#/components/schemas/AircraftType'
+        aircraft:
+          type: array
+          items:
+            type: string
+        distanceKm:
+          type: integer
+        durationMinutes:
+          type: integer
+        source:
+          type: string
+          enum: [NETWORK, ADMIN]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        updatedBy:
+          type: string
+          format: uuid
+          nullable: true
+
+    AircraftRequest:
+      type: object
+      additionalProperties: false
+      required: [aircraftType, base]
+      properties:
+        aircraftType:
+          $ref: '#/components/schemas/AircraftType'
+        base:
+          type: string
+          pattern: ^[A-Z]{3}$
+
+    UpdateAircraftRequest:
+      type: object
+      additionalProperties: false
+      required: [base]
+      properties:
+        base:
+          type: string
+          pattern: ^[A-Z]{3}$
+
+    Aircraft:
+      type: object
+      required: [registration, aircraftType, base, status, routes, totalSeats, source, createdAt, updatedAt]
+      properties:
+        registration:
+          type: string
+          example: HC-N57
+        aircraftType:
+          $ref: '#/components/schemas/AircraftType'
+        base:
+          type: string
+        status:
+          type: string
+          enum: [IN_SERVICE, AVAILABLE]
+        routes:
+          type: array
+          items:
+            type: string
+        totalSeats:
+          type: integer
+        source:
+          type: string
+          enum: [NETWORK, ADMIN]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    AircraftTypeInfo:
+      type: object
+      required: [aircraftType, registrationPrefix, seats, totalSeats, turnaroundMinutes, inFleet]
+      properties:
+        aircraftType:
+          $ref: '#/components/schemas/AircraftType'
+        registrationPrefix:
+          type: string
+          example: HC-N
+        seats:
+          type: array
+          items:
+            type: object
+            required: [cabinClass, seats]
+            properties:
+              cabinClass:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/CabinClass'
+              seats:
+                type: integer
+        totalSeats:
+          type: integer
+        maxRouteKm:
+          type: integer
+          nullable: true
+        turnaroundMinutes:
+          type: integer
+        inFleet:
+          type: integer
+
+    ScheduledFlight:
+      type: object
+      additionalProperties: false
+      required: [flightNumber, date, routeId, origin, destination, departureAt, arrivalAt, aircraftType, registration]
+      properties:
+        flightNumber:
+          type: string
+          example: EA300
+        date:
+          type: string
+          format: date
+          description: Fecha local de salida
+        routeId:
+          type: string
+        origin:
+          type: string
+        destination:
+          type: string
+        departureAt:
+          type: string
+          format: date-time
+          description: Con el desfase horario del aeropuerto de salida
+        arrivalAt:
+          type: string
+          format: date-time
+        aircraftType:
+          $ref: '#/components/schemas/AircraftType'
+        registration:
+          type: string
+
+    Timetable:
+      type: object
+      additionalProperties: false
+      required: [from, to, generatedAt, flights]
+      properties:
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        generatedAt:
+          type: string
+          format: date-time
+        flights:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduledFlight'
+
+    FleetSchedule:
+      type: object
+      required: [date, totalFlights, aircraft]
+      properties:
+        date:
+          type: string
+          format: date
+        totalFlights:
+          type: integer
+        aircraft:
+          type: array
+          items:
+            type: object
+            required: [registration, aircraftType, base, flights]
+            properties:
+              registration:
+                type: string
+              aircraftType:
+                $ref: '#/components/schemas/AircraftType'
+              base:
+                type: string
+              flights:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ScheduledFlight'
+
+    FarePriceItem:
+      type: object
+      additionalProperties: false
+      required: [cabinClass, fareBrand, multiplier]
+      properties:
+        cabinClass:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/CabinClass'
+        fareBrand:
+          $ref: '#/components/schemas/FareBrand'
+        multiplier:
+          type: number
+          minimum: 0.5
+          maximum: 10
+
+    SaveFarePricesRequest:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/FarePriceItem'
+
+    FareClassPrice:
+      type: object
+      required: [cabinClass, fareBrand, referenceMultiplier, multiplier, updatedAt]
+      properties:
+        cabinClass:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/CabinClass'
+        fareBrand:
+          $ref: '#/components/schemas/FareBrand'
+        referenceMultiplier:
+          type: number
+        multiplier:
+          type: number
+        updatedAt:
+          type: string
+          format: date-time
+        updatedBy:
+          type: string
+          format: uuid
+          nullable: true
+
+    FarePriceTable:
+      type: object
+      additionalProperties: false
+      required: [items, updatedAt]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FareClassPrice'
+        updatedAt:
+          type: string
+          format: date-time
+
+    PriceChange:
+      type: object
+      required: [id, cabinClass, fareBrand, oldMultiplier, newMultiplier, changedBy, changedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        cabinClass:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/CabinClass'
+        fareBrand:
+          $ref: '#/components/schemas/FareBrand'
+        oldMultiplier:
+          type: number
+        newMultiplier:
+          type: number
+        changedBy:
+          type: string
+          format: uuid
+        changedAt:
+          type: string
+          format: date-time
+
+    PriceChangePage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PriceChange'
+        nextCursor:
+          type: string
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        database:
+          type: string
+          enum: [up, down, memory]
+        latency_ms:
+          type: integer
+          minimum: 0
+
+    ProblemDetails:
+      type: object
+      additionalProperties: false
+      description: Formato del `ProblemDetails` del contrato v2 (RFC 7807) con los códigos de este servicio.
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        code:
+          type: string
+          enum:
+            - VALIDATION_FAILED
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - NOT_FOUND
+            - INTERNAL_ERROR
+            - PROMOTION_DISCOUNT_OUT_OF_RANGE
+            - ROUTE_HAS_SOLD_SEATS
+            - ROUTE_ALREADY_EXISTS
+            - NOT_ENOUGH_AIRCRAFT
+            - AIRCRAFT_RANGE_EXCEEDED
+            - UNKNOWN_AIRPORT
+            - AIRCRAFT_NOT_IN_FLEET
+            - AIRCRAFT_MISMATCH
+            - TIMETABLE_CONFLICT
+            - AIRCRAFT_IN_SERVICE
+            - MULTIPLIER_OUT_OF_RANGE
+        correlation_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        invalidParams:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              reason:
+                type: string

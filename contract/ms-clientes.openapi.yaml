@@ -1,0 +1,231 @@
+openapi: 3.0.3
+info:
+  title: MS.Clientes — webhooks, token de partner, registro, login y perfil (respuesta)
+  version: 1.1.0
+  license:
+    name: Uso académico — Integración de Sistemas (sin licencia de distribución)
+  description: |
+    Microservicio de respuesta **MS.Clientes** de EcoAirlines (Reto 2). Implementa las **3 operaciones** del contrato
+    de Vuelos v2 cuyo `x-microservice` es `MS.Clientes` (webhooks), referenciadas desde `vuelos-openapi-v2.yaml` (idénticas por
+    construcción), y además:
+    - **`POST /oauth2/token`** (`tokenUrl` del `PartnerOAuth2` del contrato): el gateway lo publica en `/api/v2/oauth2/token` y en el
+      alias `/oauth2/token` (BKG-03). Es la misma operación de MS.G.Identity, referenciada (formato de errores OAuth2).
+    - **Operaciones propias** bajo `/ecoairlines/...` que solo usa la web (vía GraphQL, D23): registro, login, perfil y las
+      suscripciones del administrador con la pista del secreto (1.1.0).
+
+    | Operación | Cadena en el ESB |
+    |-----------|------------------|
+    | `listWebhooks`, `createWebhook`, `deleteWebhook` | Enrutador → Webhooks (dueño de las suscripciones: `partner:<clientId>`) |
+    | `issuePartnerToken` | Enrutador → Identity (`POST /oauth2/token`, sin token previo) |
+    | `listOwnWebhooks` (propia, 1.1.0) | Enrutador → Webhooks (con `secretHint`, que `listWebhooks` quita) |
+    | `register`, `login` | Enrutador → Identity (públicas) |
+    | `getMyProfile`, `saveMyProfile` | Enrutador → Customers (solo token de usuario; un partner recibe `403`) |
+
+        ### Seguridad (D22, D29, D41)
+        Verifica el token con la JWKS de MS.G.Identity (el gateway ya lo verificó; aquí se verifica otra vez, defensa en
+        profundidad) y los scopes de cada operación:
+        - **Token de partner** (`token_use = partner`, Booking): las operaciones del contrato. Solo con este token se lee `X-User-Id`;
+          el dueño es `partner:<clientId>:<X-User-Id>`.
+        - **Token de usuario** (`token_use = user`, la web): equivale al `BearerAuth` del contrato. El dueño es su `sub`; `X-User-Id`
+          se ignora.
+        - **Token de servicio** (`token_use = service`, del ESB o de otro MS): se **rechaza** (`401`); solo lo aceptan el ESB y los MS.G.
+        El dueño **nunca** sale del cuerpo. Un recurso de otro dueño responde `404`.
+
+        ### Qué hace en cada petición (como hoy `EcoAirlines.API`)
+        1. Valida el DTO exacto al contrato (`required`, `enum`, `pattern`, `additionalProperties`…) → `400 VALIDATION_FAILED`.
+        2. Aplica el límite de peticiones → `429`.
+        3. Llama al **ESB** (enrutador, orquestador o composición) con **su propio** token de servicio (cliente interno del MS en
+           Identity, scope `ecoairlines:esb`, D44: lo acepta el ESB y lo rechazan los MS.G), `X-Owner-Id` / `X-Actor-Id`,
+           `X-Correlation-Id` (sin cambiarlo), un `X-Request-Id` nuevo y la `Idempotency-Key` recibida (el ESB la resuelve, D6).
+        4. Arma la respuesta pública: quita los campos internos (`ownerId`, `channel`, `fares`…), agrega `_links` (HATEOAS) y
+           `Location` con la ruta `/api/v2/vuelos/...`, y traduce los errores a `ProblemDetails` v2.
+        5. Devuelve `X-Correlation-Id` en **toda** respuesta, también en los errores.
+servers:
+  - url: http://ms-clientes:8080/api/v2
+    description: Red interna (detrás del gateway, que publica /api/v2/vuelos/* y /api/graphql)
+  - url: http://localhost:5004/api/v2
+    description: Desarrollo local
+security:
+  - PartnerOAuth2: []
+  - BearerAuth: []
+tags:
+  - name: Propias (web)
+    description: Operaciones de EcoAirlines fuera del contrato del grupo (solo vía GraphQL)
+paths:
+  # contrato v2 · GET listWebhooks, POST createWebhook
+  /vuelos/webhooks:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1webhooks'
+  # contrato v2 · DELETE deleteWebhook
+  /vuelos/webhooks/{id}:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1webhooks~1{id}'
+  # ----------------------------------------------------- token de partner y propias
+  /oauth2/token:
+    $ref: './ms-g-identity.openapi.yaml#/paths/~1oauth2~1token'
+  /ecoairlines/webhooks:
+    get:
+      tags: [Propias (web)]
+      operationId: listOwnWebhooks
+      summary: "Suscripciones del administrador con la pista del secreto (••••1234)"
+      security:
+        - UserJwt: [flights:webhooks]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Las suscripciones del dueño con `secretHint` (los últimos 4 caracteres del secreto; V2.14). El contrato v2 no la publica
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-g-webhooks.openapi.yaml#/components/schemas/SubscriptionView'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+  /ecoairlines/auth/register:
+    post:
+      tags: [Propias (web)]
+      operationId: register
+      summary: "Registro público de un cliente (siempre CLIENTE)"
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-identity.openapi.yaml#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Cuenta creada y token emitido
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-identity.openapi.yaml#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '429':
+          $ref: '#/components/responses/Problem429'
+  /ecoairlines/auth/login:
+    post:
+      tags: [Propias (web)]
+      operationId: login
+      summary: "Iniciar sesión (token de usuario)"
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-identity.openapi.yaml#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Credenciales correctas
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-identity.openapi.yaml#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '429':
+          $ref: '#/components/responses/Problem429'
+  /ecoairlines/customers/me:
+    get:
+      tags: [Propias (web)]
+      operationId: getMyProfile
+      summary: "Perfil del cliente con su asistencia predeterminada"
+      security:
+        - UserJwt: [ecoairlines:profile]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Perfil
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-customers.openapi.yaml#/components/schemas/CustomerProfile'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+    put:
+      tags: [Propias (web)]
+      operationId: saveMyProfile
+      summary: "Crear o reemplazar el perfil del cliente"
+      security:
+        - UserJwt: [ecoairlines:profile]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-customers.openapi.yaml#/components/schemas/CustomerProfileRequest'
+      responses:
+        '200':
+          description: Perfil guardado
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-customers.openapi.yaml#/components/schemas/CustomerProfile'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+components:
+  securitySchemes:
+    PartnerOAuth2:
+      $ref: './vuelos-openapi-v2.yaml#/components/securitySchemes/PartnerOAuth2'
+    BearerAuth:
+      $ref: './vuelos-openapi-v2.yaml#/components/securitySchemes/BearerAuth'
+    PartnerClientBasic:
+      $ref: './ms-g-identity.openapi.yaml#/components/securitySchemes/PartnerClientBasic'
+    UserJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de usuario de la web (`token_use = user`), emitido por MS.G.Identity. Lo reenvía el gateway GraphQL.
+
+  parameters:
+    CorrelationId:
+      $ref: './vuelos-openapi-v2.yaml#/components/parameters/CorrelationId'
+
+  responses:
+    Problem400:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem400'
+    Problem401:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem401'
+    Problem403:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem403'
+    Problem404:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem404'
+    Problem409:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem409'
+    Problem422:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem422'
+    Problem429:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem429'
+    Problem503:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem503'
+    Problem429Identity:
+      $ref: './ms-g-identity.openapi.yaml#/components/responses/TooManyAttempts'
+
+  schemas:
+    ProblemDetails:
+      $ref: './vuelos-openapi-v2.yaml#/components/schemas/ProblemDetails'

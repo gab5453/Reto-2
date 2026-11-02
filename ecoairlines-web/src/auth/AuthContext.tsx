@@ -1,13 +1,18 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { AUTH_URL } from '../config';
+import { ApiError } from '../api/client';
+import { login, register, type AuthPayload } from '../api/operations';
+import { clearOfflineData } from '../lib/offline-trips';
+import { friendlyMessage } from '../api/problem-messages';
 
-/** Rol que emite el servidor de autenticación (campo `role` de la plantilla del grupo). */
+/** Rol del usuario en MS.G.Identity (`RoleName` de gateway.graphql). */
 export type UserRole = 'CUSTOMER' | 'ADMIN';
 
 export interface SessionUser {
   name: string;
   email: string;
   role: UserRole;
+  /** Scopes del token (`Scope` de gateway.graphql: FLIGHTS_BOOK, ECOAIRLINES_ADMIN…). Solo deciden qué se muestra. */
+  scopes: string[];
 }
 
 interface Session {
@@ -19,7 +24,7 @@ interface Session {
 interface AuthContextValue {
   token: string | null;
   user: SessionUser | null;
-  /** Solo informa a la interfaz qué mostrar: la API verifica el scope `ecoairlines:admin` en cada petición. */
+  /** Tiene el scope `ecoairlines:admin`. Solo decide qué muestra la interfaz: el gateway lo verifica en cada operación. */
   isAdmin: boolean;
   login(email: string, password: string): Promise<SessionUser>;
   register(name: string, email: string, password: string): Promise<SessionUser>;
@@ -31,46 +36,33 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 /**
  * El token vive SOLO en memoria (no en localStorage/sessionStorage): un script inyectado no puede
  * leerlo del almacenamiento y desaparece al cerrar o recargar la pestaña. La sesión se cierra sola
- * al vencer el JWT. El servidor de autenticación es externo a la API de vuelos (HALL-03).
+ * al vencer el JWT. El login va por GraphQL (`login`/`register` → MS.Clientes → MS.G.Identity), como todo lo demás.
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
 
-  const logout = useCallback(() => setSession(null), []);
+  /** «Salir» es decisión del cliente: también borra lo guardado para usar sin conexión. */
+  const logout = useCallback(() => {
+    setSession(null);
+    clearOfflineData();
+  }, []);
 
   useEffect(() => {
     if (!session) return;
-    const timer = window.setTimeout(logout, Math.max(0, session.expiresAt - Date.now()));
+    // Vencer la sesión no borra los pases guardados: el cliente puede necesitarlos en el aeropuerto.
+    const timer = window.setTimeout(() => setSession(null), Math.max(0, session.expiresAt - Date.now()));
     return () => window.clearTimeout(timer);
-  }, [session, logout]);
+  }, [session]);
 
-  const authenticate = useCallback(async (path: '/login' | '/register', body: Record<string, string>): Promise<SessionUser> => {
-    let response: Response;
+  const authenticate = useCallback(async (request: () => Promise<AuthPayload>): Promise<SessionUser> => {
+    let payload: AuthPayload;
     try {
-      response = await fetch(new URL(path, AUTH_URL), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        credentials: 'omit',
-      });
-    } catch {
-      throw new Error('No se pudo conectar con el servicio de autenticación.');
+      payload = await request();
+    } catch (caught) {
+      throw new Error(caught instanceof ApiError ? friendlyMessage(caught) : 'No se pudo iniciar sesión.');
     }
-    const data = (await response.json().catch(() => ({}))) as {
-      access_token?: string;
-      expires_in?: number;
-      user?: Partial<SessionUser>;
-      title?: string;
-    };
-    if (!response.ok || !data.access_token || !data.user?.name || !data.user.email) {
-      throw new Error(data.title ?? 'No se pudo iniciar sesión.');
-    }
-    const user: SessionUser = { name: data.user.name, email: data.user.email, role: data.user.role === 'ADMIN' ? 'ADMIN' : 'CUSTOMER' };
-    setSession({
-      token: data.access_token,
-      user,
-      expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000,
-    });
+    const user: SessionUser = { name: payload.user.fullName, email: payload.user.email, role: payload.user.role, scopes: payload.user.scopes };
+    setSession({ token: payload.accessToken, user, expiresAt: Date.now() + payload.expiresIn * 1000 });
     return user;
   }, []);
 
@@ -78,9 +70,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       token: session?.token ?? null,
       user: session?.user ?? null,
-      isAdmin: session?.user.role === 'ADMIN',
-      login: (email, password) => authenticate('/login', { email, password }),
-      register: (name, email, password) => authenticate('/register', { name, email, password }),
+      isAdmin: session?.user.scopes.includes('ECOAIRLINES_ADMIN') ?? false,
+      login: (email, password) => authenticate(() => login({ email, password })),
+      register: (name, email, password) => authenticate(() => register({ fullName: name, email, password })),
       logout,
     }),
     [session, authenticate, logout],

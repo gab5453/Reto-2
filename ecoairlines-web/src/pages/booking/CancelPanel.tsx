@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { cancelBooking, getCancellationQuote } from '../../api/endpoints';
+import { cancelBooking, getCancellationQuote } from '../../api/operations';
 import type { BookingDetail, CancellationQuoteResponse } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
 import { Countdown } from '../../components/Countdown';

@@ -1,40 +1,35 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { getDashboardStats, type AdminDashboardStats } from '../../api/extensions';
+import { getIndicators, type AdminIndicators } from '../../api/admin';
 import { useAuth } from '../../auth/AuthContext';
+import { Stat } from '../../components/AdminUi';
 import { ProblemAlert } from '../../components/ProblemAlert';
-import { STATUS_LABELS, formatDateTime, formatMoney } from '../../lib/format';
-import { AdminFlightsPanel } from './AdminFlightsPanel';
+import { cityOf } from '../../data/airports';
+import { formatDateTime, formatMoney } from '../../lib/format';
 import { FleetPanel } from './FleetPanel';
 import { RoutesPanel } from './RoutesPanel';
 
-type Tab = 'FLIGHTS' | 'SCHEDULE' | 'FLEET' | 'ROUTES' | 'BOOKINGS';
+type Tab = 'SCHEDULE' | 'FLEET' | 'ROUTES';
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'FLIGHTS', label: 'Vuelos y asientos' },
   { id: 'SCHEDULE', label: 'Rutas programadas' },
   { id: 'FLEET', label: 'Flota' },
   { id: 'ROUTES', label: 'Ventas por ruta' },
-  { id: 'BOOKINGS', label: 'Reservas recientes' },
 ];
 
-const usd = (value: number) => formatMoney(value.toFixed(2));
-
 /**
- * Panel de administración (extensión fuera del contrato), con las secciones y campos de la plantilla del
- * grupo: indicadores, vuelos con su ocupación y estado (por fecha, origen o ruta), pasajeros por vuelo, rutas y reservas recientes.
- * Además, el CRUD de rutas programadas (crear, editar y dar de baja vuelos del horario).
+ * Panel de administración (`adminIndicators` y demás operaciones de MS.Admin por GraphQL): indicadores con las ventas por
+ * canal (web y Booking), rutas programadas (crear, editar y dar de baja), flota y ventas por ruta.
  */
 export function AdminDashboardPage() {
   const { token } = useAuth();
-  const [stats, setStats] = useState<AdminDashboardStats | null>(null);
+  const [stats, setStats] = useState<AdminIndicators | null>(null);
   const [refreshedAt, setRefreshedAt] = useState<string>();
   const [error, setError] = useState<unknown>(null);
-  const [tab, setTab] = useState<Tab>('FLIGHTS');
+  const [tab, setTab] = useState<Tab>('SCHEDULE');
 
   const load = useCallback(async () => {
     if (!token) return;
     try {
-      setStats(await getDashboardStats(token));
+      setStats(await getIndicators(token));
       setRefreshedAt(new Date().toISOString());
       setError(null);
     } catch (caught) {
@@ -45,7 +40,7 @@ export function AdminDashboardPage() {
   useEffect(() => {
     if (!token) return;
     let active = true;
-    getDashboardStats(token)
+    getIndicators(token)
       .then((data) => {
         if (!active) return;
         setStats(data);
@@ -75,7 +70,6 @@ export function AdminDashboardPage() {
         </div>
         <div className="admin-actions">
           <button type="button" className="btn btn-ghost" onClick={() => void load()}>Actualizar</button>
-          <Link to="/admin/observabilidad" className="btn btn-primary">Observabilidad</Link>
         </div>
       </header>
 
@@ -83,11 +77,12 @@ export function AdminDashboardPage() {
 
       <section className="stats-grid" aria-label="Indicadores">
         <Stat label="Reservas" value={stats.totalBookings} />
-        <Stat label="Confirmadas" value={stats.confirmedBookings} />
-        <Stat label="Canceladas" value={stats.cancelledBookings} />
+        <Stat label="Por la web" value={stats.bookingsByChannel.web} />
+        <Stat label="Por Booking" value={stats.bookingsByChannel.booking} />
         <Stat label="Pasajeros" value={stats.totalPassengers} />
-        <Stat label="Ingresos confirmados" value={usd(stats.totalRevenue)} />
-        <Stat label="Vuelos hoy" value={stats.totalFlightsToday} />
+        <Stat label="Ingresos" value={formatMoney(stats.revenue)} />
+        <Stat label="Vuelos hoy" value={stats.flightsToday} />
+        <Stat label="Clientes / administradores" value={`${stats.customers} / ${stats.admins}`} />
       </section>
 
       <section className="card">
@@ -109,67 +104,31 @@ export function AdminDashboardPage() {
         </div>
 
         <div id={`admin-panel-${tab}`} role="tabpanel" aria-labelledby={`admin-tab-${tab}`} className="tab-panel">
-          {tab === 'FLIGHTS' && <AdminFlightsPanel />}
-
           {tab === 'SCHEDULE' && <RoutesPanel onChanged={() => void load()} />}
 
           {tab === 'FLEET' && <FleetPanel />}
 
           {tab === 'ROUTES' && (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th scope="col">Ruta</th>
-                    <th scope="col">Vuelos diarios</th>
-                    <th scope="col">Reservas confirmadas</th>
-                    <th scope="col">Ingresos</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {stats.routeStats.map((route) => (
-                    <tr key={route.route}>
-                      <td>{route.route}</td>
-                      <td>{route.flightsCount}</td>
-                      <td>{route.bookingsCount}</td>
-                      <td>{usd(route.totalRevenue)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {tab === 'BOOKINGS' && (
-            stats.recentBookings.length === 0 ? (
-              <p className="muted">Todavía no hay reservas.</p>
+            stats.byRoute.length === 0 ? (
+              <p className="muted">Todavía no hay ventas.</p>
             ) : (
               <div className="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th scope="col">PNR</th>
-                      <th scope="col">Creada</th>
                       <th scope="col">Ruta</th>
-                      <th scope="col">Pasajeros</th>
-                      <th scope="col">Estado</th>
-                      <th scope="col">Total</th>
+                      <th scope="col">Reservas</th>
+                      <th scope="col">Ingresos</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {stats.recentBookings.map((booking) => {
-                      const segments = booking.itineraries?.[0]?.segments ?? [];
-                      return (
-                        <tr key={booking.bookingId}>
-                          <td><strong>{booking.pnr}</strong></td>
-                          <td className="small">{formatDateTime(booking.createdAt)}</td>
-                          <td>{segments[0]?.departure.iataCode ?? '—'} → {segments.at(-1)?.arrival.iataCode ?? '—'}</td>
-                          <td>{booking.passengers?.length ?? 0}</td>
-                          <td><span className={`status status-${booking.status.toLowerCase()}`}>{STATUS_LABELS[booking.status] ?? booking.status}</span></td>
-                          <td>{formatMoney(booking.grandTotal)}</td>
-                        </tr>
-                      );
-                    })}
+                    {stats.byRoute.map((route) => (
+                      <tr key={`${route.origin}-${route.destination}`}>
+                        <td>{cityOf(route.origin)} → {cityOf(route.destination)} <span className="muted small">({route.origin}-{route.destination})</span></td>
+                        <td>{route.bookings}</td>
+                        <td>{formatMoney(route.revenue, stats.revenue.currency)}</td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -177,15 +136,6 @@ export function AdminDashboardPage() {
           )}
         </div>
       </section>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="stat-card">
-      <p className="muted small">{label}</p>
-      <p className="stat-value">{value}</p>
     </div>
   );
 }

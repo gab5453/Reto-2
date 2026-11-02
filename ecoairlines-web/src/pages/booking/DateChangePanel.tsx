@@ -1,11 +1,11 @@
-import { useState, type FormEvent } from 'react';
-import { confirmDateChange, searchDateChange } from '../../api/endpoints';
+import { useRef, useState, type FormEvent } from 'react';
+import { confirmDateChange, searchDateChange } from '../../api/operations';
 import type { BookingDetail, DateChangeSearchResponse } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
+import { CardFields, useCardPayment } from '../../components/CardPayment';
 import { ProblemAlert } from '../../components/ProblemAlert';
 import { formatMoney, lastSaleDate, localDate, localTime, todayIso } from '../../lib/format';
 import { useIdempotencyKey } from '../../lib/request-ids';
-import { PaymentReferenceField } from './PaymentReferenceField';
 
 export function DateChangePanel({ booking, onChanged }: { booking: BookingDetail; onChanged: () => Promise<void> }) {
   const { token } = useAuth();
@@ -14,11 +14,12 @@ export function DateChangePanel({ booking, onChanged }: { booking: BookingDetail
   const [newDate, setNewDate] = useState(todayIso(7));
   const [offers, setOffers] = useState<DateChangeSearchResponse | null>(null);
   const [chosen, setChosen] = useState<string>();
-  const [paymentReference, setPaymentReference] = useState('');
+  const card = useCardPayment();
+  const lastReference = useRef<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [message, setMessage] = useState<string>();
-  const idempotency = useIdempotencyKey([chosen, paymentReference]);
+  const idempotency = useIdempotencyKey([chosen]);
 
   const selectedItinerary = itineraries.find((itinerary) => itinerary.itineraryId === itineraryId);
   const changeable = selectedItinerary?.pricingOptions[0]?.fareRules.isChangeable ?? false;
@@ -47,16 +48,24 @@ export function DateChangePanel({ booking, onChanged }: { booking: BookingDetail
     setBusy(true);
     setError(null);
     try {
+      // La diferencia a pagar (tarifa + impuestos + cargo) es lo que el ESB captura.
+      const paymentReference = needsPayment
+        ? await card.pay({ currency: booking.grandTotal.currency, total: Number(chosenOffer?.priceDifference?.totalToPay).toFixed(2) }, `Cambio de fecha — ${booking.pnr}`)
+        : undefined;
+      if (paymentReference && lastReference.current && lastReference.current !== paymentReference) idempotency.renew();
+      lastReference.current = paymentReference;
       const response = await confirmDateChange(token, idempotency.key(), booking.bookingId, {
         changeOfferId: chosen,
-        ...(needsPayment ? { payment: { paymentReference: paymentReference.trim() } } : {}),
+        ...(paymentReference ? { payment: { paymentReference } } : {}),
       });
       idempotency.renew();
+      card.done();
       setOffers(null);
       setChosen(undefined);
       setMessage(response.status === 202 ? 'Estamos confirmando el pago del cambio.' : '¡Cambio confirmado! Tus boletos fueron reemitidos.');
       await onChanged();
     } catch (caught) {
+      card.failed(caught);
       setError(caught);
     } finally {
       setBusy(false);
@@ -105,9 +114,9 @@ export function DateChangePanel({ booking, onChanged }: { booking: BookingDetail
 
       {chosen && (
         <div className="panel-form">
-          {needsPayment && <PaymentReferenceField value={paymentReference} onChange={setPaymentReference} />}
-          <button type="button" className="btn btn-primary" onClick={confirm} disabled={busy || (needsPayment && !paymentReference.trim())}>
-            {busy ? 'Confirmando…' : 'Confirmar cambio'}
+          {needsPayment && <CardFields card={card.card} onChange={card.setCard} disabled={busy} />}
+          <button type="button" className="btn btn-primary" onClick={confirm} disabled={busy}>
+            {busy ? 'Confirmando…' : needsPayment ? `Pagar ${formatMoney(chosenOffer?.priceDifference?.totalToPay, booking.grandTotal.currency)} y confirmar` : 'Confirmar cambio'}
           </button>
         </div>
       )}

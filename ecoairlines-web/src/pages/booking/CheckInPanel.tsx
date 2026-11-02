@@ -1,15 +1,14 @@
 import { useEffect, useState } from 'react';
 import { ApiError } from '../../api/client';
-import { checkIn, getBoardingPasses } from '../../api/endpoints';
+import { checkIn, getBoardingPasses } from '../../api/operations';
 import type { BoardingPass, BookingDetail } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
+import { BoardingPassCard } from '../../components/BoardingPassCard';
 import { ProblemAlert } from '../../components/ProblemAlert';
-import { QrImage } from '../../components/QrImage';
-import { cityOf } from '../../data/airports';
-import { localDate, localTime } from '../../lib/format';
+import { savePasses } from '../../lib/offline-trips';
 
 export function CheckInPanel({ booking, onChanged }: { booking: BookingDetail; onChanged: () => Promise<void> }) {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [passes, setPasses] = useState<BoardingPass[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -17,10 +16,13 @@ export function CheckInPanel({ booking, onChanged }: { booking: BookingDetail; o
   const loadPasses = async () => {
     if (!token) return;
     try {
-      setPasses((await getBoardingPasses(token, booking.bookingId)).boardingPasses);
+      const { boardingPasses } = await getBoardingPasses(token, booking.bookingId);
+      setPasses(boardingPasses);
+      // Para abrirlos sin conexión en el aeropuerto (PLAN.md §4.9).
+      if (user) savePasses(user.email, booking.bookingId, boardingPasses.map(toView));
     } catch (caught) {
-      // 404 BOARDING_PASS_NOT_AVAILABLE: todavía no hay check-in; no es un error para el usuario.
-      if (caught instanceof ApiError && caught.status === 404) setPasses([]);
+      // BOARDING_PASS_NOT_AVAILABLE: todavía no hay check-in; no es un error para el usuario.
+      if (caught instanceof ApiError && (caught.status === 404 || caught.problem?.code === 'BOARDING_PASS_NOT_AVAILABLE')) setPasses([]);
       else setError(caught);
     }
   };
@@ -44,10 +46,23 @@ export function CheckInPanel({ booking, onChanged }: { booking: BookingDetail; o
     }
   };
 
-  const segments = booking.itineraries?.flatMap((itinerary) => itinerary.segments) ?? [];
-  const passengerName = (id: string) => {
-    const passenger = booking.passengers?.find((candidate) => candidate.passengerId === id);
-    return passenger ? `${passenger.firstName} ${passenger.lastName}` : id;
+  const toView = (pass: BoardingPass) => {
+    const segment = booking.itineraries?.flatMap((itinerary) => itinerary.segments).find((candidate) => candidate.segmentId === pass.segmentId);
+    const passenger = booking.passengers?.find((candidate) => candidate.passengerId === pass.passengerId);
+    return {
+      bookingId: booking.bookingId,
+      pnr: booking.pnr,
+      passengerName: passenger ? `${passenger.firstName} ${passenger.lastName}` : pass.passengerId,
+      flightNumber: segment?.flightNumber ?? '',
+      origin: segment?.departure.iataCode ?? '',
+      destination: segment?.arrival.iataCode ?? '',
+      departureAt: segment?.departure.at ?? '',
+      seat: pass.seat,
+      boardingGroup: pass.boardingGroup,
+      boardingPosition: pass.boardingPosition,
+      gate: pass.gate,
+      barcode: pass.barcode,
+    };
   };
 
   return (
@@ -60,35 +75,10 @@ export function CheckInPanel({ booking, onChanged }: { booking: BookingDetail; o
 
       {passes && passes.length > 0 && (
         <div className="passes">
-          {passes.map((pass) => {
-            const segment = segments.find((candidate) => candidate.segmentId === pass.segmentId);
-            return (
-              <article className="boarding-pass" key={`${pass.passengerId}-${pass.segmentId}`}>
-                <header>
-                  <span>Pase de abordar</span>
-                  <strong>{segment?.flightNumber}</strong>
-                </header>
-                <div className="pass-body">
-                  <div>
-                    <p className="pass-name">{passengerName(pass.passengerId)}</p>
-                    {segment && (
-                      <p className="pass-route">
-                        {segment.departure.iataCode} → {segment.arrival.iataCode}
-                        <span className="muted small"> {cityOf(segment.departure.iataCode)} – {cityOf(segment.arrival.iataCode)}</span>
-                      </p>
-                    )}
-                    {segment && <p className="small">{localDate(segment.departure.at)} · Sale {localTime(segment.departure.at)}</p>}
-                    <dl className="pass-data">
-                      <div><dt>Asiento</dt><dd>{pass.seat === 'INF' ? 'En brazos' : pass.seat}</dd></div>
-                      <div><dt>Grupo</dt><dd>{pass.boardingGroup ?? '—'}</dd></div>
-                      <div><dt>Posición</dt><dd>{pass.boardingPosition ?? '—'}</dd></div>
-                    </dl>
-                  </div>
-                  <QrImage value={pass.barcode} label={`Código QR del pase de ${passengerName(pass.passengerId)}`} />
-                </div>
-              </article>
-            );
-          })}
+          <p className="muted small">Quedan guardados en este dispositivo para abrirlos sin conexión.</p>
+          {passes.map((pass) => (
+            <BoardingPassCard key={`${pass.passengerId}-${pass.segmentId}`} pass={toView(pass)} />
+          ))}
         </div>
       )}
     </div>

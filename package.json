@@ -1,7 +1,7 @@
 {
   "name": "ecoairlines",
   "version": "1.0.0",
-  "description": "EcoAirlines — API REST de vuelos en 4 capas (API, Business, DataManagement, DataAccess). Reto 1.",
+  "description": "EcoAirlines — Reto 1 (monolito en 4 capas) y Reto 2 (microservicios: packages/ y services/).",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
@@ -9,7 +9,13 @@
     "EcoAirlines.DataAccess",
     "EcoAirlines.DataManagement",
     "EcoAirlines.Business",
-    "EcoAirlines.API"
+    "EcoAirlines.API",
+    "packages/*",
+    "services/gestion/*",
+    "services/respuesta/*",
+    "services/externos/*",
+    "services/esb",
+    "services/gateway"
   ],
   "scripts": {
     "build": "tsc -b",
@@ -18,12 +24,16 @@
     "start": "node --enable-source-maps EcoAirlines.API/dist/main.js",
     "start:dev": "node EcoAirlines.API/scripts/dev.mjs",
     "token": "tsc -b && node EcoAirlines.API/scripts/generate-token.mjs",
-    "lint": "oxlint EcoAirlines.API/src EcoAirlines.API/test EcoAirlines.API/scripts EcoAirlines.Business/src EcoAirlines.DataManagement/src EcoAirlines.DataAccess/src",
+    "lint": "oxlint EcoAirlines.API/src EcoAirlines.API/test EcoAirlines.API/scripts EcoAirlines.Business/src EcoAirlines.DataManagement/src EcoAirlines.DataAccess/src tests packages services",
     "format": "prettier --write \"EcoAirlines.*/{src,test}/**/*.ts\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
-    "test:e2e": "vitest run --config ./vitest.config.e2e.ts"
+    "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
+    "test:conformidad-v2": "vitest run --config ./tests/conformidad-v2/vitest.config.ts",
+    "test:v2": "vitest run --config ./vitest.config.v2.ts",
+    "infra:up": "docker compose -f infra/docker-compose.yml up -d --build",
+    "infra:down": "docker compose -f infra/docker-compose.yml down"
   },
   "devDependencies": {
     "@nestjs/testing": "^12.0.1",

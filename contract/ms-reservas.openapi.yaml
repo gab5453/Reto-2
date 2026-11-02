@@ -1,0 +1,311 @@
+openapi: 3.0.3
+info:
+  title: MS.Reservas — hold, reservas, boletos, asientos, check-in y asistencia (respuesta)
+  version: 1.2.0
+  license:
+    name: Uso académico — Integración de Sistemas (sin licencia de distribución)
+  description: |
+    Microservicio de respuesta **MS.Reservas** de EcoAirlines (Reto 2). Implementa las **12 operaciones** del contrato
+    de Vuelos v2 cuyo `x-microservice` es `MS.Reservas`, referenciadas desde `vuelos-openapi-v2.yaml` (idénticas por
+    construcción), y **operaciones propias** bajo `/ecoairlines/...` que solo usa la web (vía GraphQL, D23): la reserva con
+    asistencia médica y la gestión de la asistencia.
+
+    | Operación | Cadena en el ESB |
+    |-----------|------------------|
+    | `createHold`, `getHold`, `releaseHold` | Enrutador → Offers (gRPC) |
+    | `listBookings`, `getBooking`, `listTickets`, `getTicket` | Enrutador → Bookings |
+    | `createBooking` / `createWebBooking` | Orquestador: saga "Crear reserva" (`201 CONFIRMED` o `202 TICKET_ISSUING`, D36) |
+    | `issueTickets` | Orquestador: saga "Emitir boletos" (idempotente, `issued: 0`) |
+    | `changeSeats` | Orquestador: saga "Cambiar asientos" (atómico) |
+    | `checkIn` | Orquestador: saga "Check-in" (48 h, boletos emitidos) |
+    | `listBoardingPasses` | Composición: CheckIn + FlightStatus (puerta vigente) |
+    | asistencia (propias) | Enrutador → Bookings (dato de salud: nunca en logs ni eventos externos) |
+    | `listRefunds` (propia, 1.2.0) | Enrutador → Bookings (los reembolsos de la reserva, que el contrato v2 no publica) |
+
+    **Pagos (D28):** con token de partner el `paymentReference` se **valida** (Booking ya cobró); con token de usuario se
+    **captura** en la Payment API.
+
+        ### Seguridad (D22, D29, D41)
+        Verifica el token con la JWKS de MS.G.Identity (el gateway ya lo verificó; aquí se verifica otra vez, defensa en
+        profundidad) y los scopes de cada operación:
+        - **Token de partner** (`token_use = partner`, Booking): las operaciones del contrato. Solo con este token se lee `X-User-Id`;
+          el dueño es `partner:<clientId>:<X-User-Id>`.
+        - **Token de usuario** (`token_use = user`, la web): equivale al `BearerAuth` del contrato. El dueño es su `sub`; `X-User-Id`
+          se ignora.
+        - **Token de servicio** (`token_use = service`, del ESB o de otro MS): se **rechaza** (`401`); solo lo aceptan el ESB y los MS.G.
+        El dueño **nunca** sale del cuerpo. Un recurso de otro dueño responde `404`.
+
+        ### Qué hace en cada petición (como hoy `EcoAirlines.API`)
+        1. Valida el DTO exacto al contrato (`required`, `enum`, `pattern`, `additionalProperties`…) → `400 VALIDATION_FAILED`.
+        2. Aplica el límite de peticiones → `429`.
+        3. Llama al **ESB** (enrutador, orquestador o composición) con **su propio** token de servicio (cliente interno del MS en
+           Identity, scope `ecoairlines:esb`, D44: lo acepta el ESB y lo rechazan los MS.G), `X-Owner-Id` / `X-Actor-Id`,
+           `X-Correlation-Id` (sin cambiarlo), un `X-Request-Id` nuevo y la `Idempotency-Key` recibida (el ESB la resuelve, D6).
+        4. Arma la respuesta pública: quita los campos internos (`ownerId`, `channel`, `fares`…), agrega `_links` (HATEOAS) y
+           `Location` con la ruta `/api/v2/vuelos/...`, y traduce los errores a `ProblemDetails` v2.
+        5. Devuelve `X-Correlation-Id` en **toda** respuesta, también en los errores.
+servers:
+  - url: http://ms-reservas:8080/api/v2
+    description: Red interna (detrás del gateway, que publica /api/v2/vuelos/* y /api/graphql)
+  - url: http://localhost:5002/api/v2
+    description: Desarrollo local
+security:
+  - PartnerOAuth2: []
+  - BearerAuth: []
+tags:
+  - name: Propias (web)
+    description: Operaciones de EcoAirlines fuera del contrato del grupo (solo vía GraphQL)
+paths:
+  # contrato v2 · POST createHold
+  /vuelos/offers/hold:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1offers~1hold'
+  # contrato v2 · GET getHold, DELETE releaseHold
+  /vuelos/offers/hold/{holdId}:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1offers~1hold~1{holdId}'
+  # contrato v2 · GET listBookings, POST createBooking
+  /vuelos/bookings:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1bookings'
+  # contrato v2 · GET getBooking
+  /vuelos/bookings/{bookingId}:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1bookings~1{bookingId}'
+  # contrato v2 · POST issueTickets, GET listTickets
+  /vuelos/bookings/{bookingId}/tickets:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1bookings~1{bookingId}~1tickets'
+  # contrato v2 · GET getTicket
+  /vuelos/bookings/{bookingId}/tickets/{ticketId}:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1bookings~1{bookingId}~1tickets~1{ticketId}'
+  # contrato v2 · PUT changeSeats
+  /vuelos/bookings/{bookingId}/seats:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1bookings~1{bookingId}~1seats'
+  # contrato v2 · POST checkIn
+  /vuelos/bookings/{bookingId}/check-in:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1bookings~1{bookingId}~1check-in'
+  # contrato v2 · GET listBoardingPasses
+  /vuelos/bookings/{bookingId}/boarding-passes:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1bookings~1{bookingId}~1boarding-passes'
+  # ----------------------------------------------------- propias (solo web, vía GraphQL)
+  /ecoairlines/bookings:
+    post:
+      tags: [Propias (web)]
+      operationId: createWebBooking
+      summary: "Crear una reserva desde la web, con asistencia médica opcional"
+      description: "Misma saga que `createBooking` del contrato, más la asistencia. Canal `WEB`: el pago se captura en la Payment API."
+      security:
+        - UserJwt: [flights:book]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebBookingRequest'
+      responses:
+        '201':
+          description: Reserva creada y boletos emitidos
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/BookingDetail'
+        '202':
+          description: Emisión en curso (TICKET_ISSUING)
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/BookingDetail'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '409':
+          $ref: '#/components/responses/Problem409'
+        '422':
+          $ref: '#/components/responses/Problem422'
+  /ecoairlines/bookings/{bookingId}/assistance:
+    get:
+      tags: [Propias (web)]
+      operationId: listAssistance
+      summary: "Asistencia médica de los pasajeros de una reserva"
+      security:
+        - UserJwt: [flights:read]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: Asistencia por pasajero (dato de salud; solo el dueño o un administrador)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-g-bookings.openapi.yaml#/components/schemas/PassengerAssistance'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+  /ecoairlines/bookings/{bookingId}/refunds:
+    get:
+      tags: [Propias (web)]
+      operationId: listRefunds
+      summary: "Reembolsos de una reserva (si se canceló)"
+      security:
+        - UserJwt: [flights:read]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: Reembolsos calculados o ejecutados (V2.13, `Booking.refunds` de GraphQL); vacío si no se canceló
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-g-bookings.openapi.yaml#/components/schemas/Refund'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+  /ecoairlines/bookings/{bookingId}/passengers/{passengerId}/assistance:
+    put:
+      tags: [Propias (web)]
+      operationId: saveAssistance
+      summary: "Pedir o cambiar la asistencia de un pasajero"
+      security:
+        - UserJwt: [flights:book]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/BookingId'
+        - $ref: '#/components/parameters/PassengerId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-bookings.openapi.yaml#/components/schemas/AssistanceRequest'
+      responses:
+        '200':
+          description: Asistencia guardada
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-bookings.openapi.yaml#/components/schemas/PassengerAssistance'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+    delete:
+      tags: [Propias (web)]
+      operationId: deleteAssistance
+      summary: "Quitar la asistencia de un pasajero"
+      security:
+        - UserJwt: [flights:book]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/BookingId'
+        - $ref: '#/components/parameters/PassengerId'
+      responses:
+        '204':
+          description: Quitada
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+components:
+  securitySchemes:
+    PartnerOAuth2:
+      $ref: './vuelos-openapi-v2.yaml#/components/securitySchemes/PartnerOAuth2'
+    BearerAuth:
+      $ref: './vuelos-openapi-v2.yaml#/components/securitySchemes/BearerAuth'
+    PartnerClientBasic:
+      $ref: './ms-g-identity.openapi.yaml#/components/securitySchemes/PartnerClientBasic'
+    UserJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de usuario de la web (`token_use = user`), emitido por MS.G.Identity. Lo reenvía el gateway GraphQL.
+
+  parameters:
+    CorrelationId:
+      $ref: './vuelos-openapi-v2.yaml#/components/parameters/CorrelationId'
+    BookingId:
+      $ref: './vuelos-openapi-v2.yaml#/components/parameters/BookingId'
+    PassengerId:
+      name: passengerId
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 20
+      example: PAX-1
+    IdempotencyKey:
+      $ref: './vuelos-openapi-v2.yaml#/components/parameters/IdempotencyKey'
+
+  responses:
+    Problem400:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem400'
+    Problem401:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem401'
+    Problem403:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem403'
+    Problem404:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem404'
+    Problem409:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem409'
+    Problem422:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem422'
+    Problem429:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem429'
+    Problem503:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem503'
+
+  schemas:
+    ProblemDetails:
+      $ref: './vuelos-openapi-v2.yaml#/components/schemas/ProblemDetails'
+    WebBookingRequest:
+      type: object
+      additionalProperties: false
+      required: [booking]
+      description: Reserva de la web con asistencia opcional por pasajero (saga "Crear reserva (+ asistencia)").
+      properties:
+        booking:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/BookingRequest'
+        assistance:
+          type: array
+          maxItems: 9
+          items:
+            # `AssistanceRequest` + `passengerId`, declarado completo: un `allOf` con `additionalProperties: false` (el de
+            # AssistanceRequest) rechazaría `passengerId` (corregido en 1.1.0, V2.12).
+            type: object
+            additionalProperties: false
+            required: [passengerId, type]
+            properties:
+              passengerId:
+                type: string
+                maxLength: 20
+              type:
+                $ref: './ms-g-bookings.openapi.yaml#/components/schemas/AssistanceType'
+              needsCompanion:
+                type: boolean
+                default: false
+              notes:
+                type: string
+                maxLength: 200

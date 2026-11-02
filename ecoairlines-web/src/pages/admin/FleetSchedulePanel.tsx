@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getFleetSchedule, type FleetLeg, type FleetSchedule } from '../../api/extensions';
+import { getFleetSchedule, type FleetLeg, type FleetSchedule } from '../../api/admin';
 import { useAuth } from '../../auth/AuthContext';
 import { ProblemAlert } from '../../components/ProblemAlert';
 import { AIRPORTS, cityOf } from '../../data/airports';

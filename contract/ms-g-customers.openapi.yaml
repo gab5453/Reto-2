@@ -1,0 +1,385 @@
+openapi: 3.0.3
+info:
+  title: MS.G.Customers — perfil del cliente (interno)
+  version: 1.1.0
+  license:
+    name: Uso académico — Integración de Sistemas (sin licencia de distribución)
+  description: |
+    Microservicio de gestión **MS.G.Customers** de EcoAirlines (Reto 2). Reemplaza al dominio `customers` del monolito
+    (`CustomerProfileService`, extensión `/customers/me` de `ecoairlines-extensions.yaml`).
+
+    **Responsabilidad:** el perfil del cliente de **nuestra web** (datos del pasajero titular para autocompletar el checkout) y su
+    **asistencia médica predeterminada**, que la web precarga al pasajero 1.
+
+    **Contrato interno.** Solo lo llama el **ESB** (enrutador), con su token de servicio. La web llega por GraphQL → MS.Clientes →
+    ESB. **Booking no lo usa**: el contrato v2 deja fuera de alcance la gestión de cuentas de cliente, así que un dueño de partner
+    (`partner:…`) recibe `403`.
+
+    **Base de datos propia:** `customers` (tabla `profiles`). Ningún otro servicio la lee.
+
+    ### Reglas
+    - Cada cliente tiene **un solo perfil**, identificado por su dueño (`X-Owner-Id` = `sub` del token de usuario). El dueño
+      **nunca** viaja en el cuerpo.
+    - Los campos son los mismos de `PassengerItem` del contrato v2 (nombres, documento, nacionalidad, nacimiento, género,
+      contacto), para que el checkout los copie sin traducir.
+    - `defaultAssistance` es un **dato de salud**: nunca aparece en logs, trazas ni eventos.
+
+    ### Trazabilidad
+    Toda operación acepta `X-Correlation-Id` (lo propaga el ESB sin cambiarlo) y `X-Request-Id`, y devuelve `X-Correlation-Id`.
+    Los errores usan el `ProblemDetails` del contrato v2.
+servers:
+  - url: http://ms-g-customers:8080
+    description: Red interna (Docker Compose / nube)
+  - url: http://localhost:4002
+    description: Desarrollo local
+security:
+  - EsbService: []
+tags:
+  - name: Perfil
+    description: Perfil del cliente de la web y su asistencia predeterminada
+  - name: Operación
+    description: Salud del servicio
+paths:
+  /health:
+    get:
+      tags: [Operación]
+      operationId: getHealth
+      summary: Estado del servicio y de su base de datos
+      security: []
+      responses:
+        '200':
+          description: En funcionamiento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: La base de datos no responde
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+
+  /profile:
+    parameters:
+      - $ref: '#/components/parameters/OwnerId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Perfil]
+      operationId: getProfile
+      summary: Perfil del dueño
+      responses:
+        '200':
+          description: Perfil
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/X-Correlation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerProfile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: El cliente todavía no guardó su perfil
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: El cliente aún no tiene perfil.
+                status: 404
+                code: PROFILE_NOT_FOUND
+                instance: /profile
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+    put:
+      tags: [Perfil]
+      operationId: saveProfile
+      summary: Crear o reemplazar el perfil del dueño
+      description: Si no existía se crea (`201`); si existía se reemplaza completo (`200`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerProfileRequest'
+            example:
+              firstName: María José
+              lastName: Andrade Vera
+              documentType: NATIONAL_ID
+              documentNumber: '1723456789'
+              nationality: EC
+              birthDate: '1995-03-14'
+              gender: F
+              contact:
+                email: maria.andrade@example.com
+                phone: '+593987654321'
+              defaultAssistance:
+                type: WCHR
+                needsCompanion: false
+      responses:
+        '200':
+          description: Perfil reemplazado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerProfile'
+        '201':
+          description: Perfil creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerProfile'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  securitySchemes:
+    EsbService:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de servicio del ESB (`token_use = service`, scope `ecoairlines:internal`), verificado con la JWKS de MS.G.Identity.
+
+  parameters:
+    OwnerId:
+      name: X-Owner-Id
+      in: header
+      required: true
+      description: |
+        Dueño del perfil: el `sub` del token de usuario, calculado por el MS de respuesta (D29). Solo lo envía el ESB. Un dueño
+        de partner (`partner:…`) recibe `403`.
+      schema:
+        type: string
+        format: uuid
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador del proceso completo (contrato v2, §6). Se propaga sin cambios.
+      schema:
+        type: string
+        maxLength: 100
+      example: corr-vuelos-7f3a9c
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: Identificador del salto anterior. Este servicio devuelve el suyo.
+      schema:
+        type: string
+        maxLength: 100
+
+  headers:
+    X-Correlation-Id:
+      description: El mismo valor recibido (o el creado si no llegó).
+      schema:
+        type: string
+
+  responses:
+    ValidationFailed:
+      description: Datos inválidos
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: Los datos enviados no son válidos.
+            status: 400
+            code: VALIDATION_FAILED
+            invalidParams:
+              - name: nationality
+                reason: pattern ^[A-Z]{2}$
+    Unauthorized:
+      description: Falta el token del ESB o no es válido
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    Forbidden:
+      description: El token no es del ESB, o el dueño es un partner
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+  schemas:
+    AssistanceType:
+      type: string
+      enum: [WCHR, WCHS, WCHC, BLND, DEAF, DPNA, MEDA]
+      description: |
+        Códigos IATA de servicio especial: `WCHR` silla hasta la puerta · `WCHS` no sube escaleras · `WCHC` inmóvil, necesita
+        ayuda hasta el asiento · `BLND` discapacidad visual · `DEAF` discapacidad auditiva · `DPNA` discapacidad intelectual o del
+        desarrollo · `MEDA` caso médico.
+
+    AssistanceRequest:
+      type: object
+      additionalProperties: false
+      required: [type]
+      description: Asistencia médica o de movilidad. **Dato de salud.**
+      properties:
+        type:
+          $ref: '#/components/schemas/AssistanceType'
+        needsCompanion:
+          type: boolean
+          default: false
+        notes:
+          type: string
+          maxLength: 200
+
+    CustomerProfileRequest:
+      type: object
+      additionalProperties: false
+      required: [firstName, lastName, documentType, documentNumber, nationality, birthDate, gender, contact]
+      properties:
+        firstName:
+          type: string
+          minLength: 1
+          maxLength: 60
+        lastName:
+          type: string
+          minLength: 1
+          maxLength: 60
+        documentType:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/DocumentType'
+        documentNumber:
+          type: string
+          minLength: 5
+          maxLength: 20
+        nationality:
+          type: string
+          pattern: ^[A-Z]{2}$
+          example: EC
+        documentExpiryDate:
+          type: string
+          format: date
+        birthDate:
+          type: string
+          format: date
+        gender:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/Gender'
+        contact:
+          type: object
+          additionalProperties: false
+          required: [email, phone]
+          properties:
+            email:
+              type: string
+              format: email
+              maxLength: 254
+            phone:
+              type: string
+              pattern: ^\+[1-9][0-9]{7,14}$
+              example: '+593987654321'
+        defaultAssistance:
+          $ref: '#/components/schemas/AssistanceRequest'
+
+    CustomerProfile:
+      type: object
+      additionalProperties: false
+      required: [firstName, lastName, documentType, documentNumber, nationality, birthDate, gender, contact, updatedAt]
+      description: |
+        `CustomerProfileRequest` más `updatedAt`. Se declara completo (no con `allOf`): `CustomerProfileRequest` tiene
+        `additionalProperties: false` y en un `allOf` rechazaría `updatedAt`.
+      properties:
+        firstName:
+          type: string
+          minLength: 1
+          maxLength: 60
+        lastName:
+          type: string
+          minLength: 1
+          maxLength: 60
+        documentType:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/DocumentType'
+        documentNumber:
+          type: string
+          minLength: 5
+          maxLength: 20
+        nationality:
+          type: string
+          pattern: ^[A-Z]{2}$
+        documentExpiryDate:
+          type: string
+          format: date
+        birthDate:
+          type: string
+          format: date
+        gender:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/Gender'
+        contact:
+          type: object
+          additionalProperties: false
+          required: [email, phone]
+          properties:
+            email:
+              type: string
+              format: email
+              maxLength: 254
+            phone:
+              type: string
+              pattern: ^\+[1-9][0-9]{7,14}$
+        defaultAssistance:
+          $ref: '#/components/schemas/AssistanceRequest'
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        database:
+          type: string
+          enum: [up, down, memory]
+        latency_ms:
+          type: integer
+          minimum: 0
+
+    ProblemDetails:
+      type: object
+      additionalProperties: false
+      description: Formato del `ProblemDetails` del contrato v2 (RFC 7807) con los códigos de este servicio.
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        code:
+          type: string
+          enum: [VALIDATION_FAILED, UNAUTHORIZED, FORBIDDEN, INTERNAL_ERROR, PROFILE_NOT_FOUND]
+        correlation_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        invalidParams:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              reason:
+                type: string

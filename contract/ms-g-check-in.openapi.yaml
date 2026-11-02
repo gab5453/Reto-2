@@ -1,0 +1,474 @@
+openapi: 3.0.3
+info:
+  title: MS.G.CheckIn — check-in, pases de abordar y aviso de asistencia (interno)
+  version: 1.0.0
+  license:
+    name: Uso académico — Integración de Sistemas (sin licencia de distribución)
+  description: |
+    Microservicio de gestión **MS.G.CheckIn** de EcoAirlines (Reto 2). Reemplaza a las reglas y los datos de check-in de
+    `CheckInService` del monolito.
+
+    **Responsabilidad:** registrar el **check-in** de cada pasajero por segmento, generar los **pases de abordar** (código de
+    barras PDF417 o QR, grupo y posición de abordaje) y marcar cuándo el aeropuerto confirmó la **asistencia** de un pasajero.
+
+    **Contrato interno.** Solo lo llama el **ESB**, con su token de servicio:
+    - **Orquestador**, saga "Check-in": Bookings (boletos emitidos) → FlightStatus (ventana de 48 h, vuelo no cancelado) →
+      Offers (asiento automático, `TICKETED → CHECKED_IN`) → **CheckIn** (este `POST`) → Bookings (asientos automáticos).
+      Compensación: `DELETE /check-ins/{bookingId}`.
+    - **Enrutador:** pases de abordar y asistencia lista.
+    - **Composición:** check-ins por vuelo (panel de operaciones y "Asistencia por vuelo").
+
+    CheckIn **no** valida la ventana de 48 h ni los boletos: eso lo hacen FlightStatus y Bookings en pasos anteriores de la saga.
+    Sí valida que no haya un check-in previo del mismo pasajero y segmento.
+
+    **Puerta:** el pase guarda la puerta conocida al hacer el check-in. Si después cambia (`PATCH` de estado de vuelo), el ESB
+    muestra la vigente de FlightStatus al leer los pases.
+
+    **Base de datos propia:** `check_in` (tabla `check_ins`, PK `booking_id + segment_id + passenger_id`).
+
+    ### Trazabilidad
+    Toda operación acepta `X-Correlation-Id` y `X-Request-Id` y devuelve `X-Correlation-Id`. Errores con el `ProblemDetails` del
+    contrato v2.
+servers:
+  - url: http://ms-g-check-in:8080
+    description: Red interna (Docker Compose / nube)
+  - url: http://localhost:4007
+    description: Desarrollo local
+security:
+  - EsbService: []
+tags:
+  - name: Check-in
+    description: Registrar y deshacer el check-in (saga "Check-in")
+  - name: Pases
+    description: Pases de abordar
+  - name: Asistencia
+    description: Aviso de asistencia lista
+  - name: Vuelos
+    description: Check-ins de un vuelo (composición)
+  - name: Operación
+    description: Salud del servicio
+paths:
+  /health:
+    get:
+      tags: [Operación]
+      operationId: getHealth
+      summary: Estado del servicio y de su base de datos
+      security: []
+      responses:
+        '200':
+          description: En funcionamiento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: La base de datos no responde
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+
+  /check-ins/{bookingId}:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [Check-in]
+      operationId: registerCheckIn
+      summary: Registrar el check-in de los pasajeros (paso de la saga "Check-in")
+      description: |
+        Todos o ninguno. Si algún pasajero ya tiene check-in en ese segmento responde `409 CHECK_IN_NOT_AVAILABLE` (el contrato
+        v2 pide que un segundo intento responda `409` y no se duplique). Responde el `CheckInResponse` del contrato v2 (sin
+        `_links`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterCheckInRequest'
+      responses:
+        '200':
+          description: Check-in realizado
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/X-Correlation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/CheckInResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Ya hay check-in de ese pasajero en ese segmento
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: El check-in ya fue realizado.
+                status: 409
+                code: CHECK_IN_NOT_AVAILABLE
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+    get:
+      tags: [Check-in]
+      operationId: getCheckIn
+      summary: Check-ins registrados de una reserva
+      responses:
+        '200':
+          description: Check-ins
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckInState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Check-in]
+      operationId: undoCheckIn
+      summary: Compensación — deshacer el check-in de una saga que falló
+      description: |
+        Borra los check-ins que registró esa saga (`sagaId`). Deshacer algo que ya no existe responde `204` (idempotente). No
+        se llama si el vuelo ya salió: la saga lo verifica antes en FlightStatus.
+      parameters:
+        - name: sagaId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Check-in deshecho
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /check-ins/{bookingId}/boarding-passes:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Pases]
+      operationId: listBoardingPasses
+      summary: Pases de abordar de la reserva (forma del contrato v2)
+      description: Sin check-in responde `409 BOARDING_PASS_NOT_AVAILABLE`, como el contrato v2.
+      responses:
+        '200':
+          description: Pases
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/BoardingPassListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: La reserva no tiene check-in
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: El pase de abordar aún no está disponible.
+                status: 409
+                code: BOARDING_PASS_NOT_AVAILABLE
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+
+  /check-ins/{bookingId}/assistance-ready:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/CorrelationId'
+    put:
+      tags: [Asistencia]
+      operationId: markAssistanceReady
+      summary: Marcar que el aeropuerto confirmó la asistencia de un pasajero (administrador)
+      description: Se puede antes o después del check-in. El ESB actualiza luego el estado en Bookings (`READY`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [passengerId, segmentId, ready]
+              properties:
+                passengerId:
+                  type: string
+                segmentId:
+                  type: string
+                ready:
+                  type: boolean
+      responses:
+        '200':
+          description: Guardado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckInState'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /flights/{flightNumber}/{date}/check-ins:
+    parameters:
+      - $ref: './vuelos-openapi-v2.yaml#/components/parameters/FlightNumber'
+      - name: date
+        in: path
+        required: true
+        schema:
+          type: string
+          format: date
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Vuelos]
+      operationId: listFlightCheckIns
+      summary: Check-ins de un vuelo (composición)
+      responses:
+        '200':
+          description: Check-ins del vuelo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlightCheckIns'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    EsbService:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de servicio del ESB (`token_use = service`, scope `ecoairlines:internal`), verificado con la JWKS de MS.G.Identity.
+
+  parameters:
+    BookingId:
+      $ref: './vuelos-openapi-v2.yaml#/components/parameters/BookingId'
+    ActorId:
+      name: X-Actor-Id
+      in: header
+      required: true
+      description: '`sub` del administrador (auditoría). Solo lo envía el ESB.'
+      schema:
+        type: string
+        format: uuid
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador del proceso completo (contrato v2, §6). Se propaga sin cambios.
+      schema:
+        type: string
+        maxLength: 100
+      example: corr-vuelos-7f3a9c
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 100
+
+  headers:
+    X-Correlation-Id:
+      description: El mismo valor recibido (o el creado si no llegó).
+      schema:
+        type: string
+
+  responses:
+    ValidationFailed:
+      description: Datos inválidos
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    Unauthorized:
+      description: Falta el token del ESB o no es válido
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    NotFound:
+      description: La reserva no tiene check-ins
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+  schemas:
+    RegisterCheckInRequest:
+      type: object
+      additionalProperties: false
+      required: [sagaId, pnr, passengers]
+      properties:
+        sagaId:
+          type: string
+          format: uuid
+        pnr:
+          type: string
+          pattern: ^[A-Z0-9]{6}$
+        passengers:
+          type: array
+          minItems: 1
+          maxItems: 9
+          items:
+            type: object
+            additionalProperties: false
+            required: [passengerId, passengerType, firstName, lastName, segments]
+            properties:
+              passengerId:
+                type: string
+              passengerType:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/PassengerType'
+              firstName:
+                type: string
+              lastName:
+                type: string
+              eTicketNumber:
+                type: string
+                nullable: true
+              segments:
+                type: array
+                minItems: 1
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [segmentId, flightNumber, origin, destination, departureAt, seat]
+                  properties:
+                    segmentId:
+                      type: string
+                    flightNumber:
+                      type: string
+                    origin:
+                      type: string
+                      pattern: ^[A-Z]{3}$
+                    destination:
+                      type: string
+                      pattern: ^[A-Z]{3}$
+                    departureAt:
+                      type: string
+                      format: date-time
+                    cabinClass:
+                      $ref: './vuelos-openapi-v2.yaml#/components/schemas/CabinClass'
+                    seat:
+                      type: string
+                      nullable: true
+                      description: Asiento asignado (o el automático de Offers); `null` para infantes
+                    gate:
+                      type: string
+                      nullable: true
+                      description: Puerta vigente en FlightStatus al hacer el check-in
+                    needsAssistance:
+                      type: boolean
+                      default: false
+                      description: Solo la marca, sin el tipo (dato de salud); prioriza el grupo de abordaje
+
+    CheckInState:
+      type: object
+      additionalProperties: false
+      required: [bookingId, items]
+      properties:
+        bookingId:
+          type: string
+          format: uuid
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [passengerId, segmentId, checkedInAt, assistanceReady]
+            properties:
+              passengerId:
+                type: string
+              segmentId:
+                type: string
+              seat:
+                type: string
+                nullable: true
+              checkedInAt:
+                type: string
+                format: date-time
+              boardingGroup:
+                type: string
+                nullable: true
+              assistanceReady:
+                type: boolean
+
+    FlightCheckIns:
+      type: object
+      additionalProperties: false
+      required: [flightNumber, date, checkedIn, assistanceReady]
+      properties:
+        flightNumber:
+          type: string
+        date:
+          type: string
+          format: date
+        checkedIn:
+          type: integer
+          minimum: 0
+        assistanceReady:
+          type: integer
+          minimum: 0
+        bookingIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        database:
+          type: string
+          enum: [up, down, memory]
+        latency_ms:
+          type: integer
+          minimum: 0
+
+    ProblemDetails:
+      type: object
+      additionalProperties: false
+      description: Formato del `ProblemDetails` del contrato v2 (RFC 7807) con los códigos de este servicio.
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        code:
+          type: string
+          enum: [VALIDATION_FAILED, UNAUTHORIZED, FORBIDDEN, NOT_FOUND, INTERNAL_ERROR, CHECK_IN_NOT_AVAILABLE, BOARDING_PASS_NOT_AVAILABLE, FLIGHT_ALREADY_DEPARTED]
+        correlation_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        invalidParams:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              reason:
+                type: string

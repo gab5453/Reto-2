@@ -1,0 +1,28 @@
+{
+  "name": "@ecoairlines/ms-g-check-in",
+  "version": "1.0.0",
+  "description": "MS.G.CheckIn (V2.6): check-in por pasajero y segmento, pases de abordar (BCBP en PDF417, grupo, puerta) y asistencia lista. Contrato: contract/ms-g-check-in.openapi.yaml.",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "node --enable-source-maps dist/main.js"
+  },
+  "dependencies": {
+    "@ecoairlines/shared": "1.0.0",
+    "@nestjs/common": "^12.0.1",
+    "@nestjs/core": "^12.0.1",
+    "@nestjs/platform-express": "^12.0.1",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "pg": "^8.23.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.23.1"
+  }
+}

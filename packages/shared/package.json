@@ -1,0 +1,46 @@
+{
+  "name": "@ecoairlines/shared",
+  "version": "1.0.0",
+  "description": "Código común de los microservicios (Reto 2): ProblemDetails v2, correlation ID, logs, health, OpenTelemetry, CloudEvents, dominio compartido, tipos del contrato v2 y la plantilla de servicio NestJS, el cliente del token de servicio y la plantilla de los MS de respuesta (respuesta/: contrato, validación, seguridad y cliente del ESB).",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./*": "./dist/*"
+  },
+  "scripts": {
+    "generate:contract": "openapi-typescript ../../contract/vuelos-openapi-v2.yaml -o src/contract/vuelos-v2.ts"
+  },
+  "dependencies": {
+    "@nestjs/common": "^12.0.1",
+    "@nestjs/core": "^12.0.1",
+    "@nestjs/platform-express": "^12.0.1",
+    "@opentelemetry/api": "~1.9.0",
+    "@opentelemetry/api-logs": "0.223.0",
+    "@opentelemetry/exporter-logs-otlp-http": "0.223.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "0.223.0",
+    "@opentelemetry/exporter-trace-otlp-http": "~0.223.0",
+    "@opentelemetry/instrumentation-grpc": "0.223.0",
+    "@opentelemetry/instrumentation-http": "~0.223.0",
+    "@opentelemetry/instrumentation-undici": "0.33.0",
+    "@opentelemetry/resources": "~2.12.0",
+    "@opentelemetry/sdk-logs": "0.223.0",
+    "@opentelemetry/sdk-metrics": "2.12.0",
+    "@opentelemetry/sdk-node": "~0.223.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "amqplib": "2.2.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "helmet": "^8.3.0",
+    "js-yaml": "^5.4.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "openapi-typescript": "^7.9.1"
+  }
+}

@@ -1,4 +1,4 @@
-import type { MoneyAmount } from '../api/types';
+import type { AssistanceInput, MoneyAmount } from '../api/types';
 
 export function formatMoney(amount: MoneyAmount | string | undefined, currency = 'USD'): string {
   if (amount === undefined) return '—';
@@ -74,6 +74,29 @@ export const STATUS_LABELS: Record<string, string> = {
   ISSUING: 'Emitiendo',
   VOIDED: 'Anulado',
   REFUNDED: 'Reembolsado',
+  ACTIVE: 'Activa',
+  BLOCKED: 'Bloqueada',
+  REQUESTED: 'Solicitada',
+  READY: 'Lista',
+};
+
+export const EMPTY_ASSISTANCE: AssistanceInput = { type: 'WCHR', needsCompanion: false, notes: '' };
+
+/** Quita las notas vacías: el contrato las admite opcionales y un texto en blanco no aporta nada. */
+export function cleanAssistance(assistance: AssistanceInput): AssistanceInput {
+  const notes = assistance.notes?.trim();
+  return { type: assistance.type, needsCompanion: assistance.needsCompanion, ...(notes ? { notes } : {}) };
+}
+
+/** Códigos IATA de asistencia (`AssistanceType` de gateway.graphql). */
+export const ASSISTANCE_LABELS: Record<string, string> = {
+  WCHR: 'Silla de ruedas hasta la puerta del avión',
+  WCHS: 'No puede subir escaleras',
+  WCHC: 'Movilidad reducida: ayuda hasta el asiento',
+  BLND: 'Discapacidad visual',
+  DEAF: 'Discapacidad auditiva',
+  DPNA: 'Discapacidad intelectual o del desarrollo',
+  MEDA: 'Caso médico',
 };
 
 export const FARE_DESCRIPTIONS: Record<string, string> = {

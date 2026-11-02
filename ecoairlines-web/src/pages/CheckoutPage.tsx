@@ -1,19 +1,19 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { createBooking, getHold, releaseHold } from '../api/endpoints';
-import { getMyProfile } from '../api/extensions';
-import type { PassengerItem, PassengerType } from '../api/types';
+import { createBooking, getHold, getMyProfile, releaseHold } from '../api/operations';
+import type { AssistanceInput, PassengerItem, PassengerType } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { useBookingFlow, type BookingFlow } from '../booking/BookingFlowContext';
+import { AssistanceFields } from '../components/AssistanceFields';
+import { CardFields, useCardPayment } from '../components/CardPayment';
 import { Countdown } from '../components/Countdown';
 import { Field, SelectField } from '../components/FormFields';
 import { ItinerarySummary } from '../components/ItinerarySummary';
 import { ProblemAlert } from '../components/ProblemAlert';
-import { BaggageSelectionPanel } from './checkout/BaggageSelectionPanel';
 import { SeatSelectionPanel, type CheckoutPassenger } from './checkout/SeatSelectionPanel';
-import { PASSENGER_LABELS, formatMoney, todayIso } from '../lib/format';
+import { EMPTY_ASSISTANCE, PASSENGER_LABELS, cleanAssistance, formatMoney, todayIso } from '../lib/format';
 import { AGE_RANGES, birthDateBounds, passengerIssues } from '../lib/passenger-validation';
-import { useIdempotencyKey } from '../lib/request-ids';
+import { retryWhileRunning, useIdempotencyKey } from '../lib/request-ids';
 
 interface PassengerForm {
   passengerId: string;
@@ -78,22 +78,25 @@ function Checkout({ flow }: { flow: BookingFlow }) {
   const [passengers, setPassengers] = useState<PassengerForm[]>(() => buildPassengers(flow));
   /** seats[passengerId][segmentId] = seatNumber */
   const [seats, setSeats] = useState<Record<string, Record<string, string>>>({});
-  /** bags[passengerId][itineraryId] = cantidad */
-  const [bags, setBags] = useState<Record<string, Record<string, number>>>({});
-  const [paymentReference, setPaymentReference] = useState('');
+  /** assistance[passengerId]: los pasajeros que marcaron «Necesita asistencia médica». */
+  const [assistance, setAssistance] = useState<Record<string, AssistanceInput>>({});
+  const card = useCardPayment();
+  const lastReference = useRef<string | undefined>(undefined);
   const [expired, setExpired] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [formError, setFormError] = useState<string>();
+  /** La tarjeta quedó pendiente: el servidor sigue y la web reintenta la misma petición hasta tener la reserva. */
+  const [confirming, setConfirming] = useState(false);
   const [prefilled, setPrefilled] = useState(false);
 
-  // Autocompleta al primer adulto con el perfil del cliente (extensión GET /customers/me), si lo registró.
+  // Autocompleta al primer adulto con el perfil del cliente (`myProfile`), si lo registró.
   useEffect(() => {
     if (!token) return;
     let active = true;
     getMyProfile(token)
       .then((profile) => {
-        if (!active) return;
+        if (!active || !profile) return;
         setPassengers((current) =>
           current.map((passenger, index) =>
             index === 0 && passenger.passengerType === 'ADULT' && !passenger.firstName && !passenger.documentNumber
@@ -113,9 +116,11 @@ function Checkout({ flow }: { flow: BookingFlow }) {
               : passenger,
           ),
         );
+        const first = profile.defaultAssistance;
+        if (first) setAssistance((current) => (current['a1'] ? current : { ...current, a1: { ...first, notes: first.notes ?? '' } }));
         setPrefilled(true);
       })
-      .catch(() => undefined); // Sin perfil (404) o sin el scope: el cliente completa el formulario a mano.
+      .catch(() => undefined); // Sin el scope o sin conexión: el cliente completa el formulario a mano.
     return () => {
       active = false;
     };
@@ -144,15 +149,12 @@ function Checkout({ flow }: { flow: BookingFlow }) {
     };
   });
 
+  /** La reserva sin el pago: el `paymentReference` lo da la pasarela al enviar. */
   const request = useMemo(
     () => ({
       holdId: flow.hold.holdId,
-      payment: { paymentReference: paymentReference.trim() },
       passengers: passengers.map((form): PassengerItem => {
         const assignedSeats = Object.entries(seats[form.passengerId] ?? {}).map(([segmentId, seatNumber]) => ({ segmentId, seatNumber }));
-        const extraBaggage = Object.entries(bags[form.passengerId] ?? {})
-          .filter(([, quantity]) => quantity > 0)
-          .map(([itineraryId, quantity]) => ({ itineraryId, quantity }));
         return {
           passengerId: form.passengerId,
           passengerType: form.passengerType,
@@ -167,20 +169,15 @@ function Checkout({ flow }: { flow: BookingFlow }) {
           gender: form.gender,
           contact: { email: form.email.trim(), phone: form.phone.trim() },
           ...(assignedSeats.length ? { assignedSeats } : {}),
-          ...(extraBaggage.length ? { extraBaggage } : {}),
         };
       }),
+      ...(Object.keys(assistance).length
+        ? { assistance: Object.entries(assistance).map(([passengerId, item]) => ({ passengerId, ...cleanAssistance(item) })) }
+        : {}),
     }),
-    [flow.hold.holdId, passengers, seats, bags, paymentReference],
+    [flow.hold.holdId, passengers, seats, assistance],
   );
   const idempotency = useIdempotencyKey([JSON.stringify(request)]);
-
-  const bagsTotal = flow.choices.reduce((sum, choice) => {
-    const price = Number(choice.pricing.extraCheckedBaggagePrice?.total ?? 0);
-    const quantity = Object.values(bags).reduce((acc, perItinerary) => acc + (perItinerary[choice.itineraryId] ?? 0), 0);
-    return sum + price * quantity;
-  }, 0);
-  const total = Number(flow.hold.lockedPrice.total) + bagsTotal;
 
   const update = (index: number, patch: Partial<PassengerForm>) =>
     setPassengers((current) => current.map((passenger, position) => (position === index ? { ...passenger, ...patch } : passenger)));
@@ -207,21 +204,27 @@ function Checkout({ flow }: { flow: BookingFlow }) {
       const [position, fields] = invalid;
       return setFormError(`Revisa al pasajero ${Number(position) + 1}: ${Object.values(fields)[0]}`);
     }
-    if (!/^pay_[A-Za-z0-9_-]{3,64}$/.test(paymentReference.trim())) {
-      return setFormError('Ingresa la referencia de pago entregada por la pasarela (formato pay_…).');
-    }
     setFormError(undefined);
     setBusy(true);
     setError(null);
     try {
-      const response = await createBooking(token, idempotency.key(), request);
+      // Se cobra exactamente el precio congelado del hold: es el monto que el ESB captura (AMOUNT_MISMATCH si no).
+      const paymentReference = await card.pay(flow.hold.lockedPrice, `Reserva EcoAirlines — hold ${flow.hold.holdId.slice(0, 8)}`);
+      // Otra autorización es otra petición: una clave nueva (con la anterior sería IDEMPOTENCY_KEY_REUSED).
+      if (lastReference.current && lastReference.current !== paymentReference) idempotency.renew();
+      lastReference.current = paymentReference;
+      const key = idempotency.key();
+      const response = await retryWhileRunning(() => createBooking(token, key, { ...request, payment: { paymentReference } }), () => setConfirming(true));
       idempotency.renew();
+      card.done();
       setFlow(null);
       navigate(`/mis-viajes/${response.data.bookingId}`, { state: { justBooked: response.status } });
     } catch (caught) {
+      card.failed(caught);
       setError(caught);
     } finally {
       setBusy(false);
+      setConfirming(false);
     }
   };
 
@@ -277,6 +280,28 @@ function Checkout({ flow }: { flow: BookingFlow }) {
                     options={adults.map((adult, position) => [adult.passengerId, adult.firstName ? `${adult.firstName} ${adult.lastName}` : `Adulto ${position + 1}`])} />
                 )}
               </div>
+              {passenger.passengerType !== 'INFANT' && (
+                <div className="assistance-box">
+                  <label className="inline-field">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(assistance[passenger.passengerId])}
+                      onChange={(event) =>
+                        setAssistance(({ [passenger.passengerId]: _removed, ...others }) =>
+                          event.target.checked ? { ...others, [passenger.passengerId]: EMPTY_ASSISTANCE } : others,
+                        )
+                      }
+                    />
+                    Necesita asistencia médica
+                  </label>
+                  {assistance[passenger.passengerId] && (
+                    <AssistanceFields
+                      value={assistance[passenger.passengerId]!}
+                      onChange={(value) => setAssistance((current) => ({ ...current, [passenger.passengerId]: value }))}
+                    />
+                  )}
+                </div>
+              )}
               {index > 0 && (
                 <button type="button" className="btn btn-ghost btn-sm" onClick={() => update(index, { email: passengers[0]!.email, phone: passengers[0]!.phone })}>
                   Usar el contacto del pasajero 1
@@ -307,43 +332,22 @@ function Checkout({ flow }: { flow: BookingFlow }) {
           </section>
         )}
 
-        {seated.length > 0 && (
-          <section className="card" aria-labelledby="equipaje-title">
-            <h2 id="equipaje-title">Equipaje adicional <span className="muted small">(opcional)</span></h2>
-            <BaggageSelectionPanel
-              itineraries={flow.offer.itineraries.map((itinerary, index) => ({ itinerary, pricing: flow.choices[index]!.pricing }))}
-              passengers={seatedPeople}
-              bags={bags}
-              onChange={(passengerId, itineraryIds, quantity) =>
-                setBags((all) => ({
-                  ...all,
-                  [passengerId]: { ...all[passengerId], ...Object.fromEntries(itineraryIds.map((itineraryId) => [itineraryId, quantity])) },
-                }))
-              }
-            />
-          </section>
-        )}
-
         <section className="card" aria-labelledby="pago-title">
           <h2 id="pago-title">Pago</h2>
-          <p className="muted small">
-            El pago lo procesa nuestra pasarela segura (Payment API). EcoAirlines nunca recibe ni guarda datos de tarjeta: solo la referencia del pago aprobado.
-          </p>
-          <div className="grid-2">
-            <Field label="Referencia de pago" value={paymentReference} onChange={setPaymentReference} placeholder="pay_…" maxLength={68} />
-            <div className="field field-end">
-              <button type="button" className="btn btn-ghost" onClick={() => setPaymentReference(`pay_demo_${crypto.randomUUID().slice(0, 8)}`)}>
-                Generar referencia de prueba
-              </button>
-            </div>
-          </div>
-          <p className="muted small">Entorno de pruebas: <code>pay_async_…</code> simula un pago en proceso y <code>pay_declined_…</code> uno rechazado.</p>
+          <CardFields card={card.card} onChange={card.setCard} disabled={busy} />
+          <p className="muted small">¿Necesitas maletas extra? Agrégalas después desde «Mis viajes», con su propio pago.</p>
         </section>
 
+        {confirming && (
+          <div className="alert alert-info" role="status">
+            <p className="alert-title">Estamos confirmando tu pago con el banco.</p>
+            <p>Tu tarjeta quedó pendiente de aprobación; esto puede tardar hasta un minuto. No cierres esta página.</p>
+          </div>
+        )}
         {formError && <p className="form-error" role="alert">{formError}</p>}
         {error ? <ProblemAlert error={error} /> : null}
         <button type="submit" className="btn btn-primary btn-lg" disabled={busy}>
-          {busy ? 'Confirmando…' : `Pagar y reservar ${formatMoney(String(total.toFixed(2)), flow.hold.lockedPrice.currency)}`}
+          {busy ? 'Confirmando…' : `Pagar y reservar ${formatMoney(flow.hold.lockedPrice)}`}
         </button>
       </form>
 
@@ -352,9 +356,7 @@ function Checkout({ flow }: { flow: BookingFlow }) {
           <p className="small muted">Tu precio está congelado por</p>
           <Countdown expiresAt={flow.hold.expiresAt} onExpire={onExpire} />
           <dl className="price-list">
-            <div><dt>Vuelos</dt><dd>{formatMoney(flow.hold.lockedPrice)}</dd></div>
-            {bagsTotal > 0 && <div><dt>Maletas extra</dt><dd>{formatMoney(String(bagsTotal.toFixed(2)))}</dd></div>}
-            <div className="price-total"><dt>Total</dt><dd>{formatMoney(String(total.toFixed(2)), flow.hold.lockedPrice.currency)}</dd></div>
+            <div className="price-total"><dt>Total</dt><dd>{formatMoney(flow.hold.lockedPrice)}</dd></div>
           </dl>
           <button type="button" className="btn btn-ghost btn-sm" onClick={release}>Cancelar y liberar asientos</button>
         </div>

@@ -1,0 +1,766 @@
+openapi: 3.0.3
+info:
+  title: Payment API simulada — pagos con tarjeta del canal web de EcoAirlines (sistema externo)
+  version: 1.0.0
+  license:
+    name: Uso académico — Integración de Sistemas (sin licencia de distribución)
+  description: |
+    Pasarela de pagos **simulada** para el **canal web** de EcoAirlines (Reto 2, decisiones D7 y D28 de `PLAN/PLAN.md`).
+    Hace el papel de un sistema externo como Stripe o PayPhone: **no es un microservicio de EcoAirlines** y no participa en las
+    ventas de Booking (ahí cobra Booking y la aerolínea solo valida la referencia).
+
+    > **ENTORNO DE PRUEBA.** Nunca procesa tarjetas reales ni mueve dinero. Solo acepta las tarjetas de prueba de la tabla y
+    > números ficticios válidos por Luhn.
+
+    ### Quién la llama y con qué clave
+    | Llamador | Operaciones | Autenticación |
+    |----------|-------------|---------------|
+    | **Navegador** (la web) | tokenizar la tarjeta, autorizar el pago, ver las tarjetas de prueba | **Clave pública** `pk_test_…` en `X-Api-Key` (se puede ver en el navegador; CORS solo para el origen de la web) |
+    | **ESB** (adaptador de pagos) | consultar, **capturar**, anular y reembolsar | **Clave secreta** `sk_test_…` como `Authorization: Bearer` (solo en el servidor; nunca llega al navegador) |
+
+    El token de servicio del ESB (D41) **no** sirve aquí: es un sistema externo con sus propias claves, como una pasarela real.
+
+    ### Flujo: autorizar en el navegador, capturar en la saga
+    ```
+    Navegador ──tarjeta──▶ POST /payment-methods ──token──▶ POST /payments (AUTHORIZED) ──paymentReference──▶ GraphQL ▶ … ▶ ESB
+    ESB (paso "pago*" de la saga) ──▶ POST /payments/{ref}/capture  (monto exacto, una sola vez)            → CAPTURED
+    Si la saga falla antes de capturar ──▶ POST /payments/{ref}/void                                          → VOIDED
+    Si falla después, o en una cancelación ──▶ POST /refunds                                                  → reembolso
+    ```
+    - **Autorizar** reserva el monto en la tarjeta pero no lo cobra. Una autorización sin capturar vence a los **30 minutos**
+      (`EXPIRED`).
+    - **Capturar** es lo que realmente cobra y marca la referencia como **usada** (tabla `used_references`): una referencia se
+      captura **una sola vez** y por el **monto exacto** autorizado. Así un `paymentReference` no puede pagar dos reservas
+      (D34), aunque alguien lo reenvíe.
+    - Pagos con la tarjeta "pendiente": quedan `PENDING` unos 30 s y luego pasan a `AUTHORIZED`. Mientras tanto la captura
+      responde `409 PAYMENT_NOT_CAPTURABLE`; el ESB responde `202` y reintenta con un mensaje diferido (RabbitMQ).
+
+    ### Datos de tarjeta (decisión D7)
+    - El número y el CVV solo viajan en `POST /payment-methods`, por HTTPS. Se valida **Luhn**, la **marca** por los primeros
+      dígitos (Visa `4`, Mastercard `51–55` y `2221–2720`, Amex `34`/`37`), el **vencimiento futuro** y el **CVV** (3 dígitos,
+      4 en Amex).
+    - Se guarda **solo** la marca, los últimos 4 dígitos y el vencimiento. El número completo y el CVV **nunca** se guardan, se
+      devuelven ni se registran en logs.
+    - Un token de tarjeta sirve para **un solo** pago y vence a los 15 minutos.
+
+    ### Tarjetas de prueba (`GET /test-cards`, botón «Usar tarjeta de prueba» de la web)
+    | Número | Resultado al autorizar |
+    |--------|------------------------|
+    | `4242 4242 4242 4242` | `AUTHORIZED` (Visa) |
+    | `5555 5555 5555 4444` | `AUTHORIZED` (Mastercard) |
+    | `4000 0000 0000 0002` | `DECLINED` · `card_declined` |
+    | `4000 0000 0000 9995` | `DECLINED` · `insufficient_funds` |
+    | `4000 0000 0000 3220` | `PENDING` → `AUTHORIZED` a los ~30 s |
+
+    Cualquier otro número válido por Luhn se autoriza; uno inválido se rechaza al tokenizar (`CARD_NUMBER_INVALID`).
+
+    ### Idempotencia y trazabilidad
+    - `Idempotency-Key` (UUID) **obligatoria** en autorizar y reembolsar: un reintento devuelve la misma respuesta con
+      `Idempotent-Replayed: true`; con otro cuerpo, `409 IDEMPOTENCY_KEY_REUSED`. Capturar y anular son idempotentes por su
+      `orderId`.
+    - Acepta y devuelve `X-Correlation-Id`; lo guarda junto a cada pago para poder seguir una compra entre sistemas.
+
+    **Base de datos propia:** `payment` (`payment_methods`, `payments`, `used_references`, `refunds`).
+servers:
+  - url: http://payment-api:8080
+    description: Red interna (lo llama el ESB)
+  - url: http://localhost:4010
+    description: Desarrollo local (navegador y ESB)
+tags:
+  - name: Navegador
+    description: Operaciones con la clave pública (desde la web)
+  - name: ESB
+    description: Operaciones con la clave secreta (desde el servidor)
+  - name: Operación
+    description: Salud del servicio
+paths:
+  /health:
+    get:
+      tags: [Operación]
+      operationId: getHealth
+      summary: Estado del servicio y de su base de datos
+      security: []
+      responses:
+        '200':
+          description: En funcionamiento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: La base de datos no responde
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+
+  # ========================================================================= NAVEGADOR
+  /test-cards:
+    get:
+      tags: [Navegador]
+      operationId: listTestCards
+      summary: Tarjetas de prueba para el botón «Usar tarjeta de prueba»
+      security:
+        - PublishableKey: []
+      responses:
+        '200':
+          description: Tarjetas de prueba
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TestCard'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /payment-methods:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+    post:
+      tags: [Navegador]
+      operationId: tokenizeCard
+      summary: Tokenizar una tarjeta (el número y el CVV no se guardan)
+      security:
+        - PublishableKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CardRequest'
+            example:
+              holderName: MARIA ANDRADE
+              number: '4242424242424242'
+              expMonth: 12
+              expYear: 2028
+              cvv: '123'
+      responses:
+        '201':
+          description: Tarjeta tokenizada
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentMethod'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: Tarjeta inválida
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              examples:
+                luhn:
+                  value:
+                    type: about:blank
+                    title: El número de tarjeta no es válido.
+                    status: 422
+                    code: CARD_NUMBER_INVALID
+                    invalidParams: [{ name: number, reason: no cumple el algoritmo de Luhn }]
+                vencida:
+                  value:
+                    type: about:blank
+                    title: La tarjeta está vencida.
+                    status: 422
+                    code: CARD_EXPIRED
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /payments:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [Navegador]
+      operationId: authorizePayment
+      summary: Autorizar un pago con una tarjeta tokenizada
+      description: |
+        Reserva el monto en la tarjeta (no lo cobra). Un rechazo **no es un error**: responde `201` con `status = DECLINED` y el
+        `declineCode`, como las pasarelas reales. El monto lo envía el navegador, por eso el ESB lo vuelve a comprobar al
+        capturar (debe ser el precio congelado del hold).
+      security:
+        - PublishableKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthorizePaymentRequest'
+            example:
+              paymentMethodToken: pm_9f2c4e1a7b3d
+              amount: { currency: USD, total: '239.00' }
+              description: Reserva EcoAirlines — hold 3f1c2a9e
+      responses:
+        '201':
+          description: Pago creado (AUTHORIZED, PENDING o DECLINED)
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /payments/pay_7Hq2mX9cLk4Z
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '200':
+          description: Reintento con la misma `Idempotency-Key` — devuelve el pago original
+          headers:
+            Idempotent-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: '`IDEMPOTENCY_KEY_REUSED` o `PAYMENT_METHOD_ALREADY_USED`'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '410':
+          description: El token de la tarjeta venció (`PAYMENT_METHOD_EXPIRED`)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  # ========================================================================= ESB
+  /payments/{paymentReference}:
+    parameters:
+      - $ref: '#/components/parameters/PaymentReference'
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [ESB]
+      operationId: getPayment
+      summary: Consultar un pago (estado, monto, si ya se capturó)
+      security:
+        - SecretKey: []
+      responses:
+        '200':
+          description: Pago
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/PaymentNotFound'
+
+  /payments/{paymentReference}/capture:
+    parameters:
+      - $ref: '#/components/parameters/PaymentReference'
+      - $ref: '#/components/parameters/CorrelationId'
+    post:
+      tags: [ESB]
+      operationId: capturePayment
+      summary: Capturar (cobrar) un pago autorizado — paso "pago*" de las sagas del canal web
+      description: |
+        Cobra el monto autorizado y marca la referencia como **usada** por `orderId`. Exige el **monto exacto**
+        (`AMOUNT_MISMATCH`). Repetir la captura con el mismo `orderId` devuelve el pago ya capturado (idempotente); con otro
+        `orderId` responde `409 ALREADY_CAPTURED`, así una referencia no paga dos reservas.
+      security:
+        - SecretKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaptureRequest'
+            example:
+              orderId: 1f0c8a8e-61d0-4b1e-9d0e-6f2b5c9a7d31
+              operation: BOOKING
+              expectedAmount: { currency: USD, total: '239.00' }
+      responses:
+        '200':
+          description: Pago capturado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/PaymentNotFound'
+        '409':
+          description: |
+            - `ALREADY_CAPTURED`: la referencia ya pagó otra orden.
+            - `PAYMENT_NOT_CAPTURABLE`: el pago está `PENDING` (reintentar después), `DECLINED`, `VOIDED` o `EXPIRED`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: El pago aún no se puede capturar.
+                status: 409
+                code: PAYMENT_NOT_CAPTURABLE
+                detail: Estado actual PENDING.
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+        '422':
+          description: '`AMOUNT_MISMATCH`: el monto esperado no es el autorizado'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /payments/{paymentReference}/void:
+    parameters:
+      - $ref: '#/components/parameters/PaymentReference'
+      - $ref: '#/components/parameters/CorrelationId'
+    post:
+      tags: [ESB]
+      operationId: voidPayment
+      summary: Anular una autorización sin capturar (compensación de una saga que falló antes del pago)
+      description: Libera el monto reservado. Anular uno ya anulado o vencido responde `200` (idempotente). Uno capturado → `409`.
+      security:
+        - SecretKey: []
+      responses:
+        '200':
+          description: Autorización anulada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/PaymentNotFound'
+        '409':
+          description: Ya se capturó; se compensa con un reembolso (`PAYMENT_ALREADY_CAPTURED`)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /refunds:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      tags: [ESB]
+      operationId: createRefund
+      summary: Reembolsar un pago capturado (cancelación del canal web o compensación)
+      description: |
+        Total o parcial. La suma de los reembolsos nunca supera lo capturado (`REFUND_EXCEEDS_CAPTURED`). En el simulador el
+        reembolso queda `SETTLED` de inmediato (el `refund.status` que guarda Bookings).
+      security:
+        - SecretKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefundRequest'
+            example:
+              paymentReference: pay_7Hq2mX9cLk4Z
+              amount: { currency: USD, total: '94.50' }
+              reason: CUSTOMER_REQUEST
+              orderId: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+      responses:
+        '201':
+          description: Reembolso realizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Refund'
+        '200':
+          description: Reintento con la misma `Idempotency-Key`
+          headers:
+            Idempotent-Replayed:
+              schema:
+                type: boolean
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Refund'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/PaymentNotFound'
+        '409':
+          description: '`PAYMENT_NOT_CAPTURED` o `IDEMPOTENCY_KEY_REUSED`'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '422':
+          description: '`REFUND_EXCEEDS_CAPTURED`'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+components:
+  securitySchemes:
+    PublishableKey:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: Clave pública `pk_test_…`. Puede estar en el navegador; solo permite tokenizar y autorizar.
+    SecretKey:
+      type: http
+      scheme: bearer
+      description: Clave secreta `sk_test_…`. Solo en el servidor (variable `PAYMENT_API_SECRET_KEY` del ESB).
+
+  parameters:
+    PaymentReference:
+      name: paymentReference
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/PaymentReferenceId'
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador del proceso completo (contrato v2, §6). Se guarda con el pago y se devuelve.
+      schema:
+        type: string
+        maxLength: 100
+
+  responses:
+    ValidationFailed:
+      description: Datos inválidos
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    Unauthorized:
+      description: Falta la clave o no es válida (o es la pública en una operación del ESB)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    PaymentNotFound:
+      description: El pago no existe
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: Pago no encontrado.
+            status: 404
+            code: PAYMENT_NOT_FOUND
+    TooManyRequests:
+      description: Más de 20 intentos por minuto desde la misma IP (protege contra pruebas masivas de tarjetas)
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+
+  schemas:
+    PaymentReferenceId:
+      type: string
+      pattern: ^pay_[A-Za-z0-9]{12,32}$
+      example: pay_7Hq2mX9cLk4Z
+
+    MoneyAmount:
+      type: object
+      additionalProperties: false
+      required: [currency, total]
+      description: Igual que `MoneyAmount` del contrato v2 (importe como texto decimal)
+      properties:
+        currency:
+          type: string
+          pattern: ^[A-Z]{3}$
+        total:
+          type: string
+          pattern: ^[0-9]+\.[0-9]{2}$
+          example: '239.00'
+
+    CardBrand:
+      type: string
+      enum: [VISA, MASTERCARD, AMEX]
+
+    PaymentStatus:
+      type: string
+      enum: [PENDING, AUTHORIZED, DECLINED, CAPTURED, VOIDED, EXPIRED, REFUNDED, PARTIALLY_REFUNDED]
+
+    CardRequest:
+      type: object
+      additionalProperties: false
+      required: [holderName, number, expMonth, expYear, cvv]
+      properties:
+        holderName:
+          type: string
+          minLength: 2
+          maxLength: 60
+        number:
+          type: string
+          pattern: ^[0-9]{13,19}$
+          writeOnly: true
+          description: Sin espacios. Nunca se guarda ni se registra.
+        expMonth:
+          type: integer
+          minimum: 1
+          maximum: 12
+        expYear:
+          type: integer
+          minimum: 2026
+          maximum: 2050
+        cvv:
+          type: string
+          pattern: ^[0-9]{3,4}$
+          writeOnly: true
+          description: Se descarta después de validar.
+
+    PaymentMethod:
+      type: object
+      additionalProperties: false
+      required: [token, brand, last4, expMonth, expYear, expiresAt]
+      properties:
+        token:
+          type: string
+          pattern: ^pm_[A-Za-z0-9]{12,32}$
+          example: pm_9f2c4e1a7b3d
+        brand:
+          $ref: '#/components/schemas/CardBrand'
+        last4:
+          type: string
+          pattern: ^[0-9]{4}$
+        expMonth:
+          type: integer
+        expYear:
+          type: integer
+        expiresAt:
+          type: string
+          format: date-time
+          description: El token sirve para un solo pago y vence a los 15 minutos
+
+    AuthorizePaymentRequest:
+      type: object
+      additionalProperties: false
+      required: [paymentMethodToken, amount]
+      properties:
+        paymentMethodToken:
+          type: string
+          pattern: ^pm_[A-Za-z0-9]{12,32}$
+        amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        description:
+          type: string
+          maxLength: 120
+
+    Payment:
+      type: object
+      additionalProperties: false
+      required: [paymentReference, status, amount, card, createdAt]
+      properties:
+        paymentReference:
+          $ref: '#/components/schemas/PaymentReferenceId'
+        status:
+          $ref: '#/components/schemas/PaymentStatus'
+        declineCode:
+          type: string
+          nullable: true
+          enum: [card_declined, insufficient_funds, null]
+        amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        capturedAmount:
+          $ref: '#/components/schemas/MoneyAmount'
+        refundedAmount:
+          $ref: '#/components/schemas/MoneyAmount'
+        card:
+          type: object
+          additionalProperties: false
+          required: [brand, last4]
+          properties:
+            brand:
+              $ref: '#/components/schemas/CardBrand'
+            last4:
+              type: string
+        orderId:
+          type: string
+          nullable: true
+          description: Orden que capturó la referencia (uso único)
+        createdAt:
+          type: string
+          format: date-time
+        authorizationExpiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        capturedAt:
+          type: string
+          format: date-time
+          nullable: true
+        correlationId:
+          type: string
+          nullable: true
+        testMode:
+          type: boolean
+          enum: [true]
+          description: Siempre `true` (es un simulador)
+
+    CaptureRequest:
+      type: object
+      additionalProperties: false
+      required: [orderId, operation, expectedAmount]
+      properties:
+        orderId:
+          type: string
+          maxLength: 64
+          description: '`sagaId` del ESB (o `bookingId`); idempotencia y uso único'
+        operation:
+          type: string
+          enum: [BOOKING, SEATS, BAGGAGE, DATE_CHANGE]
+        expectedAmount:
+          $ref: '#/components/schemas/MoneyAmount'
+
+    RefundRequest:
+      type: object
+      additionalProperties: false
+      required: [paymentReference, amount, reason]
+      properties:
+        paymentReference:
+          $ref: '#/components/schemas/PaymentReferenceId'
+        amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        reason:
+          type: string
+          enum: [CUSTOMER_REQUEST, FLIGHT_CANCELLED, SAGA_COMPENSATION, OTHER]
+        orderId:
+          type: string
+          maxLength: 64
+
+    Refund:
+      type: object
+      additionalProperties: false
+      required: [refundId, paymentReference, amount, status, createdAt]
+      properties:
+        refundId:
+          type: string
+          pattern: ^re_[A-Za-z0-9]{12,32}$
+        paymentReference:
+          $ref: '#/components/schemas/PaymentReferenceId'
+        amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        status:
+          type: string
+          enum: [SETTLED]
+        createdAt:
+          type: string
+          format: date-time
+
+    TestCard:
+      type: object
+      additionalProperties: false
+      required: [label, number, brand, expectedResult]
+      properties:
+        label:
+          type: string
+          example: Aprobada (Visa)
+        number:
+          type: string
+          example: '4242424242424242'
+        brand:
+          $ref: '#/components/schemas/CardBrand'
+        expectedResult:
+          type: string
+          enum: [AUTHORIZED, DECLINED_CARD, DECLINED_FUNDS, PENDING]
+        cvv:
+          type: string
+          example: '123'
+        expMonth:
+          type: integer
+          example: 12
+        expYear:
+          type: integer
+          example: 2030
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        database:
+          type: string
+          enum: [up, down, memory]
+        testMode:
+          type: boolean
+
+    ProblemDetails:
+      type: object
+      additionalProperties: false
+      description: Mismo formato que el `ProblemDetails` del contrato v2 (RFC 7807), con los códigos de la pasarela.
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        code:
+          type: string
+          enum:
+            - VALIDATION_FAILED
+            - UNAUTHORIZED
+            - RATE_LIMIT_EXCEEDED
+            - IDEMPOTENCY_KEY_REUSED
+            - CARD_NUMBER_INVALID
+            - CARD_BRAND_NOT_SUPPORTED
+            - CARD_EXPIRED
+            - CVV_INVALID
+            - PAYMENT_METHOD_EXPIRED
+            - PAYMENT_METHOD_ALREADY_USED
+            - PAYMENT_NOT_FOUND
+            - PAYMENT_NOT_CAPTURABLE
+            - PAYMENT_ALREADY_CAPTURED
+            - ALREADY_CAPTURED
+            - AMOUNT_MISMATCH
+            - PAYMENT_NOT_CAPTURED
+            - REFUND_EXCEEDS_CAPTURED
+        correlation_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        invalidParams:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              reason:
+                type: string

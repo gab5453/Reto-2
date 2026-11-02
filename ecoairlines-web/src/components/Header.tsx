@@ -14,8 +14,7 @@ const CUSTOMER_LINKS = [
 
 /** Solo se muestran con sesión de administrador; la API exige igualmente el scope ecoairlines:admin. */
 const ADMIN_LINKS = [
-  { to: '/admin', label: 'Panel admin', end: true },
-  { to: '/admin/observabilidad', label: 'Observabilidad' },
+  { to: '/admin', label: 'Portal admin', end: false },
   { to: '/estado-de-vuelo', label: 'Estado de vuelo' },
 ];
 

@@ -1,0 +1,1545 @@
+openapi: 3.0.3
+info:
+  title: MS.G.Identity — usuarios, rol, partners y emisión de tokens (interno)
+  version: 1.4.0
+  license:
+    name: Uso académico — Integración de Sistemas (sin licencia de distribución)
+  description: |
+    Microservicio de gestión **MS.G.Identity** de EcoAirlines (Reto 2). Reemplaza a `dev-auth`.
+
+    **Responsabilidad:** registro e inicio de sesión, emisión de los tokens, publicación de la clave pública (JWKS), gestión de
+    usuarios por parte del administrador (crear con rol, cambiar el rol, bloquear o activar) y, **desde la versión 1.1**, gestión
+    de **partners** (sistemas B2B como Booking Prototipo) y emisión de su **token de servicio OAuth2 `client_credentials`**, que
+    exige la seguridad en dos capas del contrato de Vuelos v2 (`vuelos-openapi-v2.yaml`, §5).
+
+    **Contrato interno.** Solo lo llama el **ESB** (enrutador y composición). La web y Booking nunca lo llaman directamente:
+    entran por el gateway y los microservicios de respuesta. El gateway publica `POST /api/v2/oauth2/token` (y el alias
+    `/oauth2/token`, hallazgo BKG-03), que llega aquí a `POST /oauth2/token`. El único endpoint que leen otros servicios es
+    `/.well-known/jwks.json`, para verificar los tokens sin llamar a Identity en cada petición.
+
+    **Base de datos propia:** `identity` (tablas `users`, `roles`, `role_scopes` y `partner_clients`). Ningún otro servicio la lee.
+
+    ### Roles (decisiones D16, D17 y D30 de `PLAN/PLAN.md`)
+    - Cada usuario tiene **un solo rol**: `CUSTOMER` (cliente) o `ADMIN` (administrador). Se conservan los nombres que ya
+      usan los tokens y la web del Reto 1; en pantalla se muestran como "Cliente" y "Administrador". **No hay rol OPS.**
+    - Los **scopes** del token salen de la tabla `role_scopes`, no del código:
+      - `CUSTOMER`: `flights:read flights:hold flights:book flights:cancel ecoairlines:profile`
+      - `ADMIN`: `flights:read flights:webhooks flights:ops flights:admin ecoairlines:admin`
+    - `flights:ops` (operaciones y cambio de estado de vuelo) y `flights:admin` (acuerdo de promociones) son scopes del
+      contrato v2; solo los tiene `ADMIN`.
+    - Los roles y sus scopes son datos semilla de solo lectura (se cambian con una migración, no desde el panel), para que un
+      administrador no pueda quitarse sus propios permisos por error.
+
+    ### Partners (decisiones D29 y D35)
+    - Un partner es un **sistema**, no una persona: se identifica con `clientId` (p. ej. `BOOKING_PROTOTIPO`, el mismo valor que
+      Booking envía en `salesChannel.partnerId`) y se autentica con `clientSecret`.
+    - Solo un `ADMIN` crea partners. El `clientSecret` lo **genera el servicio**, se devuelve **una sola vez** (al crear o al
+      rotar) y se guarda derivado con **scrypt**; nunca se vuelve a mostrar ni se registra en logs.
+    - Scopes que puede tener un partner (`PartnerScope`): `flights:read flights:hold flights:book flights:cancel
+      flights:webhooks flights:ops`. **Nunca** `flights:admin` (las promociones las define nuestro administrador, D35) ni
+      `ecoairlines:*` (funciones propias de la web).
+    - Un partner `BLOCKED` no obtiene tokens (`401 invalid_client`); los que ya tenga caducan solos (vida de 1 h).
+    - Semilla: el partner `BOOKING_PROTOTIPO` con todos los `PartnerScope`. Su secreto se define con `BOOKING_CLIENT_SECRET` en
+      la nube y se entrega al grupo de Booking por un canal privado.
+
+    ### Reglas de negocio
+    - `POST /auth/register` siempre crea un `CUSTOMER`. Nadie puede registrarse como `ADMIN`.
+    - Solo un `ADMIN` crea usuarios con cualquiera de los dos roles (`POST /users`).
+    - Un administrador **no puede cambiar su propio rol** ni **bloquearse a sí mismo** (`409 CANNOT_MODIFY_SELF`).
+    - No se puede dejar la aerolínea **sin administradores activos** (`409 LAST_ADMIN`).
+    - Un usuario `BLOCKED` no puede iniciar sesión (`403 ACCOUNT_BLOCKED`). Sus tokens vigentes caducan solos (vida de 1 h).
+    - Si un administrador quiere comprar como cliente, usa otra cuenta con rol `CUSTOMER` (D17).
+    - Las contraseñas y los secretos de partner se guardan derivados con **scrypt** y sal propia; nunca se devuelven ni se
+      registran en logs.
+
+    ### Seguridad entre servicios (desde la versión 1.2, igual en todos los MS.G)
+    - Todos los MS.G reciben en `Authorization` el **token de servicio del ESB** (`token_use = service`). Es la única forma de
+      llamarlos: así funcionan también las sagas que no tienen usuario (las que dispara un evento de Booking o un barrido).
+    - **Quién actúa** viaja en cabeceras que solo envía el ESB, nunca en el cuerpo:
+      - `X-Actor-Id`: `sub` del administrador que hace el cambio. Lo calcula el MS de respuesta desde el token del usuario, que
+        ya verificó (scope `ecoairlines:admin`). Identity, además, comprueba en su base que ese `sub` sea un `ADMIN` `ACTIVE`
+        (defensa en profundidad) y lo usa como autor (`createdBy`, `updatedBy`) y para la regla `CANNOT_MODIFY_SELF`.
+    - El servicio solo es accesible en la red interna; el token se exige igual (defensa en profundidad).
+
+    ### Cliente interno del ESB
+    - Cliente `ECOAIRLINES_ESB`, **solo de semilla** (no aparece en `/partners` ni se gestiona desde el panel). Su secreto se
+      define con `ESB_CLIENT_SECRET`. Pide su token en `POST /oauth2/token` igual que un partner y recibe `token_use = service`
+      con el scope `ecoairlines:internal`, que solo aceptan los MS.G. Los MS de respuesta y el gateway rechazan ese token.
+
+    ### Clientes internos de los MS de respuesta (D44, V2.12)
+    - `ECOAIRLINES_MS_VUELOS`, `ECOAIRLINES_MS_RESERVAS`, `ECOAIRLINES_MS_POSTVENTA`, `ECOAIRLINES_MS_CLIENTES` y
+      `ECOAIRLINES_MS_ADMIN`, **solo de semilla** como el del ESB. Secretos: `MS_VUELOS_CLIENT_SECRET`, `MS_RESERVAS_CLIENT_SECRET`,
+      `MS_POSTVENTA_CLIENT_SECRET`, `MS_CLIENTES_CLIENT_SECRET` y `MS_ADMIN_CLIENT_SECRET` (obligatorios en producción).
+    - Reciben `token_use = service` con el scope `ecoairlines:esb`: lo acepta **solo el ESB**; los MS.G lo rechazan (`403`), así
+      un MS de respuesta no puede saltarse el ESB. Pedir otro scope → `invalid_scope`.
+    - Estos identificadores (y `ECOAIRLINES_ESB`) están reservados: dar de alta un partner con uno de ellos → `409 PARTNER_ALREADY_EXISTS`.
+
+    ### Tokens emitidos (decisión D22)
+    Firma **RS256** con `kid`, vida de **1 h**, verificables con la misma JWKS. El claim `token_use` dice de qué tipo es; el
+    gateway y los microservicios de respuesta lo usan para decidir si leen `X-User-Id`.
+
+    | Tipo | Lo pide | `token_use` | `sub` | Otros claims |
+    |------|---------|-------------|-------|--------------|
+    | Usuario (web) | `POST /auth/login` o `/auth/register` | `user` | uuid del usuario | `scope`, `role`, `name`, `email` (V2.13: la query `me` del gateway), `iss`, `aud`, `iat`, `exp`, `jti` |
+    | Partner (Booking) | `POST /oauth2/token` | `partner` | `clientId` | `scope`, `name`, `iss`, `aud`, `iat`, `exp`, `jti` (sin `role`) |
+    | Servicio (ESB) | `POST /oauth2/token` | `service` | `ECOAIRLINES_ESB` | `scope = ecoairlines:internal`, `iss`, `aud`, `iat`, `exp`, `jti` |
+    | Servicio (MS de respuesta, D44) | `POST /oauth2/token` | `service` | `ECOAIRLINES_MS_<NOMBRE>` | `scope = ecoairlines:esb`, `iss`, `aud`, `iat`, `exp`, `jti` |
+
+    Con un token `partner`, el dueño de una reserva es `partner:<clientId>:<X-User-Id>` (D29); con un token `user`,
+    `X-User-Id` se ignora y el dueño es el `sub`.
+
+    ### Trazabilidad (decisión D31)
+    Toda operación acepta `X-Correlation-Id` (lo propaga el ESB, nunca lo cambia) y `X-Request-Id`. Toda respuesta, también los
+    errores, devuelve `X-Correlation-Id` y un `X-Request-Id` propio de este salto. Los errores llevan `correlation_id`.
+
+    ### Eventos
+    Identity no publica eventos: el ESB publica `user.created`, `user.role_changed`, `user.blocked`, `partner.created`,
+    `partner.blocked` y `partner.secret_rotated` después de cada operación exitosa (ver `contract/events.asyncapi.yaml`). Son
+    internos: nunca salen a Booking.
+
+    ### Usuarios de prueba (semilla, se conservan del Reto 1)
+    `demo@ecoairlines.test`, `maria@ecoairlines.test` y `luis@ecoairlines.test` (`CUSTOMER`) y `admin@ecoairlines.test`
+    (`ADMIN`). Sus `sub` son fijos (derivados del correo), así sus reservas siguen siendo suyas. Las claves de prueba están en el
+    README; en la nube la del administrador se define con `ADMIN_PASSWORD`.
+servers:
+  - url: http://ms-g-identity:8080
+    description: Red interna (Docker Compose / nube)
+  - url: http://localhost:4001
+    description: Desarrollo local
+tags:
+  - name: Autenticación
+    description: Registro, inicio de sesión y clave pública
+  - name: OAuth2
+    description: Token de servicio para partners (client_credentials)
+  - name: Usuarios
+    description: Gestión de usuarios por el administrador
+  - name: Partners
+    description: Gestión de sistemas B2B por el administrador
+  - name: Roles
+    description: Roles con sus permisos (solo lectura)
+  - name: Operación
+    description: Salud del servicio
+paths:
+  /health:
+    get:
+      tags: [Operación]
+      operationId: getHealth
+      summary: Estado del servicio y de su base de datos
+      description: Lo consulta la Composición del ESB para armar `GET /vuelos/health` del contrato v2.
+      security: []
+      responses:
+        '200':
+          description: En funcionamiento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: La base de datos no responde
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+
+  /.well-known/jwks.json:
+    get:
+      tags: [Autenticación]
+      operationId: getJwks
+      summary: Clave pública para verificar los tokens (de usuario y de partner)
+      description: |
+        La leen el gateway, los microservicios de respuesta y el ESB al arrancar (y la refrescan cada hora o al ver un `kid`
+        desconocido). Permite rotar la clave: durante la rotación se publican la clave nueva y la anterior.
+      security: []
+      responses:
+        '200':
+          description: Conjunto de claves públicas (RFC 7517)
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: public, max-age=3600
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Jwks'
+
+  /auth/register:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [Autenticación]
+      operationId: register
+      summary: Registro público de un cliente
+      description: Crea siempre un usuario `CUSTOMER` activo y devuelve su token (`token_use = user`).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              fullName: Cliente de Prueba
+              email: cliente.prueba@ecoairlines.test
+              password: ClavePrueba2026
+      responses:
+        '201':
+          description: Cuenta creada y token emitido
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/X-Correlation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '409':
+          $ref: '#/components/responses/EmailAlreadyRegistered'
+        '429':
+          $ref: '#/components/responses/TooManyAttempts'
+
+  /auth/login:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [Autenticación]
+      operationId: login
+      summary: Iniciar sesión y obtener un token de usuario
+      description: |
+        Un correo inexistente y una contraseña incorrecta responden igual (`401 INVALID_CREDENTIALS`), para no revelar qué
+        cuentas existen. `403 ACCOUNT_BLOCKED` solo se responde si la contraseña es correcta.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            examples:
+              cliente:
+                summary: Cliente de prueba
+                value:
+                  email: demo@ecoairlines.test
+                  password: EcoDemo2026
+      responses:
+        '200':
+          description: Credenciales correctas
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/X-Correlation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          description: Correo o contraseña incorrectos
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: Correo o contraseña incorrectos.
+                status: 401
+                code: INVALID_CREDENTIALS
+                instance: /auth/login
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+        '403':
+          description: La cuenta está bloqueada
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: La cuenta está bloqueada. Contacte al administrador.
+                status: 403
+                code: ACCOUNT_BLOCKED
+                instance: /auth/login
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+        '429':
+          $ref: '#/components/responses/TooManyAttempts'
+
+  /oauth2/token:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [OAuth2]
+      operationId: issuePartnerToken
+      summary: Token de servicio para un partner (OAuth2 client_credentials, RFC 6749 §4.4)
+      description: |
+        Lo usa **Booking Prototipo** (`PartnerOAuth2` del contrato v2). El partner se autentica con `client_id` y
+        `client_secret`, de una de estas dos formas (RFC 6749 §2.3.1):
+        - **`client_secret_basic`** (recomendada): cabecera `Authorization: Basic base64(client_id:client_secret)`.
+        - **`client_secret_post`**: `client_id` y `client_secret` en el cuerpo del formulario.
+
+        `scope` es opcional: si no llega, el token trae **todos** los scopes del partner; si llega, debe ser un subconjunto
+        (`invalid_scope` si pide uno que no tiene).
+
+        **Formato de errores:** este es el único endpoint que **no** usa `ProblemDetails`. Responde con el formato estándar de
+        OAuth2 (RFC 6749 §5.2: `error`, `error_description`), que es el que esperan las librerías de los clientes OAuth. Se
+        agregan `correlation_id` y `timestamp` para la trazabilidad.
+
+        Las respuestas llevan `Cache-Control: no-store` (RFC 6749 §5.1). Límite: 10 solicitudes por minuto por `client_id`.
+      security:
+        - PartnerClientBasic: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ClientCredentialsRequest'
+            examples:
+              basic:
+                summary: client_secret_basic (credenciales en la cabecera Authorization)
+                value:
+                  grant_type: client_credentials
+              post:
+                summary: client_secret_post (credenciales en el cuerpo)
+                value:
+                  grant_type: client_credentials
+                  client_id: BOOKING_PROTOTIPO
+                  client_secret: s3cr3t-solo-de-ejemplo-0123456789abcdef
+                  scope: flights:read flights:hold flights:book
+      responses:
+        '200':
+          description: Token emitido (`token_use = partner`)
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+            X-Correlation-Id:
+              $ref: '#/components/headers/X-Correlation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerTokenResponse'
+              example:
+                access_token: eyJhbGciOiJSUzI1NiIsImtpZCI6ImVjby0yMDI2LTEwIn0...
+                token_type: Bearer
+                expires_in: 3600
+                scope: flights:read flights:hold flights:book flights:cancel flights:webhooks flights:ops
+        '400':
+          description: |
+            Solicitud inválida:
+            - `invalid_request`: falta un parámetro, sobra uno o las credenciales llegan de las dos formas a la vez.
+            - `unsupported_grant_type`: `grant_type` distinto de `client_credentials`.
+            - `invalid_scope`: pide un scope que el cliente no tiene o que no existe.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthError'
+              example:
+                error: invalid_scope
+                error_description: El partner no tiene el scope flights:admin.
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+        '401':
+          description: |
+            `invalid_client`: el `client_id` no existe, el secreto no coincide o el partner está bloqueado. Las tres causas
+            responden igual, para no revelar qué partners existen. Si las credenciales llegaron por `Authorization: Basic`, la
+            respuesta incluye `WWW-Authenticate`.
+          headers:
+            WWW-Authenticate:
+              schema:
+                type: string
+                example: Basic realm="ecoairlines"
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthError'
+              example:
+                error: invalid_client
+                error_description: Credenciales del cliente inválidas.
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+        '429':
+          $ref: '#/components/responses/TooManyAttempts'
+
+  /users:
+    parameters:
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Usuarios]
+      operationId: listUsers
+      summary: Listar y buscar usuarios
+      description: Ordenados por fecha de creación, del más reciente al más antiguo. Paginación por cursor opaco.
+      security:
+        - EsbService: []
+      parameters:
+        - name: q
+          in: query
+          description: Busca en el correo y el nombre (sin distinguir mayúsculas)
+          schema:
+            type: string
+            maxLength: 80
+        - name: role
+          in: query
+          schema:
+            $ref: '#/components/schemas/RoleName'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/AccountStatus'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Página de usuarios
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserList'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Usuarios]
+      operationId: createUser
+      summary: Crear un usuario con rol (cliente o administrador)
+      description: El autor (`createdBy`) es `X-Actor-Id`. La cuenta nace `ACTIVE`.
+      security:
+        - EsbService: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+            example:
+              fullName: Ana Supervisora
+              email: ana@ecoairlines.test
+              password: ClaveSegura2026
+              role: ADMIN
+      responses:
+        '201':
+          description: Usuario creado
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /users/6b0f1c1e-1a2b-4c3d-8e9f-0a1b2c3d4e5f
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/EmailAlreadyRegistered'
+
+  /users/summary:
+    parameters:
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Usuarios]
+      operationId: getUserSummary
+      summary: Cantidad de usuarios por rol y por estado
+      description: La usa la Composición del ESB para el panel de indicadores.
+      security:
+        - EsbService: []
+      responses:
+        '200':
+          description: Totales
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /users/{sub}:
+    parameters:
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/Sub'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Usuarios]
+      operationId: getUser
+      summary: Detalle de un usuario
+      security:
+        - EsbService: []
+      responses:
+        '200':
+          description: Usuario
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/UserNotFound'
+
+  /users/{sub}/role:
+    parameters:
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/Sub'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    put:
+      tags: [Usuarios]
+      operationId: changeUserRole
+      summary: Cambiar el rol de un usuario
+      description: |
+        Reemplaza el único rol del usuario. Cambiarlo al mismo rol que ya tiene responde `200` sin cambios.
+        Los tokens que el usuario ya tenga conservan los scopes anteriores hasta caducar (máximo 1 h).
+      security:
+        - EsbService: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeRoleRequest'
+      responses:
+        '200':
+          description: Rol actualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/UserNotFound'
+        '409':
+          $ref: '#/components/responses/UserRuleViolation'
+
+  /users/{sub}/status:
+    parameters:
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/Sub'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    put:
+      tags: [Usuarios]
+      operationId: changeUserStatus
+      summary: Bloquear o activar un usuario
+      description: Un usuario bloqueado no puede iniciar sesión. Sus reservas y datos se conservan.
+      security:
+        - EsbService: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeStatusRequest'
+      responses:
+        '200':
+          description: Estado actualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/UserNotFound'
+        '409':
+          $ref: '#/components/responses/UserRuleViolation'
+
+  /partners:
+    parameters:
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Partners]
+      operationId: listPartners
+      summary: Listar los partners (sin secretos)
+      security:
+        - EsbService: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/AccountStatus'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Página de partners
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Partners]
+      operationId: createPartner
+      summary: Dar de alta un partner y generar su secreto
+      description: |
+        El servicio genera el `clientSecret` (32 bytes aleatorios en base64url) y lo devuelve **solo en esta respuesta**: el
+        administrador debe copiarlo y entregarlo al partner por un canal privado. Si `scopes` no llega, recibe todos los
+        `PartnerScope`. El autor (`createdBy`) es `X-Actor-Id`.
+      security:
+        - EsbService: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePartnerRequest'
+            example:
+              clientId: BOOKING_PROTOTIPO
+              name: Booking Prototipo (RDA2)
+              scopes: [flights:read, flights:hold, flights:book, flights:cancel, flights:webhooks, flights:ops]
+      responses:
+        '201':
+          description: Partner creado. **Única vez** que se muestra el secreto
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /partners/BOOKING_PROTOTIPO
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerWithSecret'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Ya existe un partner con ese `clientId`
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: Ya existe un partner con ese identificador.
+                status: 409
+                code: PARTNER_ALREADY_EXISTS
+                instance: /partners
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+
+  /partners/{clientId}:
+    parameters:
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/ClientId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Partners]
+      operationId: getPartner
+      summary: Detalle de un partner (sin secreto)
+      security:
+        - EsbService: []
+      responses:
+        '200':
+          description: Partner
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Partner'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/PartnerNotFound'
+
+  /partners/{clientId}/status:
+    parameters:
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/ClientId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    put:
+      tags: [Partners]
+      operationId: changePartnerStatus
+      summary: Bloquear o activar un partner
+      description: |
+        Un partner bloqueado no obtiene tokens nuevos (`401 invalid_client`). Sus tokens vigentes caducan solos (máximo 1 h);
+        sus reservas, suscripciones de webhooks y su acuerdo de promociones se conservan.
+      security:
+        - EsbService: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeStatusRequest'
+      responses:
+        '200':
+          description: Estado actualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Partner'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/PartnerNotFound'
+
+  /partners/{clientId}/secret:
+    parameters:
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/ClientId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [Partners]
+      operationId: rotatePartnerSecret
+      summary: Generar un secreto nuevo (el anterior deja de servir)
+      description: |
+        Para cuando el secreto se pierde o se filtra. El secreto anterior deja de servir **de inmediato** para pedir tokens; los
+        tokens ya emitidos caducan solos (máximo 1 h). El nuevo se devuelve **solo en esta respuesta**.
+      security:
+        - EsbService: []
+      responses:
+        '200':
+          description: Secreto nuevo. **Única vez** que se muestra
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerWithSecret'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/PartnerNotFound'
+
+  /roles:
+    parameters:
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Roles]
+      operationId: listRoles
+      summary: Roles disponibles con sus permisos
+      security:
+        - EsbService: []
+      responses:
+        '200':
+          description: Roles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Role'
+              example:
+                - name: CUSTOMER
+                  displayName: Cliente
+                  description: Compra y gestiona sus propias reservas.
+                  scopes: [flights:read, flights:hold, flights:book, flights:cancel, ecoairlines:profile]
+                - name: ADMIN
+                  displayName: Administrador
+                  description: Opera el panel de administración, los vuelos y el acuerdo de promociones.
+                  scopes: [flights:read, flights:webhooks, flights:ops, flights:admin, ecoairlines:admin]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  securitySchemes:
+    EsbService:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de servicio del ESB (RS256, `token_use = service`, `sub = ECOAIRLINES_ESB`, emitido por este servicio).
+    UserJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Token de usuario (RS256, `token_use = user`). Este servicio lo **emite** (login y registro) pero no lo recibe: lo
+        verifican el gateway y los MS de respuesta con la JWKS.
+    PartnerClientBasic:
+      type: http
+      scheme: basic
+      description: '`client_secret_basic` (RFC 6749 §2.3.1): `Authorization: Basic base64(client_id:client_secret)`.'
+
+  parameters:
+    Sub:
+      name: sub
+      in: path
+      required: true
+      description: Identificador del usuario (`sub` del token)
+      schema:
+        type: string
+        format: uuid
+    ClientId:
+      name: clientId
+      in: path
+      required: true
+      description: Identificador del partner
+      schema:
+        $ref: '#/components/schemas/ClientId'
+    ActorId:
+      name: X-Actor-Id
+      in: header
+      required: true
+      description: '`sub` del administrador que hace la operación. Lo envía solo el ESB; nunca viaja en el cuerpo.'
+      schema:
+        type: string
+        format: uuid
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: |
+        Identificador del proceso de negocio completo (contrato v2, §6). Lo propaga el ESB **sin cambiarlo**; si no llega, este
+        servicio lo crea. Se devuelve en la respuesta y en `ProblemDetails.correlation_id`.
+      schema:
+        type: string
+        maxLength: 100
+      example: corr-vuelos-7f3a9c
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: Identificador del salto anterior. Este servicio devuelve el suyo propio.
+      schema:
+        type: string
+        maxLength: 100
+      example: req-8d2e41
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Cursor:
+      name: cursor
+      in: query
+      description: Cursor opaco devuelto en `nextCursor`
+      schema:
+        type: string
+
+  headers:
+    X-Correlation-Id:
+      description: El mismo valor recibido (o el creado si no llegó). Se devuelve en toda respuesta, también en los errores.
+      schema:
+        type: string
+      example: corr-vuelos-7f3a9c
+
+  responses:
+    ValidationFailed:
+      description: Datos inválidos
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: Los datos enviados no son válidos.
+            status: 400
+            code: VALIDATION_FAILED
+            instance: /users
+            correlation_id: corr-vuelos-7f3a9c
+            timestamp: '2026-10-25T10:00:00Z'
+            invalidParams:
+              - name: password
+                reason: must be between 8 and 128 characters
+    Unauthorized:
+      description: Falta el token, no es válido o venció
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: Se requiere un token válido.
+            status: 401
+            code: UNAUTHORIZED
+            instance: /users
+            correlation_id: corr-vuelos-7f3a9c
+            timestamp: '2026-10-25T10:00:00Z'
+    Forbidden:
+      description: El token no es del ESB (`token_use = service`), o `X-Actor-Id` no es un administrador activo
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: No tiene permisos para esta operación.
+            status: 403
+            code: FORBIDDEN
+            instance: /users
+            correlation_id: corr-vuelos-7f3a9c
+            timestamp: '2026-10-25T10:00:00Z'
+    UserNotFound:
+      description: El usuario no existe
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: Usuario no encontrado.
+            status: 404
+            code: USER_NOT_FOUND
+            instance: /users/6b0f1c1e-1a2b-4c3d-8e9f-0a1b2c3d4e5f
+            correlation_id: corr-vuelos-7f3a9c
+            timestamp: '2026-10-25T10:00:00Z'
+    PartnerNotFound:
+      description: El partner no existe
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: Partner no encontrado.
+            status: 404
+            code: PARTNER_NOT_FOUND
+            instance: /partners/OTRO_PARTNER
+            correlation_id: corr-vuelos-7f3a9c
+            timestamp: '2026-10-25T10:00:00Z'
+    EmailAlreadyRegistered:
+      description: Ya existe una cuenta con ese correo
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: Ya existe una cuenta con ese correo.
+            status: 409
+            code: EMAIL_ALREADY_REGISTERED
+            instance: /auth/register
+            correlation_id: corr-vuelos-7f3a9c
+            timestamp: '2026-10-25T10:00:00Z'
+    UserRuleViolation:
+      description: |
+        La operación rompería una regla de administración:
+        - `CANNOT_MODIFY_SELF`: un administrador intenta cambiar su propio rol o bloquearse.
+        - `LAST_ADMIN`: dejaría la aerolínea sin administradores activos.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          examples:
+            propio:
+              value:
+                type: about:blank
+                title: No puede cambiar su propio rol ni bloquear su propia cuenta.
+                status: 409
+                code: CANNOT_MODIFY_SELF
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+            ultimoAdmin:
+              value:
+                type: about:blank
+                title: Debe quedar al menos un administrador activo.
+                status: 409
+                code: LAST_ADMIN
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+    TooManyAttempts:
+      description: Más de 10 intentos por minuto desde la misma IP (o, en `/oauth2/token`, con el mismo `client_id`)
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+            example: 60
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: Demasiados intentos. Espere un minuto.
+            status: 429
+            code: RATE_LIMIT_EXCEEDED
+            correlation_id: corr-vuelos-7f3a9c
+            timestamp: '2026-10-25T10:00:00Z'
+
+  schemas:
+    RoleName:
+      type: string
+      enum: [CUSTOMER, ADMIN]
+      description: '`CUSTOMER` = Cliente · `ADMIN` = Administrador. No hay rol OPS (D30).'
+
+    AccountStatus:
+      type: string
+      enum: [ACTIVE, BLOCKED]
+      description: Estado de una cuenta de usuario o de partner
+
+    Email:
+      type: string
+      format: email
+      maxLength: 254
+      description: Se guarda en minúsculas y sin espacios
+
+    Password:
+      type: string
+      format: password
+      minLength: 8
+      maxLength: 128
+      writeOnly: true
+
+    FullName:
+      type: string
+      minLength: 1
+      maxLength: 80
+
+    ClientId:
+      type: string
+      pattern: ^[A-Z][A-Z0-9_]{2,39}$
+      description: Mayúsculas, dígitos y guion bajo. Es el mismo valor que el partner envía en `salesChannel.partnerId`.
+      example: BOOKING_PROTOTIPO
+
+    PartnerScope:
+      type: string
+      enum: [flights:read, flights:hold, flights:book, flights:cancel, flights:webhooks, flights:ops]
+      description: Scopes del contrato v2 que puede tener un partner. Nunca `flights:admin` ni `ecoairlines:*`.
+
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [fullName, email, password]
+      properties:
+        fullName:
+          $ref: '#/components/schemas/FullName'
+        email:
+          $ref: '#/components/schemas/Email'
+        password:
+          $ref: '#/components/schemas/Password'
+
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          $ref: '#/components/schemas/Email'
+        password:
+          type: string
+          format: password
+          maxLength: 128
+          writeOnly: true
+
+    ClientCredentialsRequest:
+      type: object
+      additionalProperties: false
+      required: [grant_type]
+      description: |
+        Cuerpo `application/x-www-form-urlencoded` (RFC 6749 §4.4.2). `client_id` y `client_secret` solo se envían aquí si el
+        partner usa `client_secret_post`; con `client_secret_basic` van en la cabecera `Authorization`.
+      properties:
+        grant_type:
+          type: string
+          enum: [client_credentials]
+        scope:
+          type: string
+          maxLength: 200
+          pattern: ^[a-z:]+( [a-z:]+)*$
+          description: Scopes separados por espacio; subconjunto de los del partner
+          example: flights:read flights:hold flights:book
+        client_id:
+          $ref: '#/components/schemas/ClientId'
+        client_secret:
+          type: string
+          format: password
+          maxLength: 200
+          writeOnly: true
+
+    PartnerTokenResponse:
+      type: object
+      additionalProperties: false
+      required: [access_token, token_type, expires_in, scope]
+      description: Respuesta de token OAuth2 (RFC 6749 §5.1). No incluye `refresh_token`; el partner pide otro al vencer.
+      properties:
+        access_token:
+          type: string
+          description: 'JWT RS256. Claims: sub (= clientId), token_use (= partner), scope, name, iss, aud, iat, exp, jti'
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          example: 3600
+        scope:
+          type: string
+          example: flights:read flights:hold flights:book flights:cancel flights:webhooks flights:ops
+
+    OAuthError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: Error de OAuth2 (RFC 6749 §5.2) más los campos de trazabilidad del contrato v2.
+      properties:
+        error:
+          type: string
+          enum: [invalid_request, invalid_client, unsupported_grant_type, invalid_scope]
+        error_description:
+          type: string
+        correlation_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    CreateUserRequest:
+      type: object
+      additionalProperties: false
+      required: [fullName, email, password, role]
+      properties:
+        fullName:
+          $ref: '#/components/schemas/FullName'
+        email:
+          $ref: '#/components/schemas/Email'
+        password:
+          $ref: '#/components/schemas/Password'
+        role:
+          $ref: '#/components/schemas/RoleName'
+
+    ChangeRoleRequest:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role:
+          $ref: '#/components/schemas/RoleName'
+
+    ChangeStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/AccountStatus'
+        reason:
+          type: string
+          maxLength: 200
+          description: Motivo (queda en el historial del evento `user.blocked` o `partner.blocked`)
+
+    User:
+      type: object
+      additionalProperties: false
+      required: [sub, email, fullName, role, status, createdAt]
+      description: Nunca incluye la contraseña ni su hash.
+      properties:
+        sub:
+          type: string
+          format: uuid
+          readOnly: true
+        email:
+          $ref: '#/components/schemas/Email'
+        fullName:
+          $ref: '#/components/schemas/FullName'
+        role:
+          $ref: '#/components/schemas/RoleName'
+        status:
+          $ref: '#/components/schemas/AccountStatus'
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+        createdBy:
+          type: string
+          format: uuid
+          nullable: true
+          readOnly: true
+          description: '`sub` del administrador que lo creó; `null` si se registró solo o es de la semilla'
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+        updatedBy:
+          type: string
+          format: uuid
+          nullable: true
+          readOnly: true
+        lastLoginAt:
+          type: string
+          format: date-time
+          nullable: true
+          readOnly: true
+
+    UserList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+        nextCursor:
+          type: string
+          description: Ausente en la última página
+
+    UserSummary:
+      type: object
+      additionalProperties: false
+      required: [total, byRole, byStatus]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        byRole:
+          type: object
+          additionalProperties: false
+          required: [CUSTOMER, ADMIN]
+          properties:
+            CUSTOMER:
+              type: integer
+              minimum: 0
+            ADMIN:
+              type: integer
+              minimum: 0
+        byStatus:
+          type: object
+          additionalProperties: false
+          required: [ACTIVE, BLOCKED]
+          properties:
+            ACTIVE:
+              type: integer
+              minimum: 0
+            BLOCKED:
+              type: integer
+              minimum: 0
+
+    CreatePartnerRequest:
+      type: object
+      additionalProperties: false
+      required: [clientId, name]
+      properties:
+        clientId:
+          $ref: '#/components/schemas/ClientId'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          example: Booking Prototipo (RDA2)
+        scopes:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/PartnerScope'
+          description: Si no llega, el partner recibe todos los `PartnerScope`
+
+    Partner:
+      type: object
+      additionalProperties: false
+      required: [clientId, name, scopes, status, createdAt]
+      description: Nunca incluye el secreto ni su hash.
+      properties:
+        clientId:
+          $ref: '#/components/schemas/ClientId'
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartnerScope'
+        status:
+          $ref: '#/components/schemas/AccountStatus'
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+        createdBy:
+          type: string
+          format: uuid
+          nullable: true
+          readOnly: true
+          description: '`sub` del administrador que lo creó; `null` si es de la semilla'
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+        updatedBy:
+          type: string
+          format: uuid
+          nullable: true
+          readOnly: true
+        secretRotatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          readOnly: true
+        lastTokenAt:
+          type: string
+          format: date-time
+          nullable: true
+          readOnly: true
+          description: Última vez que pidió un token (para ver en el panel si Booking está conectado)
+
+    PartnerWithSecret:
+      type: object
+      additionalProperties: false
+      required: [clientId, name, scopes, status, createdAt, clientSecret]
+      description: |
+        `Partner` más `clientSecret`. Se declara completo (no con `allOf`) porque `Partner` tiene
+        `additionalProperties: false` y en un `allOf` rechazaría `clientSecret`.
+      properties:
+        clientId:
+          $ref: '#/components/schemas/ClientId'
+        name:
+          type: string
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartnerScope'
+        status:
+          $ref: '#/components/schemas/AccountStatus'
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+        createdBy:
+          type: string
+          format: uuid
+          nullable: true
+          readOnly: true
+        updatedAt:
+          type: string
+          format: date-time
+          readOnly: true
+        updatedBy:
+          type: string
+          format: uuid
+          nullable: true
+          readOnly: true
+        secretRotatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          readOnly: true
+        lastTokenAt:
+          type: string
+          format: date-time
+          nullable: true
+          readOnly: true
+        clientSecret:
+          type: string
+          readOnly: true
+          description: Se muestra **una sola vez**. Guárdelo y entréguelo al partner por un canal privado.
+          example: 7Qm1v9kX2pLr8sTz4wNy6bHc0dFg3jKa5eUi_oPq-Rs
+
+    PartnerList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Partner'
+        nextCursor:
+          type: string
+          description: Ausente en la última página
+
+    Role:
+      type: object
+      additionalProperties: false
+      required: [name, displayName, scopes]
+      properties:
+        name:
+          $ref: '#/components/schemas/RoleName'
+        displayName:
+          type: string
+          example: Cliente
+        description:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+          example: [flights:read, flights:hold, flights:book, flights:cancel, ecoairlines:profile]
+
+    TokenResponse:
+      type: object
+      additionalProperties: false
+      required: [access_token, token_type, expires_in, scope, user]
+      description: Formato de respuesta de token OAuth2 (RFC 6749 §5.1) más los datos básicos del usuario.
+      properties:
+        access_token:
+          type: string
+          description: 'JWT RS256. Claims: sub, token_use (= user), scope, role, name, email, iss, aud, iat, exp, jti'
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          example: 3600
+        scope:
+          type: string
+          example: flights:read flights:hold flights:book flights:cancel ecoairlines:profile
+        user:
+          type: object
+          additionalProperties: false
+          required: [sub, fullName, email, role]
+          properties:
+            sub:
+              type: string
+              format: uuid
+            fullName:
+              type: string
+            email:
+              type: string
+              format: email
+            role:
+              $ref: '#/components/schemas/RoleName'
+
+    Jwks:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [kty, kid, use, alg, n, e]
+            properties:
+              kty:
+                type: string
+                enum: [RSA]
+              kid:
+                type: string
+              use:
+                type: string
+                enum: [sig]
+              alg:
+                type: string
+                enum: [RS256]
+              n:
+                type: string
+                description: Módulo de la clave (base64url)
+              e:
+                type: string
+                description: Exponente (base64url)
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        database:
+          type: string
+          enum: [up, down, memory]
+        latency_ms:
+          type: integer
+          minimum: 0
+          description: Latencia de la consulta a la base (para `dependencias` del health del contrato v2)
+
+    ProblemDetails:
+      type: object
+      additionalProperties: false
+      description: |
+        Mismo formato que el `ProblemDetails` del contrato del grupo (**`vuelos-openapi-v2.yaml`**, RFC 7807), con los códigos
+        propios de este servicio. Los genéricos (`VALIDATION_FAILED`, `UNAUTHORIZED`, `FORBIDDEN`, `RATE_LIMIT_EXCEEDED`) son
+        los mismos del contrato; el ESB traduce los propios a los públicos cuando corresponde.
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          example: /users
+        code:
+          type: string
+          enum:
+            - VALIDATION_FAILED
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - RATE_LIMIT_EXCEEDED
+            - INVALID_CREDENTIALS
+            - ACCOUNT_BLOCKED
+            - EMAIL_ALREADY_REGISTERED
+            - USER_NOT_FOUND
+            - CANNOT_MODIFY_SELF
+            - LAST_ADMIN
+            - PARTNER_NOT_FOUND
+            - PARTNER_ALREADY_EXISTS
+        correlation_id:
+          type: string
+          example: corr-vuelos-7f3a9c
+        timestamp:
+          type: string
+          format: date-time
+          example: '2026-10-25T10:00:00Z'
+        invalidParams:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              reason:
+                type: string

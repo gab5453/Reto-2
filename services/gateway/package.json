@@ -1,0 +1,41 @@
+{
+  "name": "@ecoairlines/gateway",
+  "version": "1.0.0",
+  "description": "Gateway (V2.13): fachada REST /api/v2/vuelos/* del contrato v2 (única entrada de Booking), GraphQL /api/graphql según contract/gateway.graphql (única entrada de la web) y Swagger en /api/docs. Solo habla con los 5 MS de respuesta.",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "node --enable-source-maps dist/main.js"
+  },
+  "dependencies": {
+    "@apollo/server": "5.5.1",
+    "@as-integrations/express5": "1.1.2",
+    "@ecoairlines/shared": "1.0.0",
+    "@graphql-tools/merge": "9.2.4",
+    "@graphql-tools/schema": "10.1.1",
+    "@graphql-tools/utils": "12.0.1",
+    "@nestjs/apollo": "14.0.3",
+    "@nestjs/common": "^12.0.1",
+    "@nestjs/core": "^12.0.1",
+    "@nestjs/graphql": "14.0.3",
+    "@nestjs/platform-express": "^12.0.1",
+    "express": "5.2.1",
+    "graphql": "16.14.2",
+    "graphql-query-complexity": "2.0.0",
+    "helmet": "^8.3.0",
+    "js-yaml": "^5.4.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "swagger-ui-express": "^5.0.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "@types/swagger-ui-express": "^4.1.8",
+    "@types/ws": "8.18.2",
+    "graphql-ws": "6.3.0",
+    "ws": "8.22.0"
+  }
+}

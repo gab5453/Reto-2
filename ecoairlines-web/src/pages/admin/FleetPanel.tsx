@@ -8,7 +8,7 @@ import {
   type Aircraft,
   type AircraftTypeInfo,
   type AircraftTypeName,
-} from '../../api/extensions';
+} from '../../api/admin';
 import { useAuth } from '../../auth/AuthContext';
 import { ProblemAlert } from '../../components/ProblemAlert';
 import { AIRPORTS } from '../../data/airports';

@@ -1,0 +1,716 @@
+// =====================================================================================================================
+// MS.G.Offers — búsqueda, holds, inventario por asiento y precios (interno, gRPC)
+// EcoAirlines · Reto 2 · contrato v1.0.0 · decisiones D1, D2, D33, D34, D35 y D41 de PLAN/PLAN.md
+// =====================================================================================================================
+//
+// RESPONSABILIDAD
+//   Dueño del inventario (D1): horario a la venta, búsqueda y ofertas (D2), mapa de asientos, holds con TTL, estado de cada
+//   asiento (AVAILABLE → HELD → BOOKED → TICKETED → CHECKED_IN → BOARDED, contrato v2 §10), precios con la copia de los
+//   multiplicadores y el descuento máximo de promociones (D35), y barrido de holds vencidos.
+//
+// QUIÉN LO LLAMA
+//   Solo el ESB (enrutador, orquestador y composición). Servidor gRPC en el puerto 50061 (no 50051, que es el de Booking).
+//   Los mensajes reflejan los schemas del contrato del grupo (`vuelos-openapi-v2.yaml`); el ESB los traduce a JSON. Los
+//   importes viajan como texto decimal ("119.50") y las fechas como texto RFC 3339, igual que en el contrato.
+//
+// METADATA (en cada llamada)
+//   authorization      Bearer <token de servicio del ESB> (token_use = service, D41). Obligatoria.
+//   x-correlation-id   X-Correlation-Id del proceso; se propaga sin cambios (contrato v2 §6). Se devuelve en la metadata.
+//   x-request-id       Identificador del salto anterior; Offers devuelve el suyo.
+//   x-owner-id         Dueño (D29), solo en las operaciones que lo indican.
+//   x-actor-id         sub del administrador, solo en las operaciones del panel.
+//
+// ERRORES
+//   Código de estado gRPC + `ProblemDetails` completo (mensaje de este archivo, serializado) en el trailer binario
+//   `x-problem-details-bin`. El ESB lo traduce de vuelta sin perder el `code` del contrato:
+//     NOT_FOUND            NOT_FOUND, OFFER_NO_LONGER_AVAILABLE (404/410 según `status`)
+//     FAILED_PRECONDITION  HOLD_EXPIRED (410), HOLD_ALREADY_CONSUMED (409), FLIGHT_CANCELLED (409), FLIGHT_ALREADY_DEPARTED (409)
+//     ALREADY_EXISTS       SEAT_TAKEN (409)
+//     INVALID_ARGUMENT     VALIDATION_FAILED (400), SEAT_CABIN_MISMATCH, INFANT_SEAT_NOT_ALLOWED,
+//                          PROMOTION_DISCOUNT_OUT_OF_RANGE (422)
+//     RESOURCE_EXHAUSTED   OFFER_NO_LONGER_AVAILABLE cuando ya no quedan cupos (409)
+//     UNAUTHENTICATED / PERMISSION_DENIED   UNAUTHORIZED / FORBIDDEN
+//
+// INVENTARIO SIN DUPLICADOS (D34)
+//   - Cupos: por segmento y cabina se guardan conteos por estado. Disponibles = total − (held + booked + ticketed +
+//     checked_in + boarded). Es el `availableSeats` de la búsqueda y el `available_units` del stock de Booking.
+//   - Asientos: cada asiento asignado tiene su propio estado y su dueño (hold_id o booking_id). Todo cambio es una
+//     actualización CONDICIONAL ("pasa a HELD solo si está AVAILABLE"): si dos clientes piden el mismo asiento, uno gana y
+//     el otro recibe ALREADY_EXISTS / SEAT_TAKEN.
+//   - Las operaciones de saga llevan `saga_id`: repetirlas con el mismo `saga_id` devuelve el resultado anterior.
+//
+// STOCK HACIA BOOKING (D33)
+//   Después de GUARDAR cada cambio de cupos (hold, liberación, vencimiento, venta, cancelación, cambio de fecha, cierre de
+//   un vuelo), Offers llama, en segundo plano, a `inventory.InventoryStockService/PushStockUpdate` de Booking
+//   (`booking-inventory.proto`, puerto 50051) con el valor ABSOLUTO de `available_units` por vuelo y cabina. Nunca bloquea
+//   la operación del cliente; si Booking no responde, reintenta (tabla `stock_sync`). No es una operación de este servicio.
+//
+// EVENTOS
+//   Offers publica en el bus interno (con su outbox): `hold.created` y `hold.expired` (CloudEvents, ver events.asyncapi.yaml).
+//
+// SALUD
+//   Implementa el servicio estándar `grpc.health.v1.Health` (Check y Watch) para el health del contrato v2.
+// =====================================================================================================================
+
+syntax = "proto3";
+
+package ecoairlines.offers.v1;
+
+// ------------------------------------------------------------------------------------------------------------- servicios
+
+// Búsqueda y catálogo (enrutador).
+service CatalogService {
+  // POST /vuelos/search. Solo cabinas con cupos y vuelos a la venta (no cancelados ni salidos).
+  rpc Search(SearchRequest) returns (SearchResponse);
+  // GET /vuelos/offers/{offerId}/seatmap. Errores: NOT_FOUND, OFFER_NO_LONGER_AVAILABLE.
+  rpc GetSeatMap(GetSeatMapRequest) returns (GetSeatMapResponse);
+  // Saga "Cambiar fecha": vuelos alternativos con precio para los itinerarios a cambiar (PostSale arma la oferta).
+  rpc FindAlternatives(FindAlternativesRequest) returns (FindAlternativesResponse);
+}
+
+// Holds (enrutador y saga "Crear reserva").
+service HoldService {
+  // POST /vuelos/offers/hold. Retiene cupos (HELD) y congela el precio por `ttl_minutes` (5–30, por defecto 15).
+  // Publica `hold.created` y dispara el stock. Errores: OFFER_NO_LONGER_AVAILABLE, VALIDATION_FAILED.
+  rpc CreateHold(CreateHoldRequest) returns (CreateHoldResponse);
+  // GET /vuelos/offers/hold/{holdId}. Con x-owner-id, un hold de otro dueño responde NOT_FOUND.
+  rpc GetHold(GetHoldRequest) returns (GetHoldResponse);
+  // DELETE /vuelos/offers/hold/{holdId} y compensación. Liberar uno ya liberado o vencido no es error (idempotente).
+  // Un hold CONSUMED responde FAILED_PRECONDITION / HOLD_ALREADY_CONSUMED (se compensa cancelando la reserva).
+  rpc ReleaseHold(ReleaseHoldRequest) returns (ReleaseHoldResponse);
+  // Saga "Crear reserva": valida el hold (vigente, del dueño) y el descuento, sin cambiar nada.
+  rpc ValidateHold(ValidateHoldRequest) returns (ValidateHoldResponse);
+  // Saga "Crear reserva": convierte el hold en reserva (HELD → BOOKED) y asigna los asientos pedidos (o automáticos).
+  // Idempotente por `booking_id`. Errores: HOLD_EXPIRED, HOLD_ALREADY_CONSUMED (otra reserva), SEAT_TAKEN.
+  rpc ConsumeHold(ConsumeHoldRequest) returns (ConsumeHoldResponse);
+}
+
+// Inventario y asientos (orquestador y composición).
+service InventoryService {
+  // Sagas "Cambiar asientos" y "Cambiar fecha": ocupa asientos concretos, todos o ninguno. El asiento anterior de cada
+  // pasajero en ese segmento se libera en la misma operación. Errores: SEAT_TAKEN, SEAT_CABIN_MISMATCH.
+  rpc ReserveSeats(ReserveSeatsRequest) returns (ReserveSeatsResponse);
+  // Saga "Check-in": asigna el primer asiento libre de su cabina a los pasajeros que no tienen.
+  rpc AutoAssignSeats(AutoAssignSeatsRequest) returns (AutoAssignSeatsResponse);
+  // Cambia el estado de los asientos y cupos de una reserva: BOOKED → TICKETED (emisión), TICKETED → CHECKED_IN
+  // (check-in), CHECKED_IN → BOARDED (vuelo DEPARTED), y el camino inverso para compensar.
+  rpc TransitionBookingSeats(TransitionBookingSeatsRequest) returns (TransitionBookingSeatsResponse);
+  // Saga "Cambiar fecha": retiene cupos en los segmentos nuevos para la reserva (estado `target_status`).
+  rpc ReserveInventory(ReserveInventoryRequest) returns (ReserveInventoryResponse);
+  // Sagas "Cancelar", "Cambiar fecha" y compensaciones: libera cupos y asientos de una reserva → AVAILABLE.
+  rpc ReleaseBookingInventory(ReleaseBookingInventoryRequest) returns (ReleaseBookingInventoryResponse);
+  // Saga "Cambiar estado de vuelo" (CANCELLED): cierra la venta del vuelo (stock 0 para Booking). Reabrir = compensación.
+  rpc CloseFlightSales(CloseFlightSalesRequest) returns (CloseFlightSalesResponse);
+  rpc ReopenFlightSales(ReopenFlightSalesRequest) returns (ReopenFlightSalesResponse);
+  // Saga "Publicar horario": cupos vendidos o retenidos de hoy en adelante en los vuelos de una ruta.
+  rpc CountSoldSeats(CountSoldSeatsRequest) returns (CountSoldSeatsResponse);
+  // Composición "Operaciones" (GET /vuelos/operaciones/vuelos): asientos por estado, holds activos y alertas de cupo.
+  rpc GetOccupancy(GetOccupancyRequest) returns (GetOccupancyResponse);
+  // Composición "Health": holds activos y estado del envío de stock a Booking.
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+}
+
+// Publicación de datos de Schedule (saga del orquestador; Offers guarda copias de lectura).
+service PublishingService {
+  // Saga "Publicar horario": reemplaza los vuelos a la venta del rango (o de una ruta). No borra vuelos con cupos vendidos.
+  rpc PublishTimetable(PublishTimetableRequest) returns (PublishTimetableResponse);
+  // Saga "Guardar precios y descuento máximo": reemplaza la copia `fare_prices` y las reglas de promoción (D35).
+  // Los holds ya creados conservan su `locked_price`.
+  rpc PublishFarePrices(PublishFarePricesRequest) returns (PublishFarePricesResponse);
+}
+
+// ----------------------------------------------------------------------------------------------------------------- enums
+
+enum CabinClass {
+  CABIN_CLASS_UNSPECIFIED = 0;
+  CABIN_CLASS_ECONOMY = 1;
+  CABIN_CLASS_PREMIUM_ECONOMY = 2;
+  CABIN_CLASS_BUSINESS = 3;
+  CABIN_CLASS_FIRST = 4;
+}
+
+enum PassengerType {
+  PASSENGER_TYPE_UNSPECIFIED = 0;
+  PASSENGER_TYPE_ADULT = 1;
+  PASSENGER_TYPE_YOUTH = 2;
+  PASSENGER_TYPE_CHILD = 3;
+  PASSENGER_TYPE_INFANT = 4;
+}
+
+// Máquina de estados del asiento (contrato v2 §10).
+enum SeatStatus {
+  SEAT_STATUS_UNSPECIFIED = 0;
+  SEAT_STATUS_AVAILABLE = 1;
+  SEAT_STATUS_HELD = 2;
+  SEAT_STATUS_BOOKED = 3;
+  SEAT_STATUS_TICKETED = 4;
+  SEAT_STATUS_CHECKED_IN = 5;
+  SEAT_STATUS_BOARDED = 6;
+}
+
+enum HoldStatus {
+  HOLD_STATUS_UNSPECIFIED = 0;
+  HOLD_STATUS_HELD = 1;
+  HOLD_STATUS_RELEASED = 2;
+  HOLD_STATUS_EXPIRED = 3;
+  HOLD_STATUS_CONSUMED = 4;
+}
+
+enum FlightOperationalStatus {
+  FLIGHT_OPERATIONAL_STATUS_UNSPECIFIED = 0;
+  FLIGHT_OPERATIONAL_STATUS_SCHEDULED = 1;
+  FLIGHT_OPERATIONAL_STATUS_BOARDING = 2;
+  FLIGHT_OPERATIONAL_STATUS_DEPARTED = 3;
+  FLIGHT_OPERATIONAL_STATUS_DELAYED = 4;
+  FLIGHT_OPERATIONAL_STATUS_ARRIVED = 5;
+  FLIGHT_OPERATIONAL_STATUS_CANCELLED = 6;
+  FLIGHT_OPERATIONAL_STATUS_DIVERTED = 7;
+}
+
+enum SeatCharacteristic {
+  SEAT_CHARACTERISTIC_UNSPECIFIED = 0;
+  SEAT_CHARACTERISTIC_WINDOW = 1;
+  SEAT_CHARACTERISTIC_AISLE = 2;
+  SEAT_CHARACTERISTIC_EXTRA_LEGROOM = 3;
+  SEAT_CHARACTERISTIC_EMERGENCY_EXIT = 4;
+}
+
+// Canal de venta, derivado del dueño (D29): `partner:…` → BOOKING; si no → WEB.
+enum SalesChannel {
+  SALES_CHANNEL_UNSPECIFIED = 0;
+  SALES_CHANNEL_WEB = 1;
+  SALES_CHANNEL_BOOKING = 2;
+}
+
+// ----------------------------------------------------------------------------------------------------------- comunes
+
+// MoneyAmount del contrato: importes como texto decimal para evitar errores de punto flotante.
+message Money {
+  string currency = 1; // ISO 4217, p. ej. "USD"
+  string base_fare = 2;
+  string taxes = 3;
+  string total = 4;
+}
+
+// PassengerBreakdown del contrato (los valores por defecto ya aplicados: adults ≥ 1).
+message PassengerBreakdown {
+  int32 adults = 1;
+  int32 youths = 2;
+  int32 children = 3;
+  int32 infants = 4;
+}
+
+message FlightEndpoint {
+  string iata_code = 1;
+  string at = 2; // RFC 3339 con desfase local
+  optional string terminal = 3;
+}
+
+message FlightSegment {
+  string segment_id = 1;
+  string flight_number = 2;
+  FlightEndpoint departure = 3;
+  FlightEndpoint arrival = 4;
+  optional int32 layover_minutes = 5;
+  string marketing_carrier = 6;
+  string operating_carrier = 7;
+  optional string aircraft = 8;
+  optional int32 duration_minutes = 9;
+  FlightOperationalStatus status = 10;
+}
+
+message FareRules {
+  bool is_refundable = 1;
+  bool is_changeable = 2;
+}
+
+message BaggageAllowance {
+  bool personal_item_included = 1;
+  int32 carry_on_included = 2;
+  int32 checked_baggage_included = 3;
+}
+
+message PassengerTypePrice {
+  PassengerType passenger_type = 1;
+  Money price = 2;
+}
+
+message CabinPricing {
+  CabinClass cabin_class = 1;
+  string fare_brand = 2;
+  int32 available_seats = 3; // cupos AVAILABLE (el mismo valor del stock de Booking)
+  FareRules fare_rules = 4;
+  BaggageAllowance baggage_allowance = 5;
+  Money extra_checked_baggage_price = 6;
+  repeated PassengerTypePrice price_per_passenger_type = 7;
+}
+
+message ItineraryOption {
+  string itinerary_id = 1;
+  int32 total_duration_minutes = 2;
+  int32 stops_count = 3;
+  repeated FlightSegment segments = 4;
+  repeated CabinPricing pricing_options = 5;
+}
+
+// ProblemDetails del contrato v2, para el trailer `x-problem-details-bin`.
+message ProblemDetails {
+  string type = 1;
+  string title = 2;
+  int32 status = 3;
+  string detail = 4;
+  string instance = 5;
+  string code = 6;
+  string correlation_id = 7;
+  string timestamp = 8;
+  repeated InvalidParam invalid_params = 9;
+}
+
+message InvalidParam {
+  string name = 1;
+  string reason = 2;
+}
+
+// ------------------------------------------------------------------------------------------------------------ catálogo
+
+message ItineraryQuery {
+  string origin = 1;         // IATA
+  string destination = 2;    // IATA
+  string departure_date = 3; // YYYY-MM-DD, fecha local de salida
+}
+
+message SearchRequest {
+  repeated ItineraryQuery itineraries = 1; // 1 = solo ida, 2 = ida y vuelta, 3–6 = multidestino
+  PassengerBreakdown passengers = 2;
+}
+
+message Airline {
+  string code = 1;
+  string name = 2;
+}
+
+message FlightOffer {
+  string offer_id = 1;
+  Airline airline = 2;
+  repeated ItineraryOption itineraries = 3;
+  Money grand_total = 4;
+}
+
+message SearchResponse {
+  int32 total_offers = 1;
+  repeated FlightOffer offers = 2;
+}
+
+message GetSeatMapRequest {
+  string offer_id = 1;
+  string segment_id = 2;
+}
+
+message Seat {
+  string seat_number = 1;
+  bool is_available = 2; // atajo de v1: status == AVAILABLE
+  SeatStatus status = 3;
+  repeated SeatCharacteristic characteristics = 4;
+}
+
+message SeatRow {
+  int32 row_number = 1;
+  repeated Seat seats = 2;
+}
+
+message SeatCabin {
+  CabinClass cabin_class = 1;
+  repeated SeatRow rows = 2;
+}
+
+// Mapa sin precios. Un asiento sin asignar se muestra AVAILABLE mientras su cabina tenga cupos; con la cabina agotada,
+// los no asignados se muestran HELD (están comprometidos por holds o reservas que aún no eligieron asiento).
+message SeatMap {
+  string segment_id = 1;
+  repeated SeatCabin cabins = 2;
+}
+
+message ItineraryChange {
+  string itinerary_id = 1;
+  string new_departure_date = 2; // YYYY-MM-DD
+}
+
+message FindAlternativesRequest {
+  string booking_id = 1;
+  // Itinerarios actuales de la reserva (los envía el ESB desde Bookings) y su tarifa comprada.
+  repeated ItineraryOption current_itineraries = 2;
+  repeated PurchasedFareRef purchased_fares = 3;
+  repeated ItineraryChange changes = 4;
+  PassengerBreakdown passengers = 5;
+}
+
+message PurchasedFareRef {
+  string itinerary_id = 1;
+  CabinClass cabin_class = 2;
+  string fare_brand = 3;
+  Money price = 4;
+}
+
+message Alternative {
+  string replaced_itinerary_id = 1;
+  ItineraryOption itinerary = 2; // con la misma cabina y familia
+  Money price = 3;               // precio del grupo a la tarifa vigente
+}
+
+message FindAlternativesResponse {
+  repeated Alternative alternatives = 1;
+}
+
+// --------------------------------------------------------------------------------------------------------------- holds
+
+message FareSelection {
+  string itinerary_id = 1;
+  CabinClass cabin_class = 2;
+  string fare_brand = 3;
+}
+
+message CreateHoldRequest {
+  string offer_id = 1;
+  repeated FareSelection itinerary_selections = 2;
+  PassengerBreakdown passengers_breakdown = 3;
+  optional int32 ttl_minutes = 4; // 5–30; por defecto 15
+  string owner_id = 5;            // D29, calculado por el MS de respuesta
+}
+
+message PricedSelection {
+  string itinerary_id = 1;
+  CabinClass cabin_class = 2;
+  string fare_brand = 3;
+  repeated string segment_ids = 4;
+  ItineraryOption itinerary = 5; // con pricing_options limitado a la tarifa elegida
+  Money price = 6;
+}
+
+message Hold {
+  string hold_id = 1;
+  HoldStatus status = 2;
+  string expires_at = 3;
+  int32 ttl_minutes = 4;
+  int32 remaining_seconds = 5;
+  Money locked_price = 6;
+  string offer_id = 7;
+  SalesChannel channel = 8;
+  PassengerBreakdown passengers_breakdown = 9;
+  repeated PricedSelection selections = 10;
+  optional string booking_id = 11; // si está CONSUMED
+  string created_at = 12;
+}
+
+message GetHoldRequest {
+  string hold_id = 1;
+  optional string owner_id = 2; // si llega, el hold debe ser suyo (si no, NOT_FOUND)
+}
+
+message ReleaseHoldRequest {
+  string hold_id = 1;
+  optional string owner_id = 2;
+  optional string saga_id = 3; // en compensaciones
+}
+
+// Promoción pedida por Booking (`salesChannel`), si la hay.
+message PromotionRequest {
+  string partner_id = 1;
+  double discount_percentage = 2; // 0–100 según el contrato; debe ser ≤ al máximo del acuerdo (≤ 50, D35)
+}
+
+message ValidateHoldRequest {
+  string hold_id = 1;
+  string owner_id = 2;
+  optional PromotionRequest promotion = 3;
+}
+
+message ValidateHoldResponse {
+  Hold hold = 1;
+  Money expected_amount = 2; // locked_price con el descuento aplicado (lo que debe cobrar el pago, BKG-08)
+}
+
+message RequestedSeat {
+  string passenger_id = 1;
+  string segment_id = 2;
+  string seat_number = 3;
+}
+
+message ConsumeHoldRequest {
+  string hold_id = 1;
+  string booking_id = 2; // idempotencia: repetir con el mismo booking_id devuelve el resultado anterior
+  string saga_id = 3;
+  string owner_id = 4;
+  // Pasajeros con asiento (los infantes no ocupan asiento). Los que no eligieron reciben uno automático.
+  repeated PassengerSeatRequest passengers = 5;
+}
+
+message PassengerSeatRequest {
+  string passenger_id = 1;
+  PassengerType passenger_type = 2;
+  repeated RequestedSeat requested_seats = 3; // assignedSeats del PassengerItem
+}
+
+message AssignedSeat {
+  string passenger_id = 1;
+  string segment_id = 2;
+  string seat_number = 3;
+  optional string previous_seat_number = 4;
+  SeatStatus status = 5;
+}
+
+message ConsumeHoldResponse {
+  Hold hold = 1;
+  repeated AssignedSeat seats = 2;
+}
+
+// ---------------------------------------------------------------------------------------------------------- inventario
+
+message ReserveSeatsRequest {
+  string booking_id = 1;
+  string saga_id = 2;
+  repeated RequestedSeat seats = 3;
+  // Cabina comprada por segmento (de Bookings): si el asiento es de otra, SEAT_CABIN_MISMATCH.
+  repeated SegmentCabin purchased_cabins = 4;
+  SeatStatus target_status = 5; // BOOKED o TICKETED, según el pasajero
+}
+
+message SegmentCabin {
+  string passenger_id = 1;
+  string segment_id = 2;
+  CabinClass cabin_class = 3;
+}
+
+message AutoAssignSeatsRequest {
+  string booking_id = 1;
+  string saga_id = 2;
+  repeated SegmentCabin passengers = 3; // pasajeros sin asiento, con su cabina
+  SeatStatus target_status = 4;         // normalmente CHECKED_IN
+}
+
+message TransitionBookingSeatsRequest {
+  string booking_id = 1;
+  string saga_id = 2;
+  SeatStatus from_status = 3;
+  SeatStatus to_status = 4;
+  repeated string segment_ids = 5;   // vacío = todos los segmentos de la reserva
+  repeated string passenger_ids = 6; // vacío = todos los pasajeros
+}
+
+message SeatOperationResult {
+  string booking_id = 1;
+  repeated AssignedSeat seats = 2;
+  int32 seats_affected = 3;
+}
+
+message SegmentCount {
+  string segment_id = 1;
+  CabinClass cabin_class = 2;
+  int32 count = 3;
+}
+
+message ReserveInventoryRequest {
+  string booking_id = 1;
+  string saga_id = 2;
+  repeated SegmentCount segments = 3;
+  SeatStatus target_status = 4; // BOOKED o TICKETED
+}
+
+message ReleaseBookingInventoryRequest {
+  string booking_id = 1;
+  string saga_id = 2;
+  repeated string segment_ids = 3; // vacío = toda la reserva
+  string reason = 4;               // CUSTOMER_REQUEST, SAGA_COMPENSATION, FLIGHT_CANCELLED, DATE_CHANGE…
+}
+
+message ReleaseBookingInventoryResponse {
+  int32 seats_released = 1;
+  SeatStatus new_seat_status = 2; // AVAILABLE (inventoryRestoration del contrato)
+}
+
+message FlightRef {
+  string flight_number = 1;
+  string date = 2; // fecha local de salida
+  string saga_id = 3;
+  string reason = 4;
+}
+
+message FlightSalesState {
+  string flight_number = 1;
+  string date = 2;
+  bool on_sale = 3;
+  int32 active_holds_released = 4;
+}
+
+message CountSoldSeatsRequest {
+  repeated string flight_numbers = 1;
+  string from_date = 2; // YYYY-MM-DD
+}
+
+message CountSoldSeatsResponse {
+  int32 sold_seats = 1; // holds vigentes + reservas, de from_date en adelante
+}
+
+message GetOccupancyRequest {
+  string date = 1;
+  optional string origin = 2;
+  optional string destination = 3;
+}
+
+message SeatsByStatus {
+  int32 available = 1;
+  int32 held = 2;
+  int32 booked = 3;
+  int32 ticketed = 4;
+  int32 checked_in = 5;
+  int32 boarded = 6;
+}
+
+message CabinOccupancy {
+  CabinClass cabin_class = 1;
+  int32 total_seats = 2;
+  SeatsByStatus seats_by_status = 3;
+}
+
+message FlightOccupancy {
+  string flight_number = 1;
+  string date = 2;
+  string origin = 3;
+  string destination = 4;
+  string departure_at = 5;
+  string aircraft = 6;
+  int32 total_seats = 7;
+  double load_factor = 8; // % de asientos no AVAILABLE
+  repeated CabinOccupancy cabins = 9;
+  int32 active_holds = 10;
+  optional string next_hold_expiry_at = 11;
+  bool on_sale = 12;
+}
+
+message GetOccupancyResponse {
+  string date = 1;
+  repeated FlightOccupancy flights = 2;
+}
+
+message GetStatsRequest {}
+
+message OffersStats {
+  int32 active_holds = 1;
+  int32 flights_on_sale_today = 2;
+  optional string last_stock_push_at = 3;
+  int32 pending_stock_pushes = 4; // envíos a Booking esperando reintento
+}
+
+// ---------------------------------------------------------------------------------------------------------- publicación
+
+message ScheduledFlight {
+  string flight_number = 1;
+  string date = 2; // fecha local de salida
+  string route_id = 3;
+  string origin = 4;
+  string destination = 5;
+  string departure_at = 6;
+  string arrival_at = 7;
+  string aircraft_type = 8;
+  string registration = 9;
+}
+
+message PublishTimetableRequest {
+  string publish_id = 1; // idempotencia (saga_id)
+  string from = 2;
+  string to = 3;
+  optional string route_id = 4; // si llega, solo se reemplazan los vuelos de esa ruta
+  repeated ScheduledFlight flights = 5;
+}
+
+message FarePrice {
+  CabinClass cabin_class = 1;
+  string fare_brand = 2;
+  double multiplier = 3; // 0,5–10
+}
+
+// Copia de `promotion_agreements` de Schedule (D35).
+message PromotionRule {
+  string partner_id = 1;
+  bool allows_promotions = 2;
+  double max_discount_percentage = 3; // 0–50
+  repeated string routes = 4;         // "UIO-GYE"; vacío = todas
+  repeated CabinClass cabins = 5;     // vacío = todas
+  optional string valid_until = 6;    // YYYY-MM-DD
+}
+
+message PublishFarePricesRequest {
+  string publish_id = 1;
+  repeated FarePrice prices = 2;
+  repeated PromotionRule promotions = 3;
+}
+
+message PublishResult {
+  string publish_id = 1;
+  int32 added = 2;
+  int32 updated = 3;
+  int32 removed = 4;
+  int32 kept_with_sales = 5; // vuelos que no se quitaron porque tienen cupos vendidos
+  string published_at = 6;
+}
+
+// ------------------------------------------------------------------ mensajes propios de cada RPC (evolucionan por separado)
+
+message GetSeatMapResponse {
+  SeatMap seat_map = 1;
+}
+
+message CreateHoldResponse {
+  Hold hold = 1;
+}
+
+message GetHoldResponse {
+  Hold hold = 1;
+}
+
+message ReleaseHoldResponse {
+  Hold hold = 1;
+}
+
+message ReserveSeatsResponse {
+  SeatOperationResult result = 1;
+}
+
+message AutoAssignSeatsResponse {
+  SeatOperationResult result = 1;
+}
+
+message TransitionBookingSeatsResponse {
+  SeatOperationResult result = 1;
+}
+
+message ReserveInventoryResponse {
+  SeatOperationResult result = 1;
+}
+
+message CloseFlightSalesRequest {
+  FlightRef flight = 1;
+}
+
+message CloseFlightSalesResponse {
+  FlightSalesState state = 1;
+}
+
+message ReopenFlightSalesRequest {
+  FlightRef flight = 1;
+}
+
+message ReopenFlightSalesResponse {
+  FlightSalesState state = 1;
+}
+
+message GetStatsResponse {
+  OffersStats stats = 1;
+}
+
+message PublishTimetableResponse {
+  PublishResult result = 1;
+}
+
+message PublishFarePricesResponse {
+  PublishResult result = 1;
+}

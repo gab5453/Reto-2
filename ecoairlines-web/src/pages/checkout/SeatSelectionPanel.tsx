@@ -27,12 +27,15 @@ export function SeatSelectionPanel({
   segments,
   passengers,
   seats,
+  note = 'Los asientos son opcionales: si no eliges, te asignamos uno en el check-in sin costo.',
   onChange,
 }: {
   offerId: string;
   segments: { segment: FlightSegment; cabinClass: string }[];
   passengers: CheckoutPassenger[];
   seats: SeatSelection;
+  /** Nota bajo la lista de pasajeros. */
+  note?: string;
   onChange: (passengerId: string, segmentId: string, seat: string | undefined) => void;
 }) {
   const [segmentIndex, setSegmentIndex] = useState(0);
@@ -120,7 +123,7 @@ export function SeatSelectionPanel({
               </button>
             </li>
           )}
-          <li className="muted small">Los asientos son opcionales: si no eliges, te asignamos uno en el check-in sin costo.</li>
+          <li className="muted small">{note}</li>
         </ul>
 
         <div className="picker-map">

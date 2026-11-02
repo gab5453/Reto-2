@@ -1,13 +1,13 @@
-import { API_URL } from '../config';
+import { GRAPHQL_URL } from '../config';
 import type { ProblemDetails } from './types';
 
 /** Error de la API con el ProblemDetails del contrato (o un error de red, status 0). */
 export class ApiError extends Error {
   readonly status: number;
   readonly problem?: ProblemDetails;
-  /** Segundos de `Retry-After` (409/429 del contrato). */
+  /** Segundos de `retryAfter` (409/429/503 del contrato). */
   readonly retryAfter?: number;
-  /** `X-Request-Id` de la respuesta, útil para soporte. */
+  /** `X-Correlation-Id` del proceso, útil para soporte (el panel lo busca en Telemetría). */
   readonly requestId?: string;
 
   constructor(status: number, message: string, problem?: ProblemDetails, retryAfter?: number, requestId?: string) {
@@ -20,68 +20,52 @@ export class ApiError extends Error {
   }
 }
 
-export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
-  body?: unknown;
+export interface GraphqlOptions {
   token?: string | null;
-  idempotencyKey?: string;
+  /** `X-Device-Fingerprint`: obligatoria en `searchFlights` (límite de búsquedas por navegador). */
   fingerprint?: string;
-  query?: Record<string, string | number | undefined>;
 }
 
-export interface ApiResponse<T> {
-  status: number;
-  data: T;
+interface GraphqlError {
+  message: string;
+  extensions?: Partial<ProblemDetails> & { retryAfter?: number; correlation_id?: string };
 }
 
 /**
- * Único punto de salida hacia la API. El token viaja solo en `Authorization` (nunca en la URL)
- * y las respuestas se tratan como datos: el renderizado de React las escapa.
+ * Cliente GraphQL de la web (D51): un `fetch` a `/api/graphql` del gateway, sin caché ni dependencias. El token viaja solo en
+ * `Authorization` (nunca en la URL) y las respuestas se tratan como datos: el renderizado de React las escapa.
+ *
+ * Cada error de GraphQL trae el ProblemDetails v2 en `extensions` (contrato `gateway.graphql`, ERRORES): se convierte al mismo
+ * `ApiError` que ya usan las pantallas. Si hay errores, la operación falla con el primero (el gateway responde HTTP 200).
  */
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<ApiResponse<T>> {
-  const url = new URL(path, API_URL);
-  for (const [key, value] of Object.entries(options.query ?? {})) {
-    if (value !== undefined && value !== '') url.searchParams.set(key, String(value));
-  }
-
-  const headers: Record<string, string> = { Accept: 'application/json' };
-  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+export async function graphql<T>(query: string, variables: Record<string, unknown> = {}, options: GraphqlOptions = {}): Promise<T> {
+  const headers: Record<string, string> = { Accept: 'application/json', 'Content-Type': 'application/json' };
   if (options.token) headers.Authorization = `Bearer ${options.token}`;
-  if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
   if (options.fingerprint) headers['X-Device-Fingerprint'] = options.fingerprint;
 
   let response: Response;
   try {
-    response = await fetch(url, {
-      method: options.method ?? 'GET',
-      headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-      credentials: 'omit',
-    });
+    response = await fetch(GRAPHQL_URL, { method: 'POST', headers, body: JSON.stringify({ query, variables }), credentials: 'omit' });
   } catch {
     throw new ApiError(0, 'No se pudo conectar con el servidor. Verifica tu conexión e inténtalo de nuevo.');
   }
 
-  const requestId = response.headers.get('X-Request-Id') ?? undefined;
-  const text = await response.text();
-  const json: unknown = text ? safeParse(text) : undefined;
-
-  if (!response.ok) {
-    const problem = isProblem(json) ? json : undefined;
-    const retryAfter = Number(response.headers.get('Retry-After')) || undefined;
-    throw new ApiError(response.status, problem?.title ?? `Error ${response.status}`, problem, retryAfter, requestId);
+  const correlationId = response.headers.get('X-Correlation-Id') ?? undefined;
+  const body = (await response.json().catch(() => undefined)) as { data?: T; errors?: GraphqlError[] } | undefined;
+  const first = body?.errors?.[0];
+  if (first) {
+    const extensions = first.extensions ?? {};
+    const status = typeof extensions.status === 'number' ? extensions.status : response.ok ? 400 : response.status;
+    const problem: ProblemDetails = {
+      type: extensions.type ?? 'about:blank',
+      title: extensions.title ?? first.message,
+      status,
+      code: extensions.code ?? 'VALIDATION_FAILED',
+      ...(extensions.detail ? { detail: extensions.detail } : {}),
+      ...(extensions.invalidParams ? { invalidParams: extensions.invalidParams } : {}),
+    };
+    throw new ApiError(status, problem.title, problem, extensions.retryAfter, extensions.correlation_id ?? correlationId);
   }
-  return { status: response.status, data: json as T };
-}
-
-function safeParse(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-}
-
-function isProblem(value: unknown): value is ProblemDetails {
-  return typeof value === 'object' && value !== null && 'status' in value && 'title' in value;
+  if (!response.ok || !body?.data) throw new ApiError(response.status || 500, `Error ${response.status}`, undefined, undefined, correlationId);
+  return body.data;
 }

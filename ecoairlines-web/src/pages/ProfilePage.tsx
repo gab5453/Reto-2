@@ -1,10 +1,11 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { ApiError } from '../api/client';
-import { getMyProfile, saveMyProfile, type CustomerProfileRequest } from '../api/extensions';
+import { getMyProfile, saveMyProfile } from '../api/operations';
+import type { CustomerProfileRequest } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
+import { AssistanceFields } from '../components/AssistanceFields';
 import { Field, SelectField } from '../components/FormFields';
 import { ProblemAlert } from '../components/ProblemAlert';
-import { formatDateTime, todayIso } from '../lib/format';
+import { EMPTY_ASSISTANCE, cleanAssistance, formatDateTime, todayIso } from '../lib/format';
 
 const EMPTY: CustomerProfileRequest = {
   firstName: '',
@@ -19,8 +20,8 @@ const EMPTY: CustomerProfileRequest = {
 };
 
 /**
- * Perfil del cliente (extensión fuera del contrato: `GET/PUT /customers/me`). Usa los campos de pasajero del
- * contrato; al reservar, el checkout lo copia al primer pasajero.
+ * Perfil del cliente (`myProfile` / `saveMyProfile` del GraphQL, MS.Clientes). Usa los campos de pasajero del contrato; al
+ * reservar, el checkout lo copia al primer pasajero.
  */
 export function ProfilePage() {
   const { token, user } = useAuth();
@@ -36,13 +37,13 @@ export function ProfilePage() {
     let active = true;
     getMyProfile(token)
       .then((profile) => {
-        if (!active) return;
+        // null: el cliente todavía no registró su perfil; se muestra el formulario vacío.
+        if (!active || !profile) return;
         const { updatedAt: savedAt, ...fields } = profile;
         setForm({ ...EMPTY, ...fields, documentExpiryDate: fields.documentExpiryDate ?? '' });
         setUpdatedAt(savedAt);
       })
-      // 404: el cliente todavía no registró su perfil; se muestra el formulario vacío.
-      .catch((caught: unknown) => active && !(caught instanceof ApiError && caught.status === 404) && setError(caught))
+      .catch((caught: unknown) => active && setError(caught))
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
@@ -60,7 +61,7 @@ export function ProfilePage() {
     setBusy(true);
     setError(null);
     try {
-      const { documentExpiryDate, ...rest } = form;
+      const { documentExpiryDate, defaultAssistance, ...rest } = form;
       const profile = await saveMyProfile(token, {
         ...rest,
         firstName: rest.firstName.trim(),
@@ -69,6 +70,7 @@ export function ProfilePage() {
         nationality: rest.nationality.trim().toUpperCase(),
         contact: { email: rest.contact.email.trim(), phone: rest.contact.phone.trim() },
         ...(documentExpiryDate ? { documentExpiryDate } : {}),
+        ...(defaultAssistance ? { defaultAssistance: cleanAssistance(defaultAssistance) } : {}),
       });
       setUpdatedAt(profile.updatedAt);
       setSaved(true);
@@ -103,6 +105,19 @@ export function ProfilePage() {
           <Field label="Correo" type="email" value={form.contact.email} onChange={(email) => update({ contact: { ...form.contact, email } })} autoComplete="email" maxLength={254} />
           <Field label="Teléfono" type="tel" value={form.contact.phone} onChange={(phone) => update({ contact: { ...form.contact, phone } })} autoComplete="tel" maxLength={30} placeholder="+593…" />
         </div>
+        <fieldset className="assistance-box">
+          <legend>Asistencia predeterminada</legend>
+          <label className="inline-field">
+            <input
+              type="checkbox"
+              checked={Boolean(form.defaultAssistance)}
+              onChange={(event) => update({ defaultAssistance: event.target.checked ? EMPTY_ASSISTANCE : null })}
+            />
+            Suelo necesitar asistencia médica o de movilidad
+          </label>
+          {form.defaultAssistance && <AssistanceFields value={form.defaultAssistance} onChange={(defaultAssistance) => update({ defaultAssistance })} />}
+          <p className="muted small">Se propondrá al completar tus reservas. Puedes cambiarla en cada una.</p>
+        </fieldset>
         {error ? <ProblemAlert error={error} /> : null}
         {saved && <p className="alert alert-success" role="status">Perfil guardado.</p>}
         <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'Guardando…' : 'Guardar perfil'}</button>

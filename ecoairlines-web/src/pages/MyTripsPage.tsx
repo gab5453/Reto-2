@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
-import { listBookings } from '../api/endpoints';
+import { listBookings } from '../api/operations';
 import type { BookingListResponse } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { ProblemAlert } from '../components/ProblemAlert';
 import { cityOf } from '../data/airports';
 import { STATUS_LABELS, formatMoney, localDate } from '../lib/format';
+import { saveTrips } from '../lib/offline-trips';
 
 type Item = NonNullable<BookingListResponse['items']>[number];
 const PAGE_SIZE = 10;
 
 export function MyTripsPage({ title = 'Mis viajes', hint }: { title?: string; hint?: string }) {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [filters, setFilters] = useState({ pnr: '', status: '' });
   const [applied, setApplied] = useState({ pnr: '', status: '' });
   const [reloads, setReloads] = useState(0);
@@ -34,12 +35,19 @@ export function MyTripsPage({ title = 'Mis viajes', hint }: { title?: string; hi
     if (!token) return;
     let active = true;
     fetchPage()
-      .then((data) => active && setPage({ key: requestKey, items: data.items ?? [], cursor: data.nextCursor }))
+      .then((data) => {
+        if (!active) return;
+        setPage({ key: requestKey, items: data.items ?? [], cursor: data.nextCursor });
+        // La lista completa (sin filtros) queda para verla sin conexión (PLAN.md §4.9).
+        if (user && !applied.pnr && !applied.status) {
+          saveTrips(user.email, (data.items ?? []).flatMap((item) => (item.bookingId && item.pnr && item.status ? [{ ...item, bookingId: item.bookingId, pnr: item.pnr, status: item.status }] : [])));
+        }
+      })
       .catch((error: unknown) => active && setPage({ key: requestKey, items: [], error }));
     return () => {
       active = false;
     };
-  }, [token, fetchPage, requestKey]);
+  }, [token, user, applied, fetchPage, requestKey]);
 
   const current = page.key === requestKey ? page : undefined;
   const items = current?.items ?? [];

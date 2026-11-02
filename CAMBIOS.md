@@ -14,6 +14,7 @@
 | V1.E–V1.L | Horario de 91 días y por avión, panel admin, checkout de grupo, validación de pasajeros, CRUD de rutas y flota, eventos y webhooks, dev-auth en Swagger, documentación técnica | `b41b828` |
 | V1.M | PostgreSQL y preparación para Azure (workflows) | `2a8143e` |
 | V1.N | Despliegue en Azure en línea | `d3ada3d` |
+| **V2** | **Reto 2 — transición a microservicios** (plan y decisiones en `PLAN/PLAN.md`) | en curso |
 
 ---
 
@@ -949,3 +950,1411 @@ seguridad.
 - **No modificar** `contract/vuelos-openapi.yaml`, `CLAUDE.md` ni `GEMINI.md` sin autorización explícita (desde V1.C están en la raíz).
 - No subir secretos reales al repositorio: las variables sensibles se configuran en el proveedor de la nube.
 - Toda desviación respecto al plan aprobado se registra en la fase correspondiente de este archivo.
+
+---
+
+## 6. Versión 2 — Reto 2: transición a microservicios
+
+> Iniciada el **2026-10-20**. El plan completo, las fases (V2.0–V2.21) y el registro de decisiones (D1–D40) están en
+> [`PLAN/PLAN.md`](PLAN/PLAN.md). Los diagramas vigentes son `PLAN/modelo-conceptual-v4.png` y
+> `PLAN/arquitectura-microservicios-v4.png`. Cada fase se registra aquí al completarse.
+> **25/10/2026:** el grupo entregó el **contrato de Vuelos v2** (`contract/vuelos-openapi-v2.yaml`), nueva fuente de verdad.
+
+### V2.0 — Decisiones y preparación — ✅ HECHA (20/10)
+- **Qué se pidió:** analizar el modelo conceptual y la arquitectura objetivo, proponer un plan de migración a microservicios
+  (requisito del ingeniero: al menos un servicio gRPC y uno SOA) y agregar mejoras: usuarios con rol, precios por clase editables,
+  asistencia médica, telemetría en el panel, pago con tarjeta y web progresiva.
+- **Cómo se hizo:** revisión del proyecto completo; plan en `PLAN/PLAN.md` con tres iteraciones de diagramas (v2: huecos
+  corregidos; v3: mejoras y correcciones de la revisión del responsable).
+- **Decisiones:** D1–D25 cerradas por el responsable (sección 7 del plan). Entre ellas: Offers en gRPC y dueño del inventario,
+  PostSale en SOAP, ESB en NestJS, todo en TypeScript, RabbitMQ, prefijo `/api`, web solo por GraphQL, un rol por usuario,
+  contratos nuevos por microservicio sin tocar los existentes, todo desplegado en la nube.
+- **`CLAUDE.md`:** reescrito para el Reto 2 con autorización del responsable (20/10). Las reglas del Reto 1 que siguen vigentes
+  (contrato del grupo intacto, `ownerId` desde el JWT, solo `paymentReference`, idempotencia, `ProblemDetails`) se conservaron.
+- **Verificación:** plan revisado y aprobado por el responsable. No se modificó código.
+- **Revisión por el contrato v2 (25/10):**
+  - **Qué se pidió:** analizar el contrato de Vuelos v2 de Booking, actualizar el plan, corregir lo que chocara y generar la v4 de
+    los diagramas.
+  - **Cómo se hizo:** revisión CV-01…CV-23 (sección 3.5 del plan); diagramas `-v4` con sus scripts en `PLAN/scripts/`; preguntas
+    al grupo en `HALLAZGOS.md` (sección 8, serie `BKG`); `CLAUDE.md` ajustado al contrato v2 con autorización del responsable.
+  - **Decisiones:** D26–D40 cerradas por el responsable, con los matices recomendados. Entre ellas: solo `/api/v2/vuelos` (sin
+    v1), Booking cobra y la aerolínea valida la referencia, token de partner `client_credentials`, `X-Correlation-Id` separado de
+    `X-Request-Id` (corrige la v3.1), solo roles CLIENTE y ADMIN, Offers envía el stock a Booking por gRPC, sin duplicados
+    (idempotencia + sagas + asiento atómico), descuento máximo de promociones ≤ 50 % definido por el admin, y todo lo vinculado
+    con Booking pasa primero a microservicios.
+  - **Verificación:** plan y diagramas revisados por el responsable. No se modificó código.
+
+### V2.1 — Contratos por microservicio — ✅ APROBADA (25/10)
+- Ver `PLAN/PLAN.md`, fase V2.1 (11 pasos).
+
+#### Paso 1 — `contract/ms-g-identity.openapi.yaml` v1.1.0 — ✅ escrito (25/10), pendiente de revisión
+- **Qué se pidió:** actualizar el contrato de Identity (escrito el 20/10, v1.0.0) para el contrato v2: token de partner y scopes
+  nuevos.
+- **Cómo se hizo:**
+  - **`POST /oauth2/token`** (OAuth2 `client_credentials`, RFC 6749 §4.4) con `client_secret_basic` o `client_secret_post`,
+    `scope` opcional (subconjunto) y errores en el formato estándar de OAuth2 (`invalid_client`, `invalid_scope`…), único
+    endpoint sin `ProblemDetails` porque es lo que esperan las librerías OAuth de los clientes.
+  - **Partners:** `GET/POST /partners`, `GET /partners/{clientId}`, `PUT /partners/{clientId}/status` y
+    `POST /partners/{clientId}/secret` (rotar). El secreto lo genera el servicio y se muestra una sola vez. `clientId` =
+    `salesChannel.partnerId` (p. ej. `BOOKING_PROTOTIPO`). Un partner nunca tiene `flights:admin` ni `ecoairlines:*`.
+  - **Tokens:** claim `token_use` (`user` o `partner`); el de partner tiene `sub = clientId` y no tiene `role`.
+  - **Scopes de ADMIN:** se agregan `flights:ops` y `flights:admin`. Sin rol OPS (D30).
+  - **Trazabilidad:** `X-Correlation-Id` y `X-Request-Id` en todas las operaciones; `ProblemDetails` v2 (`instance`,
+    `correlation_id`, `timestamp`); `UNAUTHENTICATED` pasa a `UNAUTHORIZED`, el código del contrato v2.
+  - `UserStatus` pasa a llamarse `AccountStatus` (lo usan usuarios y partners); `Health` agrega `latency_ms` para el health
+    del contrato v2.
+- **Verificación:** `npx @redocly/cli@2.11.0 lint` → **válido**; 4 advertencias de estilo del conjunto recomendado (sin 4xx en
+  `/health` y la JWKS, licencia sin URL, servidor `localhost`), que no aplican a un contrato interno.
+
+#### Paso 2 — contratos de los MS.G REST — ✅ escrito (25/10), pendiente de revisión
+- **Qué se pidió:** los contratos internos de Customers, Webhooks, Schedule, FlightStatus, Bookings y CheckIn.
+- **Cómo se hizo:**
+  - Seis archivos nuevos en `contract/` (`ms-g-<servicio>.openapi.yaml`), uno por MS.G, a partir del código del monolito
+    (entidades, reglas, `ecoairlines-extensions.yaml`) y de las sagas de `PLAN/PLAN.md` §4.2: cada operación es un paso de
+    saga, una ruta del enrutador o una fuente de la composición, con su compensación cuando la saga la necesita.
+  - Los schemas que también existen en el contrato del grupo se **referencian** (`./vuelos-openapi-v2.yaml#/…`), no se copian.
+  - **Hallazgo de diseño:** las sagas que disparan los eventos de Booking no tienen usuario, así que el ESB no puede reenviar
+    un token de usuario. Se propone **D41**: token de servicio del ESB + `X-Owner-Id` / `X-Actor-Id`. Identity pasa a
+    **v1.2.0** (cliente de semilla `ECOAIRLINES_ESB`; sus operaciones de administración usan el token del ESB y `X-Actor-Id`).
+  - Sin duplicados (D34) en los contratos: `bookingId` generado por el ESB, `claim` de referencia de pago de uso único,
+    emisión con `issued: 0`, `ALREADY_CANCELLED` tratado como éxito, check-in que no se repite.
+- **Verificación:** `npx @redocly/cli@2.11.0 lint` → **los 7 contratos válidos** (con las referencias externas resueltas);
+  solo advertencias de estilo (`/health` sin 4xx, licencia sin URL, servidor `localhost`).
+
+#### Pasos 3 y 4 — `contract/ms-g-offers.proto` y `contract/booking-inventory.proto` — ✅ escritos (25/10), pendientes de revisión
+- **Qué se pidió:** el contrato gRPC de Offers y la copia del proto de stock de Booking.
+- **Cómo se hizo:**
+  - `ms-g-offers.proto` (paquete `ecoairlines.offers.v1`, puerto 50061): `CatalogService`, `HoldService`, `InventoryService` y
+    `PublishingService`, con 20 RPCs que cubren el enrutador, cada paso de saga de §4.2 y la composición. Mensajes con la forma
+    de los schemas del contrato v2 (importes como texto, fechas RFC 3339).
+  - Inventario en dos niveles: **conteos por estado** por segmento y cabina (los cupos que hoy reserva el monolito) y **estado
+    de cada asiento asignado** (lo nuevo del contrato v2), con actualizaciones condicionales para que un asiento no se venda dos
+    veces (D34).
+  - El envío de stock a Booking queda documentado en el `.proto` (D33): no es una RPC de Offers, sino una llamada de Offers como
+    cliente a `booking-inventory.proto`.
+  - `booking-inventory.proto`: copia del §9 del contrato v2 con un comentario de origen al inicio.
+- **Verificación:** `buf build` compila los dos; `buf lint` (reglas `STANDARD`, salvo `FILE_LOWER_SNAKE_CASE` por D24) sin
+  errores, después de dar a cada RPC su propio mensaje de entrada y de salida; `@grpc/proto-loader` carga los 5 servicios; la
+  copia de Booking es idéntica línea por línea al contrato.
+
+#### Paso 5 — `contract/ms-g-post-sale.wsdl` + `ms-g-post-sale.xsd` — ✅ escritos (25/10), pendientes de revisión
+- **Qué se pidió:** el contrato SOA de PostSale (requisito del ingeniero: al menos un servicio SOA).
+- **Cómo se hizo:**
+  - XSD con los tipos (importes con 2 decimales, enumeraciones del contrato v2, `PostSaleFault` con los campos de
+    `ProblemDetails`) y WSDL 1.1 SOAP *document/literal* que lo importa: 8 operaciones, cada una con su `SOAP Fault` y las
+    cabeceras `CorrelationId` y `RequestId` en la petición y en la respuesta (contrato v2 §6).
+  - Reglas tomadas del monolito (`CancellationService`, `DateChangeService`, `BaggageService`): vencimiento de 15 min, máximo
+    10 ofertas de cambio, máximo 3 maletas extra, cálculo de reembolso y de diferencia de tarifa.
+  - Nuevo por el contrato v2: `CalculateCompensationRefund` (cancelación sin cotización por `FLIGHT_CANCELLED` o
+    `SAGA_COMPENSATION`, D37) y `ReleaseDateChangeOffer` (compensación). `QUOTE_EXPIRED` pasa de `409` a `410`.
+- **Verificación:**
+  - `lxml`: el XSD es un esquema válido; de 6 mensajes de ejemplo, los 4 correctos se aceptan y los 2 inválidos se rechazan
+    (`reasonCode` no permitido, importe con 3 decimales).
+  - Librería `soap` 1.1.6: el cliente generado del WSDL describe las 8 operaciones; un servidor levantado con el mismo WSDL
+    responde `ValidateBaggagePurchase` (70,00 USD por 2 maletas), devuelve la cabecera `CorrelationId` sin cambios y, al
+    pasar el límite, un `soap:Fault` con `BAGGAGE_LIMIT_EXCEEDED`, `status` 422 y el `correlationId`.
+
+#### Paso 6 — `contract/payment-api.openapi.yaml` — ✅ escrito (25/10), pendiente de revisión
+- **Qué se pidió:** el contrato de la Payment API simulada con tarjeta (solo canal web, D7 y D28).
+- **Cómo se hizo:**
+  - Modelo **autorizar → capturar** de las pasarelas reales, en lugar de "cobrar y después verificar" (ajuste del plan §4.8):
+    el navegador tokeniza y **autoriza** con la clave pública; el ESB **captura** el monto exacto en el paso `pago*` de la saga,
+    lo que marca la referencia como usada una sola vez; si la saga falla antes de capturar se **anula**, y después, se
+    **reembolsa**.
+  - Dos claves (pública `pk_test_…` para el navegador, secreta `sk_test_…` para el ESB): es un sistema externo, no usa el token
+    de D41.
+  - Reglas de tarjeta (Luhn, marca, vencimiento, CVV), token de un solo uso, tarjetas de prueba (`GET /test-cards` para el
+    botón de la web), idempotencia, rechazo como resultado (`DECLINED` con `declineCode`) y no como error.
+  - Diagramas v4: la línea del ESB a la Payment API dice "capturar (monto exacto, una vez)"; en el modelo, `payments.status` y
+    `used_references` (orden y fecha de captura).
+- **Verificación:** `npx @redocly/cli@2.11.0 lint` → válido (3 advertencias de estilo); las 5 tarjetas de prueba cumplen Luhn y
+  la regla de marca del contrato.
+
+#### Paso 7 — contratos de los 5 microservicios de respuesta — ✅ escritos (25/10), pendientes de revisión
+- **Qué se pidió:** los contratos de MS.Vuelos, MS.Reservas, MS.Postventa, MS.Clientes y MS.Admin, repartiendo las 30
+  operaciones del contrato v2 según su `x-microservice`.
+- **Cómo se hizo:**
+  - Las operaciones del contrato del grupo se **referencian por ruta** (`$ref` a `vuelos-openapi-v2.yaml#/paths/…`) en lugar de
+    copiarse: son idénticas por construcción y, si el grupo cambia el contrato, los MS lo siguen sin editar nada. Antes se
+    comprobó que cada una de las 24 rutas tiene todas sus operaciones en un mismo `x-microservice`.
+  - Operaciones propias (solo vía GraphQL, D23) bajo `/ecoairlines/...`, con los schemas de los contratos de los MS.G:
+    Reservas (reserva web con asistencia y gestión de la asistencia), Clientes (registro, login, perfil y `POST /oauth2/token`
+    de Identity), Admin (usuarios, partners, precios y descuento máximo, rutas, flota, asistencia, eventos, indicadores y
+    telemetría con búsqueda por correlation ID y estado de la integración con Booking).
+  - Cada contrato documenta la seguridad (token de partner o de usuario, rechazo del token de servicio, dueño desde el token)
+    y la cadena del ESB de cada operación.
+  - Generados con `contract/tools/generar_ms_respuesta.py`.
+- **Verificación:** `npx @redocly/cli@2.11.0 lint` → los 5 válidos (solo advertencias de estilo);
+  `contract/tools/verificar_operaciones_v2.py` (resuelve todas las referencias y compara) → **30/30** operaciones una sola
+  vez, en su `x-microservice` (9 Vuelos, 12 Reservas, 6 Postventa, 3 Clientes) y con definición idéntica a la del contrato.
+
+#### Paso 8 — `contract/gateway.graphql` — ✅ escrito (25/10), pendiente de revisión
+- **Qué se pidió:** el SDL completo del gateway GraphQL, la única entrada de la web (D23).
+- **Cómo se hizo:**
+  - Se parte del SDL de `contract/vuelos-graphql.yaml` (sin modificar ese archivo) y se **extiende sin romperlo**: se conservan
+    todos sus tipos, queries, mutations y la suscripción `bookingEvents`.
+  - Lo nuevo del contrato v2: estado por asiento (`Seat.status`, `SeatStatus`), `ttlMinutes` del hold, `issueTickets`,
+    `changeSeats`, `updateFlightStatus` y `flightOperations` (con `FLIGHTS_OPS`), reembolso en la cancelación, puerta y demora
+    en el estado de vuelo, nuevos códigos de error y de eventos. El secreto de los webhooks se devuelve **enmascarado** (en v2 es
+    `writeOnly`), sin cambiar el tipo.
+  - Lo propio: registro, login, perfil, asistencia médica (en el checkout y en la reserva) y todo el panel de administración
+    (usuarios, partners, precios y descuento máximo, rutas, flota, asistencia por vuelo, eventos, indicadores y telemetría).
+  - El encabezado documenta transporte, seguridad (solo tokens de usuario), idempotencia v2, errores `ProblemDetails` v2 y
+    pagos; cada campo indica con `→ MS.<servicio> <operationId>` qué operación del MS de respuesta lo resuelve.
+- **Verificación** (`contract/tools/verificar_gateway_graphql.cjs`, `graphql` 16.9.0):
+  - `buildSchema` → válido: 30 queries, 31 mutations, 176 tipos.
+  - `findBreakingChanges` contra la base del Reto 1 → **0 cambios incompatibles**; 31 cambios aditivos (valores nuevos de
+    enums y 2 campos de entrada opcionales).
+  - Las 71 referencias `→ MS.<servicio> <operationId>` existen en los contratos de los MS de respuesta.
+
+#### Paso 9 — `contract/events.asyncapi.yaml` — ✅ escrito (25/10), pendiente de revisión
+- **Qué se pidió:** el contrato de los eventos: bus interno, salientes a Booking y entrantes de Booking.
+- **Cómo se hizo:**
+  - AsyncAPI **3.0.0**, generado con `contract/tools/generar_events_asyncapi.py` (no se edita a mano).
+  - **Eventos públicos (15):** los del enum `VuelosEventName` del contrato v2; sus payloads **referencian** los schemas
+    CloudEvents del grupo (`EventBookingConfirmed`, `EventFlightStatusChanged`…) con el formato de schema OpenAPI, así son
+    iguales por construcción. Los 4 sin schema propio en el contrato (`ticket_issuing`, `ticket_failed`, `flight.cancelled`,
+    `flight.schedule_changed`) usan `CloudEventBase` del contrato más su `data`.
+  - **Eventos internos (9):** `schedule.published` (lleva los vuelos, D4), `pricing.changed`, `user.*`, `partner.*` y
+    `booking.assistance_requested` (sin el tipo de asistencia: no lleva datos de salud). `type` en `ec.ecoairlines.internal.*`.
+  - **Canales:** bus interno RabbitMQ (exchange topic `ecoairlines.events`, routing key = nombre corto, outbox, colas por
+    consumidor y dead letter), entrega de webhooks a Booking (firma, reintentos y filtro D40), puente opcional al bus
+    `booking.events`, reintentos diferidos del ESB (TTL + DLX) y entrada de `payment.confirmed`, `payment.failed` y
+    `package.cancelled` por AMQP o por webhook firmado (canal por confirmar, BKG-01; propuesta registrada en `HALLAZGOS.md`).
+  - Un `correlationId` de AsyncAPI apunta a `$message.payload#/correlationid` en todos los CloudEvents.
+- **Verificación** (`contract/tools/verificar_events_asyncapi.mjs`, `@asyncapi/parser` 3.4.0 + `@asyncapi/openapi-schema-parser`):
+  - Documento válido: **0 errores, 0 avisos**; 31 canales, 56 operaciones, 28 mensajes con payload resuelto y con
+    `correlationid` (salvo la tarea interna `esb.deferred`, que lo lleva como campo propio).
+  - Los públicos son exactamente los 15 de `VuelosEventName` y están los 3 que consume la aerolínea.
+  - Hallazgo de herramienta: el plugin de schemas OpenAPI modifica en el lugar los schemas compartidos y falla cuando dos
+    mensajes referencian el mismo; el verificador le pasa una copia de cada schema (cada mensaje validado por separado ya
+    pasaba).
+
+#### Paso 10 — suite de conformidad v2 (`tests/conformidad-v2`) — ✅ escrita (25/10), pendiente de revisión
+- **Qué se pidió:** la suite que deben pasar los microservicios antes de integrarse con Booking (meta de V2.2–V2.14).
+- **Cómo se hizo:**
+  - **Caja negra:** llama por HTTP a `CONFORMANCE_BASE_URL` (gateway local, monolito o URL pública), sin levantar la
+    aplicación; credenciales del partner (`CONFORMANCE_CLIENT_ID`/`SECRET` → `POST /oauth2/token`) y token de ADMIN opcional.
+  - El cliente llama a cada operación **por su `operationId`**: método, ruta y cabeceras obligatorias (`Idempotency-Key`,
+    `X-Device-Fingerprint`) salen del contrato. Cada respuesta se valida con Ajv contra `vuelos-openapi-v2.yaml` (status
+    documentado, Content-Type, schema) y contra las reglas transversales: `X-Correlation-Id` sin cambios (§6),
+    `correlation_id` y `timestamp` en `ProblemDetails` (§11), `Location` en los `201`.
+  - 48 pruebas por microservicio (Vuelos, Reservas, Postventa, Clientes) y transversales: casos correctos y de error
+    (idempotencia y `IDEMPOTENCY_KEY_REUSED`, referencia de pago reutilizada y `AMOUNT_MISMATCH` — D34 —, recursos de otro
+    usuario → `404`, emisión idempotente `issued: 0`, `ALREADY_CANCELLED`, `SAGA_COMPENSATION` sin cotización, descuento
+    > 50 % → `422` — BKG-12 —, transición inválida de estado de vuelo, partner sin `flights:admin` → `403`). Las pruebas que
+    modifican datos solo crean holds y reservas propios, o vuelven a guardar los valores vigentes.
+  - **Cobertura:** cada llamada registra "operación + status"; al final se informa la cobertura y se falla si alguna de las 30
+    operaciones quedó sin probar.
+  - **Autoverificación** (6 pruebas, corre siempre, sin red): 30 operaciones repartidas 9/12/6/3, Ajv compila todos los
+    schemas de respuesta, los ejemplos del contrato cumplen sus schemas y cada operación tiene al menos una prueba.
+  - `npm run test:conformidad-v2`; `tests/` agregado al lint y a la verificación de tipos de las pruebas.
+- **Verificación:** autoverificación **6/6**; las 48 pruebas en vivo se omiten sin `CONFORMANCE_BASE_URL` (todavía ningún
+  servidor implementa el contrato v2; la primera ejecución real será en V2.13). Lint sin advertencias. Tipos: **0 errores en la
+  suite**; `tsc -p tsconfig.spec.json` informa 16 errores **que ya existían** en pruebas del monolito (imports
+  `@ecoairlines/*` que no resuelven), idénticos con y sin este cambio.
+  **Corrección (V2.2):** esos 16 errores desaparecen al compilar la solución completa (`tsc -b`): venían de un `dist/` del
+  monolito desactualizado (sus pruebas importan `@ecoairlines/*` desde `dist/`), no del código.
+
+### V2.2 — Base común — ✅ HECHA (25/10), pendiente de auditoría y aprobación
+- **Qué se pidió:** la base de todos los microservicios (PLAN.md §6, V2.2): workspaces, librería compartida, plantilla de
+  servicio, Docker Compose con PostgreSQL (una base y un usuario por servicio), RabbitMQ, el Collector y `booking-simulado`, y la
+  prueba de arquitectura.
+- **Cómo se hizo:**
+  - **Workspaces** nuevos: `packages/*` y `services/{gestion,respuesta,externos}/*`. El monolito no se tocó (sigue como
+    referencia): lo que pasa a `shared` se **copió y adaptó** al contrato v2.
+  - **`packages/shared` (`@ecoairlines/shared`):** correlation ID (`X-Correlation-Id` sin cambios + `X-Request-Id` por salto,
+    contexto con AsyncLocalStorage y propagación por HTTP, gRPC, AMQP y SOAP — D31); `ProblemDetails` v2 (excepción, filtro con
+    `instance`, `correlation_id` y `timestamp`, códigos del contrato v2); logs JSON con los campos de `api_request_logs` y
+    redacción de datos sensibles; `/health` con dependencias y límite de 800 ms por chequeo; OpenTelemetry (trazas por OTLP/HTTP,
+    activo solo con `OTEL_EXPORTER_OTLP_ENDPOINT`, fuera del índice para iniciarse antes que NestJS); CloudEvents y firma
+    HMAC-SHA256 de webhooks; dinero (con descuento y comparación al centavo), conteo de pasajeros y aeropuertos; tipos del
+    contrato v2 generados con `openapi-typescript` (`npm run generate:contract -w packages/shared`).
+  - **Plantilla de servicio:** `EcoServiceModule.forRoot({ name, version, healthChecks })` + `configureService(app)`: cada
+    servicio la importa en lugar de copiar código (correlación, log por petición, logger JSON, filtro de errores y
+    `ValidationPipe` estricto con `forbidNonWhitelisted`).
+  - **`services/externos/booking-simulado`** (primer servicio con la plantilla): recibe webhooks CloudEvents y **verifica la
+    firma**, deduplica por `id`; servidor gRPC `inventory.InventoryStockService` de `booking-inventory.proto` (valida
+    `item_id`, fecha, hora y unidades); emite `payment.*` y `package.cancelled` firmados hacia la aerolínea (vía de BKG-01).
+  - **`infra/`:** `docker-compose.yml` (postgres 17.11, rabbitmq 4.1.8, otel-collector-contrib 0.162.0, booking-simulado),
+    script de bases por servicio con `REVOKE` (ningún usuario entra a la base de otro ni a `postgres`), configuración del
+    Collector (exporter `debug`, borra cabeceras sensibles), Dockerfile común de dos etapas (usuario sin privilegios),
+    `.env.example`, `.dockerignore` y `.gitattributes` (LF en scripts de contenedores).
+  - **Prueba de arquitectura v2** (`tests/arquitectura-v2`): entre paquetes solo `@ecoairlines/shared`; `shared` no depende de
+    servicios; nadie depende del monolito; un MS.G no nombra a otro; hacia Booking solo Offers, Webhooks y el ESB. Cada regla
+    tiene un caso sintético que demuestra que detecta la violación.
+  - Versiones elegidas con al menos ~2 semanas de publicadas: OpenTelemetry 0.223 (no la 0.300, de hace 5 días), gRPC 1.14,
+    imágenes estables (no `nightly`).
+  - Comandos: `npm run test:v2` (config `vitest.config.v2.ts`, con decoradores legacy y metadatos), `npm run infra:up` /
+    `infra:down`.
+- **Verificación:**
+  - `tsc -b` (solución completa) sin errores; `tsc -p tsconfig.spec.json` **0 errores**; lint sin advertencias.
+  - Pruebas v2: **41/41** (21 de `shared`: plantilla en una app NestJS real, correlación, ProblemDetails, health, logs,
+    CloudEvents, dinero; 11 de `booking-simulado`; 9 de arquitectura). Monolito: **174/174** unitarias, sin cambios.
+  - `docker compose up`: postgres, rabbitmq y booking-simulado **healthy**; 11 bases creadas; `offers_svc` entra a `offers` y
+    es **rechazado** en `bookings` y `postgres`.
+  - Una petición con `X-Correlation-Id: corr-verificacion-v22` vuelve con la misma cabecera, su span llega al **Collector**
+    con el atributo `correlation_id` y el servicio `booking-simulado`, y su log JSON trae `correlation_id`, `request_id`,
+    `trace_id`, `operation`, `status` y `latency_ms`.
+  - Desde fuera de Docker: `PushStockUpdate` por gRPC → `success` (guardado con su `x-correlation-id`); webhook firmado → 204;
+    firmado con otro secreto → 401.
+  - Hallazgos durante la verificación (corregidos): el build de la imagen reveló dependencias que los paquetes usaban sin
+    declarar porque las instalaba el monolito (`typescript`, `@types/express`, `class-transformer`); quedaron declaradas en
+    cada paquete, así cada servicio es independiente.
+- **Pendiente:** auditoría de Gemini (`GEMINI.md`) y aprobación del responsable.
+
+### V2.3 — MS.G.Identity — ✅ HECHA (25/10), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.3: migrar `dev-auth`; `users`, `roles`, `role_scopes` con semilla CLIENTE y ADMIN;
+  `partner_clients` y `POST /oauth2/token` con el partner Booking; firma RS256 y JWKS; reglas de §4.10.
+- **Cómo se hizo** (`services/gestion/ms-g-identity`, contrato `contract/ms-g-identity.openapi.yaml`):
+  - **Capas:** `domain/` (modelo y reglas puras), `repositories/` (interfaz + PostgreSQL + memoria con el mismo
+    comportamiento), `services/` (cuentas, partners, tokens, semilla), `http/` (DTO, guards, controladores).
+  - **Tablas** (base `identity`, usuario `identity_svc`): `roles`, `role_scopes`, `users` (un solo `role_id`, `status`,
+    `created_by`, `updated_by`, `last_login_at`) y `partner_clients` (`scopes`, `secret_hash`, `secret_rotated_at`,
+    `last_token_at`). Se crean al arrancar.
+  - **Migración de dev-auth:** mismo `scrypt` con sal propia (ahora asíncrono, en formato `scrypt$sal$hash`) y los mismos
+    usuarios de prueba con el **mismo `sub`** (sus reservas siguen siendo suyas). Los tres clientes demo solo se siembran en
+    local; en producción solo con `SEED_DEMO_USERS=true`. El administrador y el partner Booking se siembran siempre, y en cada
+    arranque se reaplican `ADMIN_PASSWORD` y `BOOKING_CLIENT_SECRET`.
+  - **Tokens RS256** con `kid` (huella RFC 7638) de los tres tipos del contrato: usuario (login y registro), partner
+    (`client_credentials`) y servicio del ESB (`ECOAIRLINES_ESB`, `ecoairlines:internal`, D41; solo de configuración, nunca
+    aparece en `/partners`). La JWKS publica la clave vigente y la anterior durante una rotación (`IDENTITY_PREVIOUS_PUBLIC_KEY`).
+    En `shared` se agregaron `signJwt`, `verifyJwt` (solo RS256, valida `iss`, `aud`, `exp`, `token_use`), `RemoteJwks` (para los
+    demás servicios) y `ServiceTokenGuard`.
+  - **OAuth2:** `client_secret_basic` y `client_secret_post` (las dos a la vez → `invalid_request`), errores con el formato de
+    RFC 6749 §5.2 (`invalid_request`, `invalid_client` con `WWW-Authenticate` si fue por Basic, `unsupported_grant_type`,
+    `invalid_scope`), `Cache-Control: no-store`, cuerpo solo `application/x-www-form-urlencoded`. Inexistente, secreto malo o
+    bloqueado responden igual.
+  - **Administración** (usuarios, partners, roles): solo con el token de servicio del ESB **y** un `X-Actor-Id` que sea un ADMIN
+    **activo en la base** (un admin bloqueado deja de poder operar aunque su token siga vigente). Los secretos de partner
+    (32 bytes base64url) se muestran una sola vez; rotar invalida el anterior de inmediato.
+  - **Reglas:** registro siempre CUSTOMER (un campo `role` se rechaza); correo en minúsculas y sin espacios; mismo 401 para
+    correo inexistente y contraseña incorrecta (y mismo tiempo: se deriva scrypt también sin usuario); `ACCOUNT_BLOCKED` solo con
+    la contraseña correcta; `CANNOT_MODIFY_SELF`; `LAST_ADMIN`; un partner nunca tiene `flights:admin` ni `ecoairlines:*`;
+    10 intentos por minuto por IP (login, registro) o por `client_id` (token) → 429 con `Retry-After`.
+  - **Docker Compose:** servicio `ms-g-identity` en `127.0.0.1:4001` con su base; `.env.example` con sus variables.
+- **Errores encontrados y corregidos durante la fase** (para aprender de ellos):
+  - **Carrera en `LAST_ADMIN`:** contar los admins y luego cambiar eran dos pasos; dos admins que se bloquean a la vez veían
+    "hay 2" y quedaban 0. Ahora "contar y cambiar" es atómico (`changeUser`: en PostgreSQL una transacción con
+    `pg_advisory_xact_lock`). Probado con dos bloqueos simultáneos en memoria y contra PostgreSQL real.
+  - **Actualización perdida:** el login guardaba el registro completo para poner `lastLoginAt` y podía deshacer un bloqueo
+    hecho mientras verificaba la contraseña; lo mismo `lastTokenAt` con un partner bloqueado o con el secreto rotado. Ahora cada
+    operación actualiza solo sus columnas (`touchLastLogin`, `touchPartnerToken`, `patchPartner`).
+  - **Contrato propio inválido:** `PartnerWithSecret` era `allOf: [Partner, {clientSecret}]`, pero `Partner` tiene
+    `additionalProperties: false`, así que **ninguna** respuesta podía cumplirlo. Redocly no lo detecta; lo detectó la prueba que
+    valida cada respuesta con el contrato. Se declaró como objeto completo (`ms-g-identity.openapi.yaml` 1.2.1).
+  - `ADMIN_PASSWORD` exigía 16 caracteres como los secretos de máquina, pero es una contraseña humana: ahora mínimo 8, como
+    `Password` del contrato (la clave por defecto de dev-auth tiene 12).
+  - Una cabecera Basic con un `%` mal codificado daba 500; ahora `invalid_client`.
+  - La prueba de arquitectura (regla 5) marcaba a Identity por `BOOKING_CLIENT_SECRET`, aunque Identity **autentica** a Booking
+    sin hablarle. La regla ahora busca marcas de comunicación (`BOOKING_*_URL`, `_HOST`, `_PORT`, `_GRPC`, `_STOCK`, `_EVENTS`,
+    `_WEBHOOK`…), con casos sintéticos para ambos lados.
+- **Verificación:**
+  - `tsc -b` sin errores; `tsc -p tsconfig.spec.json` 0 errores; lint sin advertencias; Redocly válido.
+  - Pruebas v2: **102/102 (más 4 omitidas sin base)** (Identity: 43 HTTP, cada respuesta validada con el contrato, + 9 de reglas; 4 de integración con
+    PostgreSQL que se activan con `IDENTITY_TEST_DATABASE_URL`, y pasaron 4/4 contra el contenedor).
+  - Contenedor: arranca **healthy** con `database: up`; sin la clave en `NODE_ENV=production` **se niega a arrancar** (visto con
+    la imagen antes de poner `NODE_ENV: development` en el compose local). Login de María → 200 con
+    `X-Correlation-Id: corr-verificacion-v23`, cuyo span llegó al Collector con `service.name = ms-g-identity`. Token de
+    `BOOKING_PROTOTIPO` → `token_use = partner` con sus 6 scopes y **sin `flights:admin`**; secreto incorrecto → 401
+    `invalid_client`. Token del ESB + `X-Actor-Id` del admin → `/users/summary`; sin `X-Actor-Id` → 403. Las contraseñas se
+    guardan como `scrypt$…`; `offers_svc` no puede entrar a la base `identity`.
+- **Pendiente:**
+  - Auditoría de Gemini y aprobación del responsable.
+  - Las trazas de consultas a PostgreSQL llegan con V2.16 (hoy solo HTTP).
+  - Con el login a través del ESB, el límite por IP depende de `X-Forwarded-For`: Identity confía en él solo si viene de la red
+    interna (`TRUST_PROXY`, por defecto loopback y redes privadas). El ESB (V2.9) deberá reenviarlo.
+
+### V2.4 — MS.G.Schedule — ✅ HECHA (25/10), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.4: rutas, `route_aircraft`, flota y tipos de avión con la construcción y validación del
+  horario; `fare_class_prices` y `price_changes`; `promotion_agreements` (0–50 %, rutas, cabinas, vigencia) con la forma
+  `ContratoPromocionesResponse`.
+- **Cómo se hizo** (`services/gestion/ms-g-schedule`, contrato `contract/ms-g-schedule.openapi.yaml`):
+  - **Motor de horario migrado, no reescrito:** `seed/timetable.ts` del monolito se copió a `src/domain/timetable.ts` con
+    cambios mínimos (datos de aviones desde `shared`, errores con código). Sus **15 pruebas** del monolito
+    (`fleet-planner.spec.ts`) se migraron y pasan igual: es la prueba de que la copia se comporta como el original.
+  - **Reglas** de `AdminRoutesService` y `AdminFleetService` (`src/domain/rules.ts`), con los códigos del contrato:
+    `ROUTE_HAS_SOLD_SEATS` (con `soldSeats` que el ESB trae de Offers), `ROUTE_ALREADY_EXISTS`, `UNKNOWN_AIRPORT`,
+    `AIRCRAFT_RANGE_EXCEEDED`, `NOT_ENOUGH_AIRCRAFT` (con cuántos faltan), `AIRCRAFT_NOT_IN_FLEET`, `AIRCRAFT_MISMATCH`,
+    `TIMETABLE_CONFLICT`, `AIRCRAFT_IN_SERVICE`, `MULTIPLIER_OUT_OF_RANGE`, `PROMOTION_DISCOUNT_OUT_OF_RANGE`.
+  - **Tablas** (base `schedule`, usuario `schedule_svc`): `scheduled_routes`, `route_aircraft`, `aircraft`,
+    `fare_class_prices`, `price_changes`, `promotion_agreements` y `schedule_meta` (versión del horario). La red base del
+    monolito (90 rutas, 149 aviones, `source = NETWORK`) y los precios de referencia se siembran solo si la base está vacía.
+  - **Sin duplicados (D34):** todo cambio de rutas o flota pasa por `changeSchedule`, que en PostgreSQL es una transacción con
+    `pg_advisory_xact_lock`: dos rutas creadas a la vez no reciben los mismos números de vuelo ni el mismo avión. Los precios
+    se guardan todo o nada (`SELECT … FOR UPDATE`), con una fila de historial por cambio real.
+  - **Horario:** `GET /timetable` (hasta 92 días, con `departureAt`/`arrivalAt` en la hora local de cada aeropuerto y la
+    matrícula) y `GET /fleet-schedule`. El horario semanal se guarda en caché y se reconstruye solo si cambió
+    `schedule_meta.version`, así varias réplicas siguen consistentes.
+  - **Acuerdo de promociones (D35):** un solo descuento máximo de 0 a 50 %; las rutas habilitadas deben operarse, las cabinas
+    existir en la flota y la vigencia no haber pasado. `PUT` reemplaza el acuerdo completo.
+  - **En `shared`:** `domain/aircraft.ts` (tipos de avión, mapas de cabina, alcance, tiempo en tierra; también lo usará Offers),
+    `JwksTokenVerifier` (verifica el token del ESB con la JWKS de Identity, cuya URL llega por `IDENTITY_JWKS_URL` para no
+    nombrar a otro MS.G en el código) y el decorador `@ActorId()` (400 si falta `X-Actor-Id`).
+  - **Pruebas de contrato compartidas:** el validador de Identity se generalizó a `tests/support/openapi-contract.ts` (resuelve
+    las referencias a `vuelos-openapi-v2.yaml`). La regla 1 de arquitectura admite que **solo** los `test/` de un servicio lo
+    importen (caso sintético: desde `src/` sigue siendo una violación).
+  - **Docker Compose:** `ms-g-schedule` en `127.0.0.1:4004`.
+- **Errores del contrato propio corregidos** (`ms-g-schedule.openapi.yaml` 1.0.0 → 1.1.0):
+  - La compensación "borrar → crear" de la saga habría recreado la ruta con **otros** números de vuelo (otro `routeId`) y
+    Offers ya no la reconocería. Se agregó `POST /routes?restoreRouteId=` para restaurarla con su identificador.
+  - `ROUTE_ALREADY_EXISTS` decía "ya hay una ruta entre esos aeropuertos", lo que rechazaría la propia red base (dos rutas por
+    par de ciudades). La regla real, la del monolito, es "el mismo vuelo duplicado": mismo origen, destino y hora.
+  - Faltaban los códigos `AIRCRAFT_NOT_IN_FLEET`, `AIRCRAFT_MISMATCH` y `TIMETABLE_CONFLICT`, el 400 de los `DELETE` (p. ej.
+    sin `soldSeats`) y el 422 `UNKNOWN_AIRPORT` en el alta y el cambio de un avión.
+- **Verificación:**
+  - `tsc -b` sin errores; `tsc -p tsconfig.spec.json` 0 errores; lint sin advertencias; Redocly válido.
+  - Pruebas v2: **156/156** (Schedule: 15 del motor + 37 HTTP con cada respuesta validada contra el contrato). Integración con
+    PostgreSQL (`SCHEDULE_TEST_DATABASE_URL`, en un esquema temporal que se borra): **5/5**, incluidas dos rutas creadas en
+    transacciones simultáneas, el ROLLBACK y los precios todo o nada. Las de Identity siguen 4/4.
+  - Contenedor: **healthy** con `database: up`; sembró 90 rutas y 149 aviones. Con un **token real del ESB emitido por
+    Identity**: rutas, flota y horario responden; sin token → 401; con el token de Booking → 403. Hoy: 180 vuelos (p. ej.
+    EA280 MAD→UIO `06:00+01:00` → `11:25-05:00`, HC-W06). Horario de 92 días: 4 MB en ~0,5 s. Crear UIO–GYE → 201
+    `EA300-EA301` con un avión nuevo `HC-J27` y el mismo `X-Correlation-Id` (llegó al Collector). Multiplicador 11 → 422
+    `MULTIPLIER_OUT_OF_RANGE`; descuento 51 → 422 `PROMOTION_DISCOUNT_OUT_OF_RANGE`; acuerdo de 12 % guardado con la forma
+    del contrato v2. `identity_svc` no puede entrar a la base `schedule`.
+- **Pendiente:**
+  - Auditoría de Gemini y aprobación del responsable.
+  - **Decisión a confirmar:** no se siembra un acuerdo de promociones; hasta que el administrador lo guarde,
+    `GET /vuelos/promociones/contrato` responderá 404 a Booking (el contrato v2 lo permite).
+  - Publicar a Offers (`PublishTimetable`, `PublishFarePrices`) y emitir `schedule.published` / `pricing.changed` son pasos de
+    las sagas del ESB (V2.10).
+
+### V2.4 (ajuste del 25/10) — red de prueba con un avión y acuerdo inicial "sin promociones"
+- **Qué se pidió:** el responsable aprobó V2.4 y pidió (1) que el acuerdo con Booking empiece en 0 % ("sin promoción") en vez
+  de responder 404, y (2) arrancar con **un solo avión con su horario** para las pruebas; en la nube el administrador agregará
+  más vuelos.
+- **Cómo se hizo:** `src/domain/seed-network.ts`: HC-N01 (A320neo, base UIO) todos los días con EA100 UIO 07:00 → GYE, EA101
+  GYE 09:00 → UIO, EA102 UIO 13:00 → BOG y EA103 BOG 16:30 → UIO (Bogotá es internacional: sirve para la regla de pasaporte de
+  V2.6; y hay conexión GYE → UIO → BOG). El módulo valida el horario al cargarse. `PromotionsService.seedWithoutPromotions`
+  crea `permite_promociones: false, 0 %` para `BOOKING_PROTOTIPO` solo si no existe (`updated_by` NULL en la semilla). La red
+  del monolito (90 rutas) sigue en `timetable.ts` para las pruebas del motor. En la base local se borraron las tablas de
+  Schedule (solo tenían datos sembrados) para que se sembrara la red nueva.
+- **Verificación:** Schedule 52/52 y 5/5 con PostgreSQL; el contenedor arrancó con "Red de prueba sembrada (postgres): 2 rutas,
+  1 avión".
+
+### V2.5 — MS.G.Offers — ✅ HECHA (25/10), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.5: servidor gRPC según `ms-g-offers.proto`; búsqueda, mapa con estado, holds (TTL 5–30),
+  inventario por estado y alternativas; cambio de estado atómico; `PublishTimetable`, `PublishFarePrices`, `ValidateHold`,
+  `CloseFlightSales`; barrido de holds y outbox `hold.*`; cliente gRPC de Booking con reintentos y `stock_sync`.
+- **Cómo se hizo** (`services/gestion/ms-g-offers`):
+  - **Los 20 RPC del proto** (Catalog, Hold, Inventory, Publishing) más `grpc.health.v1.Health` (paquete oficial
+    `grpc-health-check` 2.1.0), en el puerto 50061; HTTP solo para `/health`. Cada llamada exige el token de servicio del ESB,
+    toma o crea `x-correlation-id` y lo devuelve con su `x-request-id`; los errores van con el código gRPC de la tabla del proto
+    y el `ProblemDetails` serializado en el trailer `x-problem-details-bin`. Se usó `@grpc/grpc-js` directamente (como
+    `booking-simulado`) en vez de `@nestjs/microservices`: da control directo sobre la metadata y los trailers.
+  - **Migrado del monolito** (`MockGdsService`, `gds-ids.ts`, `HoldService`): identificadores reconstruibles, conexiones
+    (escala 1–10 h, sin rodeos), fórmula de precios, mapa de asientos con características, reglas del hold. Los vuelos ahora son
+    la copia publicada por Schedule y los multiplicadores la copia `fare_prices` (D35).
+  - **Sin duplicados (D34):** `inventory` guarda los cupos por estado con `CHECK (ocupados ≤ total)`; cada movimiento es un
+    `UPDATE … WHERE quedan suficientes`. Los asientos están en `booking_seats` con índice único (segmento, asiento) → `SEAT_TAKEN`.
+    Los cambios de estado de un hold son condicionales (`WHERE status = 'HELD'`): no se libera, vence ni consume dos veces.
+    `ConsumeHold` es idempotente por `booking_id` y las operaciones de saga por `saga_id` (`saga_results`).
+  - **Stock a Booking (D33):** cada cambio de cupos deja en `stock_sync`, **en la misma transacción**, el valor absoluto de esa
+    cabina; `StockSyncService` lo envía en segundo plano a `PushStockUpdate` con `x-correlation-id`, y si falla reintenta con
+    espera creciente (1 s … 60 s). Un envío solo se marca hecho si el valor no cambió mientras viajaba (`version`). Un vuelo con
+    la venta cerrada se informa con 0.
+  - **Outbox:** `hold.created` y `hold.expired` como CloudEvents en la tabla `outbox` (el relé al bus llega en V2.11). Barrido de
+    holds vencidos cada 30 s.
+  - `scripts/dev/publicar-horario.mjs` hace, **solo en desarrollo y hasta V2.10**, lo que harán las sagas del ESB: lee el horario,
+    los precios y el acuerdo de Schedule y los publica en Offers.
+  - Docker Compose: `ms-g-offers` (HTTP 4005 — en V2.8 pasó a 4009 —, gRPC 50061) con `BOOKING_GRPC_ADDRESS=booking-simulado:50051`.
+- **Errores encontrados y corregidos durante la fase:**
+  - `ReserveSeats` y `AutoAssignSeats` cambiaban el estado del asiento sin mover su cupo: un check-in con asiento automático
+    habría dejado el asiento `CHECKED_IN` y el cupo contado como `TICKETED` (ocupación falsa). Ahora todo cambio de estado de un
+    asiento mueve también su cupo, en la misma transacción.
+  - Pruebas mal aisladas: la del barrido adelantaba el reloj 16 min y vencía los holds de otras pruebas (el servicio hacía lo
+    correcto). Ahora usa un hold de 5 min y adelanta 6.
+- **Verificación:**
+  - `tsc -b` y `tsc -p tsconfig.spec.json` sin errores; lint sin advertencias.
+  - Pruebas v2: **182/182** (Offers: 25 con un cliente gRPC real y un Booking falso que se apaga). Con PostgreSQL real
+    (`OFFERS_TEST_DATABASE_URL`, esquema temporal): **5/5** — 10 holds simultáneos por 12 cupos de Business → exactamente 6
+    ganan, sin sobreventa; liberar el mismo hold 3 veces a la vez devuelve sus cupos una vez; dos reservas por el mismo asiento →
+    una `SEAT_TAKEN` y la otra intacta; 6 asientos automáticos simultáneos, todos distintos. Total con base real: 14/14.
+  - **Verificación del plan, punto por punto:** dos holds simultáneos por los últimos cupos → uno gana y el otro
+    `OFFER_NO_LONGER_AVAILABLE` (la oferta ya no tiene cupo); por el mismo **asiento** → `SEAT_TAKEN`. `availableSeats` = cupos
+    `AVAILABLE` (162 → 160 tras un hold de 2; el infante no ocupa asiento). Tras un hold, booking-simulado recibió el stock nuevo
+    (160) con el mismo `x-correlation-id`. Con booking-simulado **apagado** el hold se creó, el envío quedó pendiente con
+    reintentos y llegó (157) cuando volvió.
+  - Contenedores: 368 vuelos publicados (4 diarios × 92 días) y 736 stocks iniciales enviados; con el token real del ESB:
+    búsqueda UIO→BOG, conexión GYE→UIO→BOG, sin token → `UNAUTHENTICATED`, token de Booking → `PERMISSION_DENIED`.
+    `schedule_svc` no puede entrar a la base `offers`.
+- **Pendiente:**
+  - Auditoría de Gemini y aprobación del responsable.
+  - Relé del outbox a RabbitMQ (V2.11) y trazas gRPC/PostgreSQL (V2.16).
+  - El plan pedía "dos holds por el último asiento → `SEAT_TAKEN`"; en el diseño del proto un hold toma **cupos** (sin asiento) y
+    el asiento se elige al reservar: el choque por cupos responde `OFFER_NO_LONGER_AVAILABLE` y el choque por el mismo asiento,
+    `SEAT_TAKEN`. Las dos cosas están probadas.
+
+### V2.6 — MS.G.Bookings y MS.G.CheckIn — ✅ HECHA (25/10), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.6: Bookings con sus endpoints internos (reemplazan a `BookingsFacade`), emisión separada e
+  idempotente (`issued: 0`), los 8 estados, canal de venta, `payment_records` (referencia única), reembolsos, reservas por
+  vuelo y `passenger_assistance`; CheckIn que exige boletos emitidos, pases con grupo, puerta y código de barras, y
+  `assistance_ready`.
+- **Cómo se hizo:**
+  - **`services/gestion/ms-g-bookings`** (los 20 endpoints de `ms-g-bookings.openapi.yaml`). La reserva es un agregado que se
+    guarda completo (`bookings.data`, jsonb); lo que debe ser único en todo el sistema tiene su índice único, dentro de la
+    misma transacción: PNR, `hold_id` (un hold no se usa en dos reservas: `HOLD_ALREADY_CONSUMED`), `payment_records`
+    (una referencia de pago una sola vez, D34) y `passenger_documents (segmento, documento)` (un documento una sola vez por
+    vuelo: `PASSENGER_ALREADY_ON_FLIGHT`). La asistencia (dato de salud) va en su propia tabla y solo la ven el dueño y el
+    administrador (nunca un paso de saga sin usuario).
+  - **Migrado del monolito:** `passenger-rules.ts`, `passenger-identity-rules.ts` (edades, cédula ecuatoriana con dígito
+    verificador, documento vigente, documento no repetido) y `booking-records.ts` (PNR sin caracteres ambiguos, e-tickets),
+    con los códigos del contrato v2 (`INFANT_WITHOUT_ADULT`, `DOCUMENT_EXPIRED`, `PASSPORT_REQUIRED_INTERNATIONAL`,
+    `PASSENGER_COUNT_MISMATCH`…).
+  - **Idempotencia de cada paso de saga:** crear (mismo `bookingId` → la existente; otro hold → `BOOKING_ID_CONFLICT`), claim
+    (misma referencia y `sagaId` → el registro), emitir (`issued: 0`), fallar (ya `FAILED` → 200), cancelar (ya cancelada →
+    `ALREADY_CANCELLED` con el resultado original en `detail`), liberar referencia (idempotente; 409 si ya está en una reserva
+    confirmada). Fallar y cancelar liberan los documentos de los vuelos.
+  - **`services/gestion/ms-g-check-in`**: check-in por pasajero y segmento (todos o ninguno; segundo intento → 409
+    `CHECK_IN_NOT_AVAILABLE`, el reintento de la misma saga devuelve lo mismo), pases en **PDF417 con código IATA BCBP real**
+    (60 caracteres: nombre, PNR, ruta, vuelo, día juliano, cabina, asiento, secuencia), grupo de abordaje (A = Business y
+    asistencia; Economy de atrás hacia adelante), posición por vuelo sin repetir (candado por segmento), puerta, asistencia
+    lista y compensación por `sagaId`.
+  - Docker Compose: `ms-g-bookings` (4006) y `ms-g-check-in` (4007).
+- **Errores del contrato propio corregidos** (`ms-g-bookings.openapi.yaml` 1.0.0 → 1.1.0; el de CheckIn no cambió):
+  - `PassengerAssistance` y `CreateBookingCommand.assistance` eran `allOf` sobre `AssistanceRequest`, que tiene
+    `additionalProperties: false`: ninguna respuesta de asistencia podía cumplirlos (el mismo error de V2.3). Ahora son objetos
+    completos.
+  - Faltaba cómo pasar la asistencia a `READY`, aunque CheckIn dice que "el ESB actualiza luego el estado en Bookings": se
+    agregó `PUT /bookings/{id}/passengers/{pid}/assistance/status`.
+  - Bookings no tenía cómo saber quién hizo check-in, y lo necesita para `CUTOFF_PASSED`: `PUT /seats` con
+    `reason = CHECK_IN_AUTO` ahora marca a esos pasajeros y segmentos (documentado).
+  - Faltaba el código de "fallar" una reserva emitida (`BOOKING_NOT_CANCELLABLE`) y el choque de documento en un cambio de
+    fecha (`PASSENGER_ALREADY_ON_FLIGHT`).
+- **Error encontrado y corregido:** el reintento **simultáneo** de "Crear reserva" (el ESB reintenta mientras la primera
+  petición todavía no confirmó) respondía `409 BOOKING_ID_CONFLICT` en vez de la reserva existente. Lo detectó la prueba de
+  concurrencia contra PostgreSQL: al chocar el `INSERT`, ahora se relee la reserva (ya visible en READ COMMITTED) y se devuelve.
+- **Verificación:**
+  - `tsc -b` y `tsc -p tsconfig.spec.json` sin errores; lint sin advertencias; Redocly válido.
+  - Pruebas v2: **220/220** (Bookings 26 y CheckIn 10, cada respuesta validada contra su contrato). Con PostgreSQL real
+    (esquemas temporales): **6/6** — la misma referencia desde 5 sagas a la vez se registra una vez; dos reservas con el mismo
+    documento en el mismo vuelo → una gana y la otra no deja nada a medias (ROLLBACK); el mismo `bookingId` dos veces a la vez →
+    una sola reserva; 8 check-ins simultáneos → posiciones 1–8 sin repetir; el mismo pasajero dos veces → un check-in.
+  - **Verificación del plan:** una referencia repetida se rechaza (`422 PAYMENT_REFERENCE_INVALID`, probado en memoria, con
+    PostgreSQL y en el contenedor). **La asistencia no aparece en logs:** la prueba enciende el log de peticiones y el logger
+    JSON, captura stdout y stderr durante altas, cambios y errores de asistencia, y no encuentra ni el tipo ni las notas; en
+    los contenedores, con la nota `NOTA-SECRETA-SALUD-V26`, tampoco aparece en los logs de Docker.
+  - **Contenedores, de punta a punta** (haciendo de ESB, con el token real y un mismo `X-Correlation-Id`): búsqueda y hold
+    (Offers) → validar pasajeros → claim de una referencia `PAY-…` (repetida en otra saga → 422) → `ConsumeHold` (asiento
+    automático) → reserva `TICKET_ISSUING` canal `BOOKING` → `BOOKED → TICKETED` y emisión (`CONFIRMED`, e-ticket `999…`;
+    repetir → `issued: 0`) → `TICKETED → CHECKED_IN`, check-in y `CHECK_IN_AUTO` → pase PDF417
+    `M1ANDRADE/LUIS        EN2DDXZ UIOGYEEA 0100 299Y004C0003 100`, grupo A (asistencia), puerta B2 → asistencia después del
+    check-in → `409 CUTOFF_PASSED`. Los 10 spans de la operación llegaron al Collector con el mismo correlation id.
+- **Pendiente:**
+  - Auditoría de Gemini y aprobación del responsable.
+  - Encadenar estos pasos en las sagas del orquestador (V2.10); hasta entonces el flujo se probó llamando a cada servicio.
+  - `booking.assistance_requested` y los eventos de reserva los publica el ESB (V2.9–V2.11).
+
+### V2.7 — MS.G.PostSale (SOAP) — ✅ HECHA (25/10), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.7: servidor SOAP con las 8 operaciones, cabeceras `CorrelationId` y `RequestId` y
+  `SOAP Fault`.
+- **Cómo se hizo** (`services/gestion/ms-g-post-sale`; contrato `ms-g-post-sale.wsdl` + `.xsd` **sin cambios**):
+  - SOAP 1.1 document/literal con la librería `soap` **1.13.3** (la 1.14.0 tenía 13 días; se usó una de más de dos semanas),
+    montada en la misma app NestJS en `/soap/post-sale`; el WSDL se publica en `?wsdl` y el XSD que importa, al lado
+    (`/soap/ms-g-post-sale.xsd`), así un cliente se construye solo desde la URL. `/health` como los demás servicios.
+  - **Cabeceras SOAP:** `CorrelationId` (sin cambios) y `RequestId` propio en cada respuesta. La librería arma las cabeceras de
+    respuesta antes de ejecutar la operación, así que ahí se decide el contexto y la operación corre con ese correlation id.
+  - **Errores:** `soap:Fault` (`soap:Client` de negocio o datos, `soap:Server` en `INTERNAL_ERROR`) con
+    `detail/types:PostSaleFault` (`code`, `status` HTTP que debe responder el ESB, `title`, `correlationId`, `timestamp`,
+    `invalidParam`). Sin token o con uno inválido → Fault `UNAUTHORIZED` (HTTP 401); token que no es del ESB → `FORBIDDEN` (403).
+  - **Reglas** (`src/domain/rules.ts`, puras): cotización (reembolsable → total; no reembolsable → solo impuestos y la base es
+    penalidad; vence en 15 min; solo lo no volado), compensación sin cotización (`FLIGHT_CANCELLED` → 100 % sin penalidad, D37;
+    `SAGA_COMPENSATION` → sin penalidad **solo si el acuerdo B2B permite promociones y está vigente**, como dice el contrato v2),
+    ofertas de cambio (diferencias con signo, cargo × pasajeros con asiento, saldo a favor no reembolsado, combinaciones de
+    ida y vuelta, máximo 10, vencen en 15 min) y maletas (máximo 3 por pasajero e itinerario).
+  - **Uso único:** una cotización y una oferta de cambio se consumen una sola vez (`SELECT … FOR UPDATE`); el mismo `sagaId`
+    puede repetirlo; otra saga u otra reserva → `NOT_FOUND` (409); vencida → `QUOTE_EXPIRED` / `CHANGE_OFFER_EXPIRED` (410).
+    `ReleaseDateChangeOffer` solo libera lo que tomó esa saga.
+  - Docker Compose: `ms-g-post-sale` en `127.0.0.1:4008`.
+- **Errores encontrados y corregidos durante la fase:**
+  - La librería entrega `xs:date` y `xs:dateTime` como objetos `Date`; con `String(...)` el servidor leía la vigencia del acuerdo
+    como `"Wed Jan 01"` y un acuerdo **vencido** pasaba por vigente (un combo se habría reembolsado sin penalidad). Ahora las
+    fechas se convierten a ISO. Lo detectó la prueba del acuerdo vencido.
+  - `CalculateCompensationRefund` con el mismo `sagaId` en paralelo devolvía resultados distintos (cada llamada calculaba el
+    suyo aunque solo se guardaba uno). Ahora, después de guardar, se relee el resultado ganador. Una prueba mía era demasiado
+    floja y aceptaba ese caso; se endureció (4 llamadas simultáneas → el mismo `quoteId`).
+  - Pruebas: mi cálculo esperado del porcentaje estaba mal (114,50 / 214,50 = 53,38, no 53,37), y los elementos con
+    `maxOccurs` llegan siempre como lista.
+- **Verificación:**
+  - `tsc -b` y `tsc -p tsconfig.spec.json` sin errores; lint sin advertencias.
+  - Pruebas v2: **237/237** (PostSale: 16 con un **cliente SOAP real** construido desde el `?wsdl` publicado). Con PostgreSQL
+    real (`POST_SALE_TEST_DATABASE_URL`, esquema temporal): **3/3** — 5 sagas consumen la misma cotización a la vez → una sola la
+    usa; consumir, liberar y volver a consumir una oferta de cambio entre transacciones; compensación idempotente en paralelo.
+  - **Verificación del plan:** pruebas con cliente SOAP ✔; el WSDL se publica en `?wsdl` ✔ (200, `application/xml`, el cliente
+    se construye desde ahí con las 8 operaciones); `FLIGHT_CANCELLED` sin cotización exonera la penalidad ✔ (119,50 de 119,50);
+    `SAGA_COMPENSATION` la exonera con el acuerdo B2B vigente ✔ — y **no** la exonera si el acuerdo no permite promociones,
+    porque así lo dice el contrato v2.
+  - Contenedor, con el token real del ESB: cabeceras SOAP con el mismo `CorrelationId` y un `RequestId` propio; consumir la
+    cotización desde otra saga → Fault `NOT_FOUND` / 409 con el correlation id; 3 + 2 maletas → `BAGGAGE_LIMIT_EXCEEDED` / 422;
+    sin token → 401. Los spans llegaron al Collector con el correlation id.
+- **Pendiente:**
+  - Auditoría de Gemini y aprobación del responsable.
+  - **Decisión a confirmar:** con el acuerdo inicial con Booking ("sin promociones", 0 %), la cancelación de un **combo**
+    (`package.cancelled` → `SAGA_COMPENSATION`) cobra la penalidad de las tarifas no reembolsables (devuelve solo impuestos).
+    El contrato v2 lo permite ("si así lo permite el acuerdo B2B"), pero quizá no es lo que se espera de un combo que falló.
+  - Llamar a PostSale desde las sagas del ESB (V2.10) y traducir el Fault a ProblemDetails.
+
+### V2.7 (ajuste del 25/10) — D42: el combo cancelado siempre sin penalidad
+- **Qué se pidió:** el responsable eligió la opción b: un combo de Booking que falla (`SAGA_COMPENSATION`) se reembolsa al 100 %
+  sin penalidad, sin mirar el acuerdo de promociones.
+- **Cómo se hizo:** `compensationWaived` ya no consulta el acuerdo; `partnerAgreement` sigue en el XSD (opcional, sin cambio de
+  estructura) y se documentó que ya no cambia el resultado. Decisión **D42** en PLAN.md §7.
+- **Verificación:** PostSale 20/20; en el contenedor, `SAGA_COMPENSATION` con el acuerdo actual (sin promociones) → 119,50 de
+  119,50, penalidad 0, exonerada.
+
+### V2.8 — MS.G FlightStatus, Webhooks y Customers — ✅ HECHA (25/10), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.8: FlightStatus (overrides, transiciones válidas, historial, proyección); Webhooks
+  (suscripciones, entrega CloudEvents firmada, reintentos 1 min → 6 h, `event_log` con cursor, feed, filtro D40); Customers
+  (perfil + `default_assistance`).
+- **Cómo se hizo:**
+  - **Bus interno (en `shared`, `bus/amqp.ts`, amqplib 2.2.0):** exchange `ecoairlines.events` (topic, durable) y routing key =
+    nombre del evento, como dice `events.asyncapi.yaml`; cada servicio tiene su cola durable. El `correlationid` va en las
+    propiedades AMQP y el dueño del hold o la reserva en la cabecera `x-owner-id`. Es el mínimo para consumir y publicar; los
+    reintentos con espera y la cola de fallidos llegan en V2.11.
+  - **`ms-g-flight-status`** (puerto 4005): consume `schedule.published` (cola `flight-status.schedule-published`) y arma la
+    proyección `scheduled_flights` — nunca llama a Schedule (D4); idempotente por el `id` del evento; publicar una ruta solo
+    reemplaza sus vuelos. Tabla de transiciones del contrato (`INVALID_STATUS_TRANSITION`), DELAYED con hora posterior y
+    `delayMinutes`, CANCELLED con motivo, horas reales al salir y llegar, historial, y la compensación `revert` (solo el último
+    cambio vigente, `CHANGE_NOT_LATEST`; idempotente). Los cambios de un mismo vuelo se serializan (candado por vuelo y fecha).
+  - **`ms-g-webhooks`** (puerto 4003): consume TODO el bus (cola `webhooks.events`, `#`), guarda `event_log` (deduplicado por
+    `id`) y crea una entrega por cada suscriptor permitido por **D40**: un partner recibe `hold.*`/`booking.*` solo de su canal
+    (`x-owner-id` = `partner:<clientId>:…`) y `flight.*` siempre; un ADMIN, todo lo público; los internos, nunca. Entrega:
+    `POST` del CloudEvent (sin el dueño), `X-Webhook-Signature` HMAC-SHA256 y `X-Correlation-Id`, éxito = 2xx en < 5 s,
+    reintentos a 1 min, 5 min, 30 min, 2 h y 6 h y luego `EXHAUSTED`. Cada entrega se "toma" con un plazo de 30 s
+    (`FOR UPDATE SKIP LOCKED`): dos réplicas no envían la misma. Los secretos se guardan cifrados (AES-256-GCM). Contra SSRF,
+    en producción solo `https` y hosts que resuelven a direcciones públicas (también al entregar). Feed de respaldo con cursor
+    `after`, historial del administrador (con internos; `booking.assistance_requested` sin datos) y estadísticas.
+  - **`ms-g-customers`** (puerto 4002): un perfil por dueño (`PUT` crea 201 o reemplaza 200), un dueño partner → 403 y la
+    asistencia predeterminada nunca en los logs.
+  - **Offers:** su HTTP local pasó de 4005 a **4009** (el 4005 es de FlightStatus en su contrato; el choque fue un error mío de
+    V2.5) y su outbox guarda el dueño del hold, para que el relé de V2.11 lo publique como `x-owner-id`.
+  - `scripts/dev/publicar-horario.mjs` publica también `schedule.published` en el bus (hasta que lo haga la saga del ESB).
+  - Docker Compose: los tres servicios con su base y el bus. Solo en local, `WEBHOOKS_ALLOW_PRIVATE_URLS=true` permite suscribir
+    `http://booking-simulado` (en la nube no se define y rige la regla estricta).
+- **Errores de contratos propios corregidos:**
+  - `CustomerProfile` era el mismo `allOf` imposible de V2.3 y V2.6 (`ms-g-customers.openapi.yaml` 1.0.0 → 1.1.0). Esta vez se
+    revisaron **todos** los contratos con un script: no queda ningún otro.
+  - `events.asyncapi.yaml` no decía cómo sabe Webhooks de qué canal es un evento (el CloudEvent público no lleva el dueño, y no
+    debe: es el cuerpo que recibe Booking). Se agregó la cabecera AMQP `x-owner-id` en `hold.*` y `booking.*` (generador
+    actualizado; el parser oficial de AsyncAPI lo valida: 0 errores, 28 mensajes).
+- **Errores encontrados y corregidos durante la fase:**
+  - El validador de contrato de las pruebas exigía `secret` en las respuestas: en OpenAPI una propiedad `writeOnly` solo es
+    obligatoria al enviarla. El validador ahora aplica esa regla.
+  - En `WebhooksService` leí un evento por su `seq` recorriendo el historial por páginas; se reemplazó por `eventBySeq` en el
+    almacén.
+  - Pruebas mías mal planteadas: en FlightStatus supuse que ganaría la cancelación, pero `BOARDING → CANCELLED` también es
+    válida; la prueba ahora comprueba la invariante real (el historial es una cadena: cada cambio parte del estado del
+    anterior, y solo una cancelación).
+- **Verificación:**
+  - `tsc -b` y `tsc -p tsconfig.spec.json` sin errores; lint sin advertencias; Redocly y el parser de AsyncAPI válidos.
+  - Pruebas v2: **266/266** (FlightStatus 10, Webhooks 11 con un receptor que verifica la firma, Customers 4). Con PostgreSQL
+    real: **26/26** en los 8 servicios (nuevas: 4 `PATCH` simultáneos → historial en cadena y una sola cancelación; el mismo
+    evento 4 veces → un registro y una entrega; dos réplicas toman entregas a la vez → cada una una sola vez).
+  - **Verificación del plan, en los contenedores:** una transición inválida da `409 INVALID_STATUS_TRANSITION`
+    ("No se puede pasar de DELAYED a ARRIVED."); **booking-simulado verificó la firma** de cada webhook (rechaza con 401 las
+    firmas malas) y recibió la reserva de Booking y el cambio de vuelo; **la reserva de la web no se le entregó** (ni por webhook
+    ni en el feed) y el dueño no aparece en el cuerpo. El webhook llevó el mismo `X-Correlation-Id`.
+  - Además: FlightStatus armó la proyección desde el bus (4 vuelos por día; `health` con base y bus `up`); `revert` volvió a
+    SCHEDULED; Customers creó (201), reemplazó (200) y rechazó a un partner (403) sin escribir la asistencia en los logs.
+- **Pendiente:**
+  - Auditoría de Gemini y aprobación del responsable.
+  - V2.11: relé de los outbox (Offers, ESB) al bus, reintentos con espera y cola de fallidos.
+  - Publicar `flight.status_changed` y calcular las reservas afectadas lo hace el ESB (V2.10).
+
+### V2.9 — ESB: enrutador, composición, transversal y entrada de eventos — ✅ HECHA (25/10), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.9: clientes REST, gRPC y SOAP hacia los 9 MS.G y la Payment API con errores en ProblemDetails v2;
+  enrutador y composición (health con caché < 1 s, operaciones, indicadores, asistencia, historial); transversal (idempotencia v2,
+  validador de referencias de Booking, correlation ID); entrada de eventos de Booking con `inbound_events` (canal según BKG-01).
+- **Cómo se hizo** (`services/esb`, puerto local **4000**, base `esb`):
+  - **Contrato nuevo `contract/esb.openapi.yaml` 1.0.0** (API primero): el plan no decía cómo llaman los MS de respuesta al ESB.
+    Propuesta **D43** (pendiente de aprobación): `/router/<servicio><ruta del MS.G>` para los MS.G REST, `POST /router/offers/<Rpc>`
+    para Offers (mapeo JSON de proto3), `/composition/...` y la entrada de eventos. Redocly: válido.
+  - **Clientes:** token de servicio del ESB (`client_credentials` contra Identity, en memoria, renovado antes de vencer, una sola
+    petición aunque lo pidan muchas a la vez y renovado si un MS.G lo rechaza); REST; **gRPC** (Offers, con el `ProblemDetails` del
+    trailer `x-problem-details-bin`: `HOLD_EXPIRED` sigue siendo 410 `HOLD_EXPIRED`); **SOAP** (PostSale: el WSDL se lee una vez y
+    cada llamada usa su propio cliente, así las cabeceras `CorrelationId`/`RequestId` no se mezclan entre llamadas simultáneas; el
+    `soap:Fault` vuelve a su `code` y `status`); **Payment API** (clave secreta `sk_test_…`, captura, anulación y reembolso; la usan
+    las sagas de V2.10). Todos con plazo de 4 s (menor que los 5 s de Booking) y **circuit breaker** por MS.G (5 fallas → abierto
+    10 s → una llamada de prueba). Un MS.G que no responde → `503 PROVIDER_UNAVAILABLE` con `Retry-After`.
+  - **Enrutador:** tabla cerrada de 48 rutas REST (la del §4.2) + 5 RPC de Offers (`Search`, `GetSeatMap`, `CreateHold`, `GetHold`,
+    `ReleaseHold`). Una prueba comprueba que cada ruta existe en el contrato del MS.G con su `operationId`, que ninguna es un paso de
+    saga y que `x-esb-routes` del contrato es exactamente la tabla del código. Otra ruta del mismo servicio → 404/405; un segmento
+    `..` (también `%2e%2e`) → 404, para que la URL no se normalice hacia una ruta que no está en la tabla. Las respuestas de los MS.G
+    (también sus ProblemDetails) se devuelven tal cual.
+  - **Idempotencia (D6):** `idempotency_claims` (24 h) por dueño + clave, con `request_hash`. Misma clave y cuerpo → respuesta
+    guardada con `Idempotent-Replayed: true`; otro cuerpo → `409 IDEMPOTENCY_KEY_REUSED`; mientras la primera sigue en curso, las
+    demás esperan y repiten su respuesta (nunca se ejecuta dos veces a la vez); un 5xx no se guarda. En PostgreSQL es una sola
+    sentencia atómica (`INSERT … ON CONFLICT … DO UPDATE … WHERE` vencida o abandonada).
+  - **Validador de referencias de Booking:** formato `PAY-BKP-AAAAMMDD-NNNNNN` con fecha real y no futura (configurable con
+    `BOOKING_PAYMENT_REFERENCE_PATTERN` mientras Booking responde BKG-02) y monto exacto si llega (`AMOUNT_MISMATCH`).
+  - **Composición:** health del nodo con la forma del contrato v2 (`VuelosHealthResponse`), calculado en segundo plano cada 5 s y
+    servido desde caché: `DOWN` (503) si cae la base del ESB, Identity, Offers o Bookings (sin ellos no se vende a Booking),
+    `DEGRADED` si cae otra pieza; panel de operaciones (Offers + FlightStatus: asientos por estado y cabina, ocupación, holds, check-in
+    abierto 48 h antes, alertas y paginación); indicadores (Bookings + Identity + FlightStatus); asistencia por vuelo (FlightStatus +
+    Bookings, solo con `X-Actor-Id`); salud por servicio e integración con Booking (Identity + Webhooks + Offers + eventos entrantes).
+    El historial de eventos y entregas es una ruta del enrutador (`GET /router/webhooks/history`), como dice MS.Admin.
+  - **Entrada de eventos de Booking (D34):** por **webhook** firmado (`POST /integraciones/booking/eventos`, HMAC sobre los bytes
+    exactos) y por **AMQP** (exchange `booking.events`, cola `ecoairlines.esb.booking-inbound`), las dos vías de BKG-01. Cada
+    CloudEvent se guarda por su `id` (`inbound_events`); uno repetido responde `202 duplicate: true` y no se procesa. Un trabajador
+    lo procesa con el mismo `correlationid` (con varias réplicas, cada evento lo toma una sola: `FOR UPDATE SKIP LOCKED`):
+    `payment.confirmed` → Offers `BOOKED → TICKETED` → Bookings emite → `booking.ticket_issued`; `payment.failed` → Offers libera →
+    Bookings `FAILED` → `booking.failed`. Solo reservas **del canal Booking** y con **su** referencia de pago. Error de negocio →
+    `REJECTED`; MS.G caído → `RETRY` (5 s, 30 s, 2 min, 10 min, 30 min y luego cada hora; nunca se descarta). `package.cancelled`
+    queda en `WAITING_SAGA` hasta la saga "Cancelar" de V2.10.
+  - Docker Compose: el ESB con su base, el bus interno y, en local, el "bus de Booking" simulado en nuestro RabbitMQ;
+    booking-simulado envía sus eventos al ESB (`AIRLINE_EVENTS_URL`).
+- **Decisiones que tomé y deben revisarse:**
+  - **D43** (interfaz del ESB, arriba).
+  - `POST /oauth2/token` pasa por el enrutador **sin** el token del ESB: el MS de respuesta (V2.12) convertirá el `Basic` del
+    partner en `client_id`/`client_secret` en el cuerpo (`client_secret_post`, que Identity ya acepta), porque su propio
+    `Authorization` es el token de servicio con el que llama al ESB. Al principio lo diseñé reenviando el `Authorization` del
+    llamador, y eso no podía funcionar: lo corregí antes de terminar.
+  - El panel de operaciones **no consulta Schedule**: el avión y los asientos ya están en Offers (copiados del horario publicado).
+    La asistencia por vuelo **no consulta CheckIn**: el esquema del panel no lleva datos de check-in. El plan nombraba esas fuentes;
+    si se quiere otro dato de ellas, se agrega.
+  - "Marcar asistencia lista" no está en el enrutador: el contrato de CheckIn dice que después el ESB actualiza Bookings (dos MS.G
+    en orden), así que va con las sagas de V2.10.
+- **Errores encontrados y corregidos durante la fase:**
+  - El reintento por token rechazado se habría disparado también con un 401 de negocio (`INVALID_CREDENTIALS` del login, que se
+    habría enviado dos veces): ahora solo con `UNAUTHORIZED`.
+  - `..` en la ruta llegaba como 405 en vez de 404 (no llegaba al MS.G, pero el código era incorrecto).
+  - booking-simulado inventaba referencias `PAY-BKP-SIM-…`, que no cumplen el formato del contrato: ahora usa el formato real.
+  - `events.asyncapi.yaml` aún decía "sin penalidad según el acuerdo" para el combo cancelado (contradice D42): corregido en el
+    generador (solo cambió esa línea).
+  - Pruebas mías mal planteadas: un `expect` dentro del Offers falso, datos de ejemplo que no cumplían `PassengerAssistance` y
+    `DeliveryStats` (el validador de contrato lo detectó), y el nombre del puerto del WSDL en el servidor SOAP de prueba.
+  - Dos pruebas pesadas de fases anteriores (Schedule recorre toda la ventana de venta; Identity genera dos claves RSA) pasaban
+    los 5 s con la suite completa y Docker encendido. Pasan solas; se les dio un límite explícito de 30 s.
+- **Verificación:**
+  - `tsc -b` y `tsc -p tsconfig.spec.json` sin errores; lint sin advertencias; Redocly válido (`esb.openapi.yaml`).
+  - Pruebas v2: **367/367** (ESB 100: enrutador, idempotencia, gRPC, composición validada contra su contrato, entrada de eventos,
+    clientes SOAP/Payment API/token, circuit breaker y la tabla de rutas contra los contratos). Con PostgreSQL real, ESB **4/4**:
+    8 peticiones simultáneas con la misma clave → 1 se ejecuta; el mismo evento 4 veces → 1 registro; dos réplicas → cada evento
+    una sola vez.
+  - **Verificación del plan, en los contenedores (★):** el mismo `payment.confirmed` llegó **tres** veces (booking-simulado por
+    webhook, el reintento del webhook y por AMQP en `booking.events`): **un** registro en `inbound_events` (`PROCESSED`, 1 intento),
+    los otros dos `duplicate`, **un** boleto emitido, **una** emisión en el historial de Bookings y **un** `booking.ticket_issued`
+    (Webhooks lo registró con el `correlationid` de Booking).
+  - Además: health `HEALTHY` en 4–8 ms con las 12 dependencias; `CreateHold` repetido con la misma clave → mismo hold e
+    `Idempotent-Replayed`, con otro cuerpo → 409; un paso de saga por el enrutador → 405; firma mala → 401; otra referencia de pago
+    para la misma reserva → `REJECTED PAYMENT_REFERENCE_INVALID`; operaciones, indicadores e integración con Booking con datos
+    reales. El `correlationid` del pago aparece en los logs del ESB, Bookings y Offers y en 5 spans del Collector.
+- **Pendiente:**
+  - Auditoría de Gemini y aprobación del responsable (incluida **D43**).
+  - V2.10: el motor de sagas con `saga_log` (los pasos de "Emitir boletos" y "Pago fallido" pasan a él), "Cancelar" para
+    `package.cancelled` (los que quedaron `WAITING_SAGA`) y "marcar asistencia lista".
+  - V2.11: **outbox** del ESB. Hoy el ESB publica después de cada paso: si el bus fallara justo entre la emisión y la publicación,
+    el reintento vería los boletos ya emitidos y no volvería a publicar `booking.ticket_issued`. El outbox lo resuelve.
+  - V2.12: clientes de servicio propios para cada MS de respuesta en Identity (hoy el ESB acepta cualquier token de servicio).
+
+### V2.10 — ESB: orquestador (11 sagas) — ✅ HECHA (25/10), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.10: `saga_log` y motor de pasos con compensación; las 11 sagas de §4.2. Verificación: cada saga
+  en su camino feliz y con un fallo simulado en cada paso; el combo de Booking (hold → reserva → `SAGA_COMPENSATION`) deja el
+  inventario como estaba; cancelar un vuelo con 3 reservas deja 3 reembolsos calculados, los asientos liberados y el stock en 0.
+- **Cómo se hizo** (`services/esb/src/sagas`; contrato `esb.openapi.yaml` 1.0.0 → **1.1.0**):
+  - **Motor (`engine.ts`) y `saga_log`:** cada saga tiene su `sagaId` y guarda cada paso con su resultado.
+    - Si un paso falla **antes del punto sin retorno**, se compensan los pasos hechos en orden inverso y vuelve el error del paso.
+    - La compensación de cada paso se registra **antes** de ejecutarlo (estado `STARTED`): si el paso falla por plazo vencido
+      (no se sabe si el MS.G lo hizo) o la réplica se cae a la mitad, también se deshace. Por eso cada compensación es segura
+      aunque el paso no haya ocurrido.
+    - **Después del punto sin retorno** (p. ej. "Cancelar" después de PostSale) un MS.G caído no compensa: la saga se reintenta
+      hacia adelante (2 s, 10 s, 30 s, 2 min, 10 min, 30 min). Un error de negocio ahí no se arregla reintentando: queda
+      `FAILED` (revisión). Una compensación rechazada por una regla también deja `FAILED`; una con el MS.G caído queda
+      `COMPENSATING` y se reintenta.
+    - Un **trabajador de recuperación** retoma las sagas abandonadas (réplica caída, plazo de 60 s vencido) con el mismo
+      `sagaId`: los pasos hechos devuelven su resultado guardado y no se repiten (`FOR UPDATE SKIP LOCKED`: dos réplicas no
+      retoman la misma).
+    - Cada llamada a Offers usa un `sagaId` derivado por operación (Offers guarda el resultado por `sagaId`: la compensación
+      no puede usar el mismo que el paso).
+    - Los eventos se publican en el último paso con un `id` derivado del `sagaId`: si la saga se reanuda, Webhooks descarta el
+      repetido.
+  - **Plazo de Booking:** si la saga no termina en 4,5 s se responde `202` (`TICKET_ISSUING` en "Crear reserva",
+    `CANCELLATION_PENDING` en "Cancelar") y la saga sigue en segundo plano. `GET /sagas/{id}` muestra su estado sin su entrada
+    (datos personales y de salud), solo a su dueño o a un administrador.
+  - **Las sagas** (`/sagas/...`, con `Idempotency-Key`): Crear reserva (+ asistencia), Emitir boletos, Pago fallido, Cambiar
+    asientos, Check-in, Cancelar, Cambiar fecha, Agregar maletas, Cambiar estado de vuelo, Guardar precios y descuento máximo,
+    Publicar horario; además **Marcar asistencia lista** (pendiente de V2.9: CheckIn y luego Bookings).
+  - **Pagos (`pago*`):** canal Booking → valida la referencia y su uso único (no cobra); canal web → captura en la Payment API y,
+    si la saga falla, reembolso o anulación. **Reembolso:** canal Booking `CALCULATED`; web `SETTLED`.
+  - **Consultas de postventa** (Bookings + PostSale): cotización de cancelación, opciones de maletas y búsqueda de cambio de
+    fecha. En la búsqueda, el ESB guarda los itinerarios de cada oferta (`change_offers`) para la confirmación.
+  - **Eventos de Booking:** `payment.confirmed` y `payment.failed` pasan al motor; `package.cancelled` ejecuta "Cancelar" con
+    `SAGA_COMPENSATION` si el combo es el de la reserva. Los guardados en `WAITING_SAGA` (V2.9) se procesan solos.
+  - `POST /sagas/timetable/publish` publica toda la ventana y los precios: reemplaza a `scripts/dev/publicar-horario.mjs`.
+- **Decisiones que tomé y deben revisarse:**
+  - Cambiar asientos no cobra si no llega un monto (los asientos de EcoAirlines no tienen precio); si el canal envía un monto,
+    se valida y se registra el pago.
+  - Cambiar fecha ignora `assignedSeats` del contrato (no dice de qué pasajero es cada asiento): los asientos nuevos los asigna el
+    check-in.
+  - `affectedBookingIds` de `flight.status_changed` lleva solo las reservas del canal Booking (D40: los ids de la web no salen).
+  - Con descuento de promoción, la tarifa guardada en la reserva es la cobrada (el reembolso nunca supera el cobro).
+- **Errores encontrados y corregidos:**
+  - **MS.G.PostSale** no compensaba una reserva `TICKET_ISSUING` (un combo puede fallar antes de emitir los boletos): ahora
+    `CalculateCompensationRefund` acepta `TICKET_ISSUING`, `CHANGE_PENDING` y `CANCELLATION_PENDING` (la cotización del cliente
+    sigue exigiendo `CONFIRMED`). XSD documentado.
+  - **Dos cancelaciones simultáneas** de la misma reserva: la segunda tomaba el `ALREADY_CANCELLED` de Bookings como un
+    reintento propio y publicaba otro `booking.cancelled`. Ahora solo es suyo si el reembolso guardado es el suyo (su `refundId`
+    sale del `sagaId`); si no, termina sin publicar.
+  - **Logs de PostSale sin `correlation_id` (viene de V2.7):** el log de peticiones leía el contexto al terminar la respuesta y
+    la librería `soap` la termina fuera de él; ahora se toma al llegar (librería compartida). Además el ESB manda el correlation
+    id también en la cabecera HTTP de las llamadas SOAP. En V2.7 había comprobado la cabecera SOAP, no los logs.
+  - Mío en el diseño: al principio la compensación se registraba DESPUÉS del paso, y un paso hecho en el MS.G pero no guardado
+    (caída a la mitad) no se habría deshecho. Lo corregí antes de probar (estado `STARTED`).
+  - Errores de mis pruebas, que detectó el validador de contrato: datos falsos sin campos obligatorios, un id fijo de reserva
+    cuando el ESB lo genera, y un plazo de prueba menor que la demora simulada. En la verificación real, mi generador de cédulas
+    a veces daba un tercer dígito ≥ 6 (inválido): Bookings lo rechazó y la saga quedó compensada sin tocar nada, como debe.
+- **Verificación:**
+  - `tsc -b` y `tsc -p tsconfig.spec.json` sin errores; lint sin advertencias; Redocly válido (`esb.openapi.yaml` 1.1.0).
+  - Pruebas v2: **412/412** (sagas 43: camino feliz de cada saga y **un fallo en cada paso** con la lista exacta de
+    compensaciones en orden inverso; respuestas validadas contra el contrato; reanudar RUNNING y COMPENSATING; plazo de 5 s;
+    idempotencia; cancelaciones simultáneas). Con PostgreSQL real: ESB **7/7** (saga_log, dos réplicas retomando sagas, change
+    offers) y PostSale 3/3.
+  - **Verificación del plan en los contenedores (★):**
+    - **Combo de Booking:** inventario ECONOMY antes 162 libres → con la reserva 161 (1 `TICKETED`) → tras `package.cancelled`
+      (booking-simulado) 162; el stock enviado a Booking igual (162 → 161 → 162). Reembolso `CALCULATED` del 100 %, sin
+      penalidad.
+    - **Vuelo cancelado con 3 reservas:** las 3 `CANCELLED` con reembolso `CALCULATED` 104,00, penalidad 0; Offers 162 libres y
+      la venta cerrada; **stock a Booking 0**; el vuelo ya no aparece en la búsqueda; `flight.status_changed` y `flight.cancelled`.
+  - Además, con los servicios reales: crear reserva (201 en ~90 ms), cambiar asiento, maletas, check-in con su pase (BCBP de 60
+    caracteres), un segundo check-in → 409, cambio de fecha, cotización y cancelación del cliente (24,00 de reembolso, 80,00 de
+    penalidad), cancelar otra vez → 409; con **Offers apagado**, cancelar → `202 CANCELLATION_PENDING` en 4 s y la saga terminó
+    sola al volver Offers (2 intentos, sin repetir PostSale). El correlation id aparece en los logs del ESB y de los 5 MS.G
+    usados; ningún documento de pasajero en los logs.
+- **Pendiente:**
+  - Auditoría de Gemini y aprobación del responsable (incluida **D43**).
+  - V2.11: outbox del ESB y de Offers con relé al bus, reintentos con espera y cola de fallidos (la publicación de eventos
+    todavía es directa; un id derivado evita duplicados, pero un evento puede perderse si el bus falla justo en ese paso).
+  - V2.15: Payment API real (el canal web está probado contra una Payment API falsa); el pago `PENDING` responde hoy 409
+    `PAYMENT_NOT_AUTHORIZED` y en V2.15 pasará a `202` con reintento diferido.
+
+### V2.11 — Eventos con RabbitMQ — ✅ HECHA (26/10), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.11: exchange, colas durables, reintentos y *dead letter*; *outbox* en el ESB y en Offers;
+  consumidores Webhooks y FlightStatus; eventos nuevos del contrato v2 y los propios. Verificación: los eventos internos y de
+  salud no salen a Booking; cada CloudEvent lleva el `correlationid` del proceso.
+- **Cómo se hizo:**
+  - **Bus (`packages/shared/src/bus/amqp.ts`):**
+    - Publicación con **confirmación del broker** (`publish` resuelve cuando RabbitMQ guardó el mensaje).
+    - Por cada cola de consumidor, 4 colas de espera (`<cola>.retry.1s/5s/30s/2m`, TTL fijo cuyo *dead letter* devuelve el
+      mensaje SOLO a esa cola, sin duplicarlo en los otros consumidores) y, al **5.º intento**, la cola de fallidos `<cola>.dlq`
+      por el exchange `ecoairlines.dlx`, con el motivo, la routing key original y la hora. Un mensaje ilegible va directo a la
+      de fallidos. El consumidor escribe una línea de **ALERTA**.
+    - **Reconexión automática:** si RabbitMQ se cae o se reinicia, cada servicio se reconecta solo (1 s, 2 s, 5 s, 10 s y luego
+      cada 30 s) y vuelve a declarar sus colas y consumidores.
+  - **Outbox (`packages/shared/src/bus/outbox.ts`, un relé común):** toma los pendientes con un plazo (dos réplicas no publican
+    el mismo), los publica en orden y los marca solo después de la confirmación; si el bus falla, quedan pendientes. Entrega "al
+    menos una vez": los consumidores deduplican por `id`.
+    - **Offers:** su outbox existía desde V2.5 pero nadie lo publicaba: `hold.created` y `hold.expired` **no llegaban a Booking**.
+      Ahora tiene su relé (`BUS_URL`, obligatoria en producción); al arrancar publicó los 33 `hold.created` acumulados.
+    - **ESB:** sus eventos (sagas, compensaciones, eventos de Booking y enrutador) van a la tabla `outbox` de la base `esb`, por
+      su `id` estable: guardarlo dos veces no lo duplica. Cierra el pendiente de V2.10 (un evento podía perderse si el bus
+      fallaba en ese paso).
+  - **Reintentos diferidos del ESB (`esb.deferred`, TTL + dead letter, como dice el plan):** cuando una saga queda pendiente se
+    publica una `DeferredTask` en la cola de espera de su demora (`esb.deferred.wait.2s` … `.30m`); al vencer, llega a
+    `esb.deferred` y el ESB retoma esa saga en ese momento. El sondeo de `saga_log` queda como respaldo.
+  - **Eventos nuevos:**
+    - Propios, desde el enrutador y solo si la escritura salió bien (una respuesta repetida por idempotencia no publica):
+      `user.created`, `user.role_changed`, `user.blocked`, `partner.created`, `partner.blocked`, `partner.secret_rotated` (nunca
+      con el secreto) y `booking.assistance_requested` (`REQUESTED` / `REMOVED`, nunca el tipo ni las notas).
+    - Compatibilidad con v1: `flight.schedule_changed` (al pasar a `DELAYED`) y `booking.ticket_issuing` (solo cuando "Crear
+      reserva" responde `202`).
+    - Con esto, los **15** eventos públicos del contrato del grupo tienen productor. Una prueba lo comprueba leyendo el código:
+      cada evento que se produce existe en `events.asyncapi.yaml` con su misma visibilidad, y ninguno público se inventa.
+  - **Contratos:** `events.asyncapi.yaml` (generador) documenta la topología real: colas de espera, cola de fallidos, cabeceras y
+    colas diferidas, con los 12 tipos de saga. El parser oficial lo valida: 0 errores, 0 avisos. `esb.openapi.yaml` 1.1.0 →
+    **1.1.1** (`X-Owner-Id`).
+- **Errores encontrados y corregidos:**
+  - **El ESB rechazaba las suscripciones de webhooks de Booking (viene de V2.9):** exigía `partner:<clientId>:<usuario>`, y una
+    suscripción es del partner completo (`partner:BOOKING_PROTOTIPO`, como la guarda Webhooks). Lo encontró la verificación en los
+    contenedores.
+  - **La cola de FlightStatus tenía otro nombre que el contrato** (`flight-status.schedule-published` en vez de
+    `flight-status.schedule`; error mío de V2.8). Se corrigió y se borró la cola vieja de RabbitMQ.
+  - **Mío en el bus:** al volver de un reintento, el mensaje llega con la cola como routing key, y en la cola de fallidos se
+    perdía la del evento. Lo detectó la prueba con RabbitMQ real; ahora se guarda en `x-original-routing-key`.
+  - **Mío en el diseño:** al principio el bus no se reconectaba. Con RabbitMQ reiniciado, los consumidores habrían quedado muertos
+    y el outbox no habría podido publicar nunca. Lo corregí antes de levantar los contenedores.
+  - Un evento de Booking que llegaba por AMQP (`booking.events`) se confirmaba y se perdía en silencio si la base del ESB estaba
+    caída: ahora se reintenta y, agotado, va a la cola de fallidos (un evento de Booking nunca se pierde).
+  - Errores de mis pruebas y scripts: cerrar la conexión antes de que saliera el mensaje, mal leído el formato del simulador, un
+    escáner que no veía la visibilidad fijada una vez para todo un archivo, un import dinámico lento. Dos pruebas nuevas con
+    PostgreSQL real tardan < 1 s solas pero pasaban los 5 s con la suite completa y Docker encendido (comprobé que no eran
+    conexiones agotadas: 18 de 100); tienen un límite de 30 s.
+- **Verificación:**
+  - `tsc -b` y `tsc -p tsconfig.spec.json` sin errores; lint sin advertencias; Redocly y el parser de AsyncAPI válidos.
+  - Pruebas v2: **439** (+ bus con RabbitMQ real 3/3: 5 intentos y luego la cola de fallidos con sus cabeceras; el reintento no
+    duplica en otros consumidores; un mensaje ilegible va directo). Con PostgreSQL real: los dos outbox con dos réplicas a la vez.
+  - **Verificación del plan, en los contenedores (★):**
+    - Booking suscrito a los 15 eventos públicos. Con un mismo correlation id se hizo un hold de Booking, un hold de la WEB, una
+      reserva de Booking, un pedido de asistencia, un usuario nuevo, guardar precios y una demora de vuelo. **Booking recibió**
+      `hold.created` (el suyo), `booking.confirmed`, `booking.ticket_issued`, `flight.status_changed` y `flight.schedule_changed`.
+      **No recibió** el hold de la web ni ningún interno (`user.created`, `pricing.changed`, `booking.assistance_requested`
+      quedaron en el historial con 0 entregas). Ni datos de salud, ni contraseñas, ni el dueño interno en los webhooks.
+    - **10 de 10** eventos en `event_log` con el `correlationid` del proceso.
+  - Además:
+    - **RabbitMQ apagado:** una reserva se creó igual (201 CONFIRMED); quedaron 2 eventos en el outbox del ESB y 1 en el de
+      Offers. Al encender el broker, todos los servicios se reconectaron solos, los outbox quedaron en 0 y Booking recibió
+      `hold.created`, `booking.confirmed` y `booking.ticket_issued` de ese proceso.
+    - Un mensaje ilegible en el bus terminó en `webhooks.events.dlq` con su línea de ALERTA.
+- **Pendiente:**
+  - Auditoría de Gemini y aprobación del responsable (incluida **D43**).
+  - V2.16: la alerta de la plataforma de observabilidad por mensajes en las colas de fallidos y el panel de colas
+    (`getQueues` de MS.Admin); hoy queda la línea de ALERTA en el log.
+  - El puente opcional al bus del ecosistema (`booking.events`, routing `vuelos.<evento>`): solo si el grupo lo pide (BKG-01).
+
+### V2.12 — Microservicios de respuesta (5) — ✅ HECHA (26/10), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.12: MS.Vuelos, MS.Reservas, MS.Postventa, MS.Clientes y MS.Admin según
+  `contract/ms-*.openapi.yaml`; tokens de usuario y de partner (JWKS), scopes, DTOs exactos al contrato v2, `ProblemDetails` v2
+  y rate limit. Verificación: pruebas de `auth` y `security` adaptadas; sin token de partner, `X-User-Id` se ignora; el partner
+  recibe `403` en `PUT /promociones/contrato`.
+- **Cómo se hizo:**
+  - **Kit común (`packages/shared/src/respuesta/`):** cada MS declara solo sus *handlers*; el resto sale del contrato.
+    - `contract.ts` carga el contrato del MS (con sus `$ref` al del grupo) y arma la tabla de operaciones. Al arrancar se
+      comprueba que los *handlers* y las operaciones coinciden exactamente (ni falta ni sobra ninguna).
+    - Orden de cada petición: ruta del contrato (`405` si el método no existe) → token (JWKS de Identity, RS256) y scopes →
+      rate limit → saneo y validación con Ajv (parámetros, cabeceras y cuerpo, con los `default` del contrato) → *handler* →
+      **proyección** de la respuesta: se quita lo no declarado y lo `writeOnly` (en el cuerpo que se reenvía, lo `readOnly`).
+    - `principal.ts`: el **dueño sale del token** (D29). Usuario → `sub`. Partner → `partner:<clientId>:<X-User-Id>`; sin
+      `X-User-Id`, la huella del dispositivo (el contrato la llama "respaldo de propiedad") → `partner:<clientId>:fp:<huella>`;
+      sin ninguna, `400`. `X-User-Id` sin token de partner se ignora. El actor (`X-Actor-Id`) solo existe para un usuario ADMIN.
+    - Errores: `ProblemDetails` v2 con `instance` = la ruta pública. Un `code` propio que no está en el enum del contrato pasa a
+      `type: urn:ecoairlines:problema:<CODE>` y `code` queda en el genérico de su status.
+    - Seguridad HTTP: helmet (CSP `default-src 'none'`), CORS cerrado, límite de cuerpo 100 kb, JSON mal formado → `400`, claves
+      `__proto__`/`constructor`/`prototype` y caracteres de control rechazados, rate limit por dueño (300/min; búsqueda 30;
+      mapa de asientos 60).
+    - `esb-client.ts`: cliente del ESB con su token de servicio, `X-Owner-Id`, `X-Actor-Id`, `Idempotency-Key`, correlación,
+      plazo por llamada y *circuit breaker*. `sagas.ts`: si el ESB responde `202` con `sagaId`, se consulta la saga y se devuelve
+      lo que dice el contrato (resultado, error o pendiente).
+  - **Los 5 MS (`services/respuesta/`, puertos 5001–5005):** traducen el contrato público a las rutas del ESB (D43) y no
+    conocen a los MS.G (regla 6 nueva de la prueba de arquitectura: sin `ms-g-*`, gRPC, SOAP, AMQP ni PostgreSQL en su `src/`).
+    MS.Clientes publica `POST /oauth2/token` (convierte el Basic del partner a `client_secret_post`; errores en formato OAuth2).
+    Las 4 operaciones de observabilidad de MS.Admin responden `503` hasta V2.16 (documentado en su contrato).
+  - **D44 (nueva, pendiente de aprobación):** cada MS de respuesta tiene su cliente en Identity (`ECOAIRLINES_MS_VUELOS` …
+    `ECOAIRLINES_MS_ADMIN`, solo por *seed*, secreto `MS_<NOMBRE>_CLIENT_SECRET`). Su token lleva el scope `ecoairlines:esb`:
+    el ESB lo acepta y los MS.G lo rechazan (solo aceptan al ESB).
+  - **D45 (nueva, pendiente de aprobación):** `PATCH /vuelos/flights/{n}/status` con token de partner (`flights:ops`) → `403`:
+    la auditoría exige un actor ADMIN.
+  - **ESB:** composición nueva `GET /composition/bookings/{id}/boarding-passes` (dueño en Bookings, pases de CheckIn y puerta
+    actual de FlightStatus); se quitó la ruta del enrutador que daba los pases sin comprobar el dueño.
+  - **Contratos:** `ms-vuelos`, `ms-postventa`, `ms-clientes` 1.0.1; `ms-reservas` 1.1.0; `ms-admin` 1.1.0 (filtros y
+    paginación de listas, `503` de observabilidad); `esb.openapi.yaml` 1.2.0; `ms-g-identity.openapi.yaml` 1.3.0 (D44). Redocly
+    válido; `verificar_operaciones_v2.py` 30/30.
+  - Docker: los 5 servicios en `infra/docker-compose.yml` (dependen del ESB e Identity sanos); secretos en `infra/.env.example`.
+- **Errores encontrados y corregidos:**
+  - **Contrato (mío, V2.1):** `WebBookingRequest.assistance` usaba `allOf` con un schema `additionalProperties: false` y
+    rechazaba `passengerId`. Mismo error en el contrato del ESB. Corregido en los dos generadores.
+  - **Seguridad:**
+    - `HoldRequest` no cierra propiedades y Offers prefiere un `ownerId` del cuerpo: un partner podía crear un hold a nombre de
+      otro. MS.Reservas arma el cuerpo campo por campo, con el dueño del token.
+    - Cancelar con `SAGA_COMPENSATION` o `FLIGHT_CANCELLED` daba el 100 % de reembolso a cualquiera. Ahora `FLIGHT_CANCELLED`
+      → `400` para todos (lo usa solo la saga) y `SAGA_COMPENSATION` solo con token de partner.
+    - Los pases de abordar del enrutador no comprobaban el dueño → composición (arriba).
+  - **El ESB se caía** si PostgreSQL tardaba en responder: los ciclos de fondo (salud, entrada de eventos, recuperación de
+    sagas, relé del outbox) dejaban una promesa rechazada sin capturar. Corregido con pruebas de regresión.
+  - **Webhooks y FlightStatus se caían al arrancar** si RabbitMQ se estaba reiniciando (`getaddrinfo ENOTFOUND rabbitmq`): la
+    reconexión de V2.11 solo cubría conexiones ya abiertas. Ahora `EventBus.connect` reintenta la primera conexión hasta 60 s.
+  - **Míos en los MS:** la proyección quitaba lo `writeOnly` también del cuerpo enviado (se perdía el `secret` del webhook);
+    el dueño de partner sin `X-User-Id` era `partner:<clientId>` y Bookings lo rechaza; MS.Clientes pedía el token de partner al
+    ESB **sin** su token de servicio (confundí los dos saltos: el que va sin token es ESB → Identity). Las pruebas unitarias no
+    lo veían porque el ESB falso no revisa la autenticación; lo encontró la suite de conformidad.
+  - **Suite de conformidad (mía, V2.1):** generaba cédulas sin dígito verificador válido y referencias de pago con letras;
+    exigía `secret` (`writeOnly`) en la respuesta del webhook; y esperaba `409/410` para una oferta de cambio inexistente,
+    cuando el contrato también documenta `404` (lo que responde la saga del ESB).
+- **Verificación:**
+  - `tsc -b` y `tsc -p tsconfig.spec.json` sin errores; lint sin advertencias.
+  - Pruebas v2: **527** pasan (38 omitidas, las de bases y broker reales). De ellas, 89 de los MS de respuesta, con `auth` y
+    `security` adaptadas de `EcoAirlines.API`.
+  - **Suite de conformidad contra los 5 MS en Docker** (con un proxy de prueba que reparte `/api/v2` por MS; el gateway es
+    V2.13): **54/54**, **30/30 operaciones**, 57 combinaciones operación+status.
+  - **Verificación del plan, en los contenedores (★):**
+    - Partner en `PUT /vuelos/promociones/contrato` → **403**.
+    - Un usuario que manda `X-User-Id: usr-conformidad` ve **0** reservas; el partner con ese mismo usuario ve 8.
+    - El token de un MS de respuesta (`ecoairlines:esb`) contra MS.G.Bookings → **403** "Solo el ESB puede llamar a este servicio".
+- **Pendiente:**
+  - Auditoría de Gemini y aprobación del responsable (incluidas **D44** y **D45**, la huella como respaldo del dueño, el `type`
+    `urn:` para códigos propios y la restricción de los motivos de cancelación).
+  - V2.13: el gateway reemplaza el proxy de prueba. V2.16: observabilidad de MS.Admin.
+
+### V2.13 — Gateway: `/api/v2/vuelos` + GraphQL — ✅ HECHA (26/10), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.13: fachada REST `/api/v2/vuelos/*` con token de partner y Swagger en `/api/docs`; GraphQL en
+  `/api/graphql` según `gateway.graphql`. Verificación: la suite de conformidad v2 pasa completa contra el gateway en local,
+  más pruebas GraphQL.
+- **Cómo se hizo (`services/gateway`, puerto 8080 en el contenedor y 8088 en el host):**
+  - **Fachada REST:**
+    - Tabla cerrada armada desde los contratos de los 5 MS: las **30 operaciones** del contrato v2, cada una hacia el MS de su
+      `x-microservice`, más `POST /api/v2/oauth2/token` y el alias `/oauth2/token` (BKG-03). Al arrancar se compara con
+      `vuelos-openapi-v2.yaml`: si falta, sobra o cambia de MS una operación, el gateway no arranca. Las operaciones propias
+      (`/ecoairlines/...`) no se publican en REST (D23).
+    - En las operaciones protegidas verifica el token con la JWKS (usuario o partner; sin token, inválido, vencido o de
+      servicio → `401` con `WWW-Authenticate`). Los scopes y el dueño los decide el MS, que vuelve a verificar el token.
+    - `X-Correlation-Id` se crea si no llega, nunca se cambia y va en toda respuesta; `X-Request-Id` es nuevo en cada salto.
+    - Cabeceras en lista cerrada en los dos sentidos: no viajan cookies ni cabeceras internas.
+    - Límite de búsquedas por `X-Device-Fingerprint` (`429` con `Retry-After`). No hay límite global por IP en el gateway:
+      todo Booking llega desde pocas IP, y ese límite ya lo pone cada MS por dueño.
+    - Si el MS no responde: `503 PROVIDER_UNAVAILABLE` con `Retry-After` (plazo y circuit breaker por MS).
+  - **Swagger** en `/api/docs`, con el contrato v2 tal cual y, solo en memoria, este gateway como primer servidor. CSP propia
+    para Swagger; el resto responde con `default-src 'none'`.
+  - **GraphQL** (`@nestjs/graphql` 14.0.3 + Apollo Server 5.5.1, esquema primero con `contract/gateway.graphql`):
+    - Cada campo llama a la operación REST de su MS (las 72 flechas `→ MS.X operación` del contrato), con el token del
+      usuario; nada llama al ESB ni a un MS.G (regla 7 nueva de la prueba de arquitectura).
+    - Solo tokens de usuario: uno de partner o de servicio → `UNAUTHENTICATED`. Sin token en una operación protegida, HTTP
+      `401`; un error de negocio, HTTP `200` con `errors`.
+    - Directivas: `@auth(scopes)` exige todos los scopes; `@constraint` valida argumentos e inputs con nombres de GraphQL
+      (`input.passengers.adults`); `@idempotent` comprueba al arrancar que la mutation tenga `idempotencyKey: UUID!`, que se
+      envía como `Idempotency-Key`. Al arrancar se exige además que cada campo raíz tenga resolver y `@public` o `@auth`.
+    - Errores: el ProblemDetails v2 en `extensions`, con `code` del enum `ProblemCode`. `UNAUTHORIZED` se llama
+      `UNAUTHENTICATED`, y un código propio publicado en `type: urn:ecoairlines:problema:X` (V2.12) recupera su nombre
+      (p. ej. `EMAIL_ALREADY_REGISTERED`). Un error no controlado sale como `INTERNAL_ERROR` sin detalles.
+    - Escalares validados (`UUID`, `Date`, `DateTime`, `IataCode`, `Decimal`, `URL`…); profundidad máxima 10; complejidad
+      máxima 1000 (una lista con `limit` multiplica); introspección solo en desarrollo; sin la página de pruebas (carga
+      scripts de un CDN); protección CSRF de Apollo.
+    - Pagos de la web: siempre `provider: AIRLINE_DIRECT` (D28). Cancelar desde la web: siempre `CUSTOMER_REQUEST`.
+  - **D46 (nueva, pendiente de aprobación):** quién verifica qué. El gateway verifica el token (REST: usuario o partner;
+    GraphQL: solo usuario) y lo **reenvía** al MS de respuesta, que lo vuelve a verificar y saca el dueño de él. El gateway no
+    tiene token de servicio propio.
+  - **D47 (nueva, pendiente de aprobación):** la suscripción `bookingEvents` (graphql-ws en `/api/graphql`) consulta cada 3 s
+    el feed `GET /vuelos/eventos` de MS.Vuelos con el token del usuario. Así el gateway no se conecta al bus y la web ve
+    exactamente lo mismo que el feed. Sin token de usuario la conexión no se abre; si el token vence, termina con
+    `UNAUTHENTICATED`.
+  - **Cambios fuera del gateway que la fase necesitaba:**
+    - Identity: el token de usuario lleva el claim `email` (la query `me` no llama a ningún servicio). Contrato 1.4.0.
+    - MS.Reservas: operación propia `listRefunds` (`Booking.refunds` de GraphQL): los reembolsos los guarda Bookings y el
+      contrato v2 no los publica. Contrato 1.2.0.
+    - `gateway.graphql` 1.1.0: `refunds → MS.Reservas listRefunds`; el `secret` de un webhook se devuelve siempre como
+      `••••••••` (el contrato v2 no lo devuelve nunca, ni parcial).
+    - Docker: `gateway` en `infra/docker-compose.yml` (depende de los 5 MS sanos) y `TRUST_PROXY=1` en los 5 MS, que ahora están
+      detrás del gateway. En el host el gateway queda en **8088** (`GATEWAY_HOST_PORT`): Windows reserva el 8080 (`http.sys`).
+- **Errores encontrados y corregidos:**
+  - **Seguridad (viene de V2.8/V2.12): un CLIENTE veía en `GET /vuelos/eventos` los eventos públicos de TODOS los canales**,
+    incluidas las reservas de Booking con su PNR y su dueño. Webhooks daba "todo lo público" a cualquier dueño que no fuera
+    partner (pensado para la suscripción de un ADMIN), y el feed acepta tokens de usuario con `flights:read`. Ahora un usuario
+    solo lee los eventos de sus reservas; un ADMIN todo lo público si el ESB envía `X-Actor-Id` = su `sub` (MS.Vuelos lo
+    envía). `ms-g-webhooks.openapi.yaml` 1.1.0. Lo encontré al diseñar la suscripción; con el gateway público habría quedado
+    expuesto en Internet. En Docker, un cliente nuevo ve solo el `hold.created` de su hold.
+  - **Míos en el gateway:** el resolver de la suscripción devolvía el objeto `{ bookingEvents }` en vez del evento; las
+    pruebas de profundidad y complejidad no probaban lo que decían (campos inexistentes; una consulta de ~500 puntos). Los
+    encontraron las propias pruebas.
+  - **Míos en el entorno:** un `\b` de una expresión regular quedó como carácter de control al escribirlo con un script (ya
+    me había pasado en V2.12; ahora reviso todos los archivos); un comando quedó esperando entrada.
+  - **Dependencias:** `@apollo/server` traía `@graphql-tools/*` del 15/10 (menos de 2 semanas): se fijan las del 07/09 como
+    dependencias directas del gateway (`overrides` de npm no las aplicaba). `es-module-lexer` 3.0.4 (15/10, de OpenTelemetry,
+    viene de V2.11) pasa a 3.0.3. Quedan dos paquetes recientes solo de desarrollo (`@redocly/openapi-core` y
+    `uri-js-replace`, de `openapi-typescript`), que no entran en las imágenes.
+  - **Pruebas que fallaban al azar con la suite completa** (CPU saturada con un worker por núcleo): plazos de `beforeAll`,
+    el plazo de saga de 1 s en `sagas.spec` (ahora 2,5 s), el health < 1 s de MS.Vuelos y el límite de Identity. La suite v2
+    usa ahora la mitad de los núcleos (tarda 42 s en vez de 48–55 s) y `hookTimeout` de 30 s; la prueba de Identity tiene
+    20 s. Con estos ajustes, 4 corridas seguidas de la suite completa en verde.
+  - **graphql 16 en vitest:** el código fuente tomaba la entrada ESM y las dependencias la CJS (dos copias de graphql). Alias
+    en `vitest.config.v2.ts` a la CJS (en producción Node siempre usa la CJS).
+- **Verificación:**
+  - `tsc -b` y `tsc -p tsconfig.spec.json` sin errores; lint sin advertencias; Redocly válido; `verificar_gateway_graphql.cjs`:
+    SDL válido, 0 cambios incompatibles con la base del Reto 1, 72 referencias `→ MS.X` existentes.
+  - Pruebas v2: **581** (38 omitidas, las de bases y broker reales). Del gateway, 49: REST 21, GraphQL 25 y la suscripción
+    por WebSocket 3.
+  - **★ Suite de conformidad v2 contra el gateway en Docker (`http://localhost:8088/api/v2`): 54/54, 30/30 operaciones.**
+  - **Pruebas GraphQL contra Docker (24 comprobaciones):**
+    - registro, `me`, búsqueda con huella, hold, `hold` ajeno → `NOT_FOUND` y liberar el hold;
+    - reserva web → `PROVIDER_UNAVAILABLE` hasta la Payment API (V2.15), con el mensaje de la saga;
+    - `EMAIL_ALREADY_REGISTERED`; partner o sin token → `401`; cliente en una consulta de admin → `FORBIDDEN`;
+    - 11 consultas de administración en una sola petición; `telemetry.queues` → `503` hasta V2.16;
+    - suscripción de un cliente abierta y sin eventos ajenos; la de un partner, rechazada; Swagger con el contrato.
+- **Pendiente:**
+  - Auditoría de Gemini y aprobación del responsable (incluidas **D46** y **D47**, el claim `email`, `listRefunds`, el secreto
+    enmascarado y el puerto 8088 en el host).
+  - V2.14: el gateway en la nube con HTTPS. V2.15: la Payment API (la reserva web). V2.17: la web usa este GraphQL.
+
+### V2.13 (ajuste del 26/10) — aprobaciones y pista del secreto de los webhooks
+- **Aprobado por el responsable:** D46, D47, el claim `email` en el token de usuario y la operación `listRefunds`.
+- **Pedido:** mostrar los últimos 4 caracteres del secreto de un webhook. **Aclaración:** quien ve esa pantalla es nuestro
+  administrador (GraphQL); Booking entra por REST con el contrato v2, donde `secret` es `writeOnly` y no se devuelve, y ese
+  contrato no se modifica. Por eso la pista existe solo en la web.
+- **Cómo se hizo:**
+  - MS.G.Webhooks devuelve `secretHint` (los últimos 4 caracteres del secreto, que guarda cifrado para firmar las entregas):
+    `ms-g-webhooks.openapi.yaml` 1.2.0 (`SubscriptionView`).
+  - MS.Clientes: operación propia `GET /ecoairlines/webhooks` (`listOwnWebhooks`, solo token de usuario con
+    `flights:webhooks`) con la pista; `GET /vuelos/webhooks` del contrato v2 la quita (proyección al schema). `ms-clientes`
+    1.1.0.
+  - Gateway: `webhookSubscriptions` usa `listOwnWebhooks` y muestra `••••1234`; `registerWebhook` toma la pista del secreto que
+    se acaba de registrar. `gateway.graphql` 1.1.0 (comentarios).
+- **Verificación:** pruebas de Webhooks, MS.Clientes y gateway (72); en Docker la web muestra `••••9f3a`, el REST v2 no trae
+  ni el secreto ni la pista y `/api/v2/ecoairlines/webhooks` no se publica (404).
+
+### V2.14 — Nube para la ruta de Booking + integración real — 🟡 NUBE LISTA (26/10); la integración real espera a Booking
+- **Qué se pidió:** PLAN.md §6, V2.14: desplegar en la nube todo lo que usa Booking con al menos 1 réplica (D39) y URL pública
+  HTTPS; salida gRPC de Offers hacia `booking.epn.edu.ec:50051` y entrega de webhooks a Booking; entregar a Booking la URL y
+  las credenciales. Verificación: la conformidad v2 pasa contra la URL pública; Booking ve el nodo en verde y completa una
+  compra, un combo cancelado y una cancelación con el mismo `X-Correlation-Id`. **Límite del responsable:** US$90 de crédito
+  Azure for Students, sin excederse, y preguntar antes de crear cualquier recurso con costo.
+- **Decisiones (aprobadas por el responsable el 26/10):** **D48**, una VM ARM `B2pls_v2` en North Central US con el mismo
+  `docker-compose` y HTTPS de Caddy, que reemplaza la recomendación de Azure Container Apps de D8 (US$100–130/mes con réplicas
+  fijas); apagado automático a las 23:00 de Ecuador; limpieza del Reto 1. Costos consultados en la API pública de precios de
+  Azure; la suscripción solo permite 5 regiones y no ofrece B2s en ellas.
+- **Cómo se hizo:**
+  - **Archivos nuevos:**
+    - `infra/cloud/docker-compose.cloud.yml`: override del compose probado en local. Agrega Caddy (80/443), todo en
+      `production`, sin el simulador de Booking (perfil `simulador`), gRPC de Booking real, webhooks solo a destinos `https`
+      públicos, sin introspección de GraphQL y `restart: unless-stopped`.
+    - `infra/cloud/Caddyfile`: publica solo el gateway (`/api/*`, `/oauth2/*`, `/health`) y la entrada firmada de eventos
+      de Booking. El resto da 404, y los registros no guardan cabeceras (tokens).
+    - `infra/cloud/cloud-init.yaml`: Docker, Compose y 2 GB de swap.
+    - `scripts/cloud/generar-env.mjs`: secretos propios, nunca los de desarrollo; no sobrescribe el archivo.
+    - `scripts/cloud/desplegar.sh`: paquete de 688 KB sin `node_modules` ni secretos, por SSH; compila en la VM.
+    - `scripts/cloud/publicar-horario.{sh,mjs}`: la saga del ESB, ejecutada dentro de la VM.
+  - **Azure (con la confirmación del responsable antes de cada recurso con costo):**
+    - grupo `rg-ecoairlines-reto2`, VM, disco SSD de 32 GB, IP estática con nombre DNS, NSG y apagado automático;
+    - certificado de Let's Encrypt válido hasta el 24/01/2027 (Caddy lo renueva).
+  - **Limpieza del Reto 1 (ahorro ≈US$29/mes):**
+    - plan B1 → F1;
+    - respaldo `pg_dump` de la PostgreSQL del Reto 1, con restauración probada (16 tablas, 0 errores), y borrado del servidor;
+    - borrado de `rg-vuelos-prod`.
+- **Errores y hallazgos:**
+  - **BKG-13 (nuevo, 🔴):** `booking.epn.edu.ec` **no resuelve en el DNS público**. El stock gRPC no puede llegar a Booking:
+    hay 736 envíos pendientes que se reintentan en segundo plano (D33), con CPU casi nula. Hay que pedirles la dirección
+    pública.
+  - La red de la PUCE bloquea el SSH de salida al puerto 22: la VM escucha también en el **2222**, solo desde la IP del
+    responsable, y la regla del 22 se borró. El clasificador de seguridad me impidió, con razón, abrir el 22 a cualquier
+    origen para diagnosticarlo.
+  - **Míos en los comandos:**
+    - concatenación de cadenas de PowerShell en el respaldo (el primer intento no generó el archivo);
+    - GNU tar leía `C:` como un host remoto (se agregó `--force-local`);
+    - comillas en una consulta SQL.
+    - Ninguno afectó a los datos: el respaldo se verificó antes de borrar.
+  - El correo de Let's Encrypt se quitó: es opcional, y no se envía el correo del responsable a un servicio externo sin que
+    lo pida.
+- **Verificación:**
+  - **★ Suite de conformidad v2 contra la URL pública (`https://ecoairlines-reto2.northcentralus.cloudapp.azure.com/api/v2`),
+    con las credenciales reales de la nube: 54/54, 30/30 operaciones.**
+  - Las 24 comprobaciones GraphQL de V2.13, contra la nube: todas bien, incluida la suscripción por `wss://`.
+  - `GET /api/v2/vuelos/health` → `HEALTHY` (12 dependencias `UP`); HSTS y CSP; el ESB no se publica (404); un evento sin
+    firma en `/integraciones/booking/eventos` → `401`.
+  - 368 vuelos publicados. VM con 1,6 GiB de memoria libre, CPU tranquila y disco al 27 %.
+- **Pendiente (depende de Booking):**
+  - BKG-13 y BKG-06 (dirección y forma del stock); BKG-01 (por dónde nos envían `payment.*` y `package.cancelled`).
+  - Entregar a Booking, **por un canal privado**, la URL base, `BOOKING_CLIENT_SECRET` y `AIRLINE_EVENTS_SECRET`
+    (`infra/cloud/.env`; ver DESPLIEGUE_AZURE.md).
+  - La verificación con Booking: el nodo en verde en su panel, y una compra, un combo cancelado y una cancelación con el mismo
+    `X-Correlation-Id`.
+  - Auditoría de Gemini y aprobación de la fase.
+
+### V2.15 — Payment API simulada con tarjeta (canal web) — ✅ HECHA (26/10), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.15: `services/externos/payment-api` según `payment-api.openapi.yaml` (tokenizar, autorizar,
+  capturar, anular, reembolsar; tarjetas de prueba). Verificación: cada tarjeta de prueba, tarjetas inválidas y referencias
+  reutilizadas o con otro monto. **D49 (aprobada):** en la misma VM de la nube, publicada por Caddy en `/payment-api/`
+  (US$0).
+- **Cómo se hizo (`services/externos/payment-api`, puerto 4010 en local):**
+  - Es un **sistema externo** (como Stripe): no usa los tokens de Identity ni pasa por el gateway.
+    - Claves propias: `pk_test_…` (`X-Api-Key`, el navegador) y `sk_test_…` (`Bearer`, el ESB).
+    - Se comparan en tiempo constante, en un *guard* que corre ANTES de validar el cuerpo: sin clave no se informa el formato.
+    - La clave pública en una operación del ESB → `401`.
+  - **Tarjetas** (`domain/cards.ts`, funciones puras):
+    - validación: Luhn, marca (Visa, Mastercard, Amex), vencimiento futuro y CVV de 3 o 4 dígitos;
+    - las 5 tarjetas de prueba del plan;
+    - se guardan **solo** marca, últimos 4, vencimiento y el resultado de prueba. El número y el CVV no salen de la petición.
+  - **Pagos** (`domain/payments.ts`): estados calculados al leer, sin temporizadores. La tarjeta pendiente pasa a
+    `AUTHORIZED` a los 30 s y una autorización vence a los 30 min (configurables para las pruebas).
+    - Captura por el **monto exacto** y **una sola orden** (`ALREADY_CAPTURED`; repetir con la misma orden es idempotente).
+    - Anular es idempotente y, si ya está capturado, responde `409`.
+    - Reembolsos parciales y totales, nunca por más de lo capturado.
+  - **Datos** (`repositories/payments.store.ts`): memoria o PostgreSQL (base `payment`: `payment_methods`, `payments`,
+    `used_references`, `refunds`, `idempotency_keys`).
+    - Toda transición de un pago o de un token corre en una transacción con `SELECT … FOR UPDATE`.
+    - La `Idempotency-Key` se reserva antes de ejecutar y se libera si la operación falla.
+  - Límite de 20 intentos por minuto por IP en tokenizar y autorizar; CORS solo para la web; `Cache-Control: no-store`; en
+    producción exige base y claves propias (rechaza las de desarrollo).
+  - **Docker:** servicio `payment-api` (127.0.0.1:4010). El ESB recibe `PAYMENT_API_URL` y `PAYMENT_API_SECRET_KEY` y
+    espera a que esté sana. En la nube: `NODE_ENV=production`, claves propias en `infra/cloud/.env` (`generar-env.mjs` ya las
+    genera) y la ruta `handle_path /payment-api/*` en Caddy.
+- **Errores encontrados y corregidos (por la prueba de punta a punta con la Payment API real):**
+  - **Seguridad (ESB, V2.10): una referencia de pago ajena provocaba el reembolso de la compra original.** Al reutilizar un
+    `paymentReference` ya capturado por otra orden, la captura fallaba (`ALREADY_CAPTURED`). La compensación del paso
+    consultaba el pago y, al verlo `CAPTURED`, lo **reembolsaba entero**, sin comprobar que lo hubiera capturado esa saga.
+    Ahora solo se reembolsa si `orderId` = `sagaId`. Las pruebas de V2.10 no lo veían porque su Payment API falsa no
+    devolvía el `orderId`; ahora sí, y hay una prueba del caso.
+  - **Contrato (ESB, V2.10):** al capturar y al reembolsar, el ESB mandaba el monto de la reserva con `baseFare` y `taxes`. El
+    `MoneyAmount` de la pasarela es `additionalProperties: false`, así que **toda compra web fallaba** con `400`. Ahora el
+    adaptador manda solo `currency` y `total`; hay prueba de regresión.
+  - **Mensaje (ESB):** una tarjeta rechazada respondía «reintente en unos segundos», el texto de la pendiente. Ahora solo la
+    pendiente pide reintentar; la rechazada o vencida pide otra tarjeta.
+  - **Míos:**
+    - el primer controlador validaba el cuerpo antes de la clave (corregido con el *guard*);
+    - en local el contenedor arrancaba en producción y rechazaba las claves de desarrollo (en local queda en `development`,
+      como Identity);
+    - el script de punta a punta usaba el mismo pasajero en todas las reservas: Bookings lo rechazaba antes del pago y una
+      comprobación pasaba por el motivo equivocado.
+- **Verificación:**
+  - Payment API: 27 pruebas contra su contrato:
+    - cada tarjeta de prueba y cada tarjeta inválida (Luhn, marca, vencida, CVV);
+    - token reutilizado, vencido o inexistente;
+    - captura con otro monto, otra orden o un pago pendiente, rechazado o vencido;
+    - anular, y reembolsos parciales, totales y excesivos;
+    - idempotencia, claves, límite por IP, CORS y producción;
+    - **el número y el CVV no aparecen en respuestas, datos ni logs**.
+  - 3 con PostgreSQL real: de 6 capturas simultáneas cobra una; los reembolsos simultáneos nunca superan lo capturado; la
+    clave idempotente la reserva una sola petición.
+  - ESB: +5 pruebas (montos del contrato, referencia ajena sin reembolso, mensajes pendiente, rechazada y vencida).
+  - `tsc` y lint sin errores; pruebas v2: **615** (41 omitidas, las de bases y broker reales).
+  - **★ Compra web de punta a punta en Docker** (navegador → Payment API; GraphQL → gateway → MS → ESB): 13 de 13 bien.
+    - tarjeta 4242 → `COMPLETED` y `CONFIRMED`, captura del monto exacto con `orderId` = `sagaId` y el mismo
+      `X-Correlation-Id`;
+    - la referencia en otra reserva → rechazada sin tocar la compra original;
+    - otro monto → `AMOUNT_MISMATCH`, y la autorización queda `VOIDED`;
+    - rechazada → sin reserva;
+    - pendiente → `PAYMENT_NOT_AUTHORIZED`, y a los 30 s se confirma;
+    - cancelar → reembolso `SETTLED` en la pasarela (`PARTIALLY_REFUNDED` por la penalidad) y visible en `Booking.refunds`.
+  - Conformidad v2 contra el gateway local: 54/54 (el canal Booking no cambió).
+  - **★ En la nube (D49, sin recursos nuevos):** la compra web de punta a punta contra
+    `https://ecoairlines-reto2.northcentralus.cloudapp.azure.com` (Payment API en `/payment-api/`, claves propias): 13 de 13
+    bien; la conformidad v2 contra la URL pública sigue en 54/54; la clave de desarrollo se rechaza (`401`).
+  - **Mío en el despliegue:** el Caddyfile se monta como archivo y, al reemplazarlo, Caddy seguía con el anterior (la ruta
+    nueva daba 404). `desplegar.sh` ahora recrea Caddy en cada despliegue.
+- **Pendiente:** auditoría de Gemini y aprobación. La web (V2.17) usará la Payment API con la clave pública; `CORS_ORIGINS`
+  de la nube se completa cuando la web tenga URL (V2.20).
+
+### V2.16 — Plataforma de observabilidad — 🟡 VERIFICADA EN LOCAL (02/11): falta desplegarla en la nube
+- **Qué se pidió:** PLAN.md §6, V2.16: métricas, trazas, logs, alertas y tableros (`infra/observability`); las alertas del
+  plan; telemetría en el panel vía la Composición con búsqueda por correlation ID. Verificación: una compra de Booking se
+  encuentra por su `X-Correlation-Id` y se ve como una sola traza. **D50 (aprobada):** la misma pila en local y en la VM,
+  Grafana público con contraseña, retención de 7 días, US$0.
+- **Hecho:**
+  - `packages/shared`: el SDK de OpenTelemetry exporta también **métricas** (cada 15 s) y **logs** (cada línea JSON, con
+    sus campos como atributos), e instrumenta **gRPC** y **`fetch`** (`@opentelemetry/instrumentation-undici@0.33.0`).
+  - Métricas de negocio `ecoairlines_*` (`telemetry/metrics.ts`): sagas terminadas por tipo y estado, entregas de webhooks,
+    dependencias de cada `/health`, estado del nodo de Booking y stock pendiente de enviar.
+  - Pila en `infra/observability/` y en los dos compose: OTel Collector → Prometheus v3.15.0 (+ RabbitMQ por cola),
+    Alertmanager v0.34.1, Tempo 3.1.0, Loki 3.7.8 y Grafana 13.2.3 (tableros «Servicios» y «Negocio» versionados). En la nube
+    Grafana queda en `/grafana/` con `GRAFANA_ADMIN_PASSWORD` de `infra/cloud/.env`.
+  - 12 alertas (`promtool` sin errores): servicio caído, Collector sin datos, latencia, errores, nodo DOWN y DEGRADED, cola
+    creciendo, mensajes en la cola de fallidos, sagas fallidas y compensadas, stock sin enviar y webhooks agotados.
+  - ESB: `ObservabilityClient` (Prometheus, Loki, RabbitMQ, Alertmanager) y 4 operaciones de Composición
+    (`telemetry/latency`, `traces/:correlationId`, `queues`, `alerts`); MS.Admin las usa (antes respondían 503). Contratos
+    `esb.openapi.yaml` 1.3.0 y `ms-admin.openapi.yaml` 1.2.0 (Redocly válido).
+- **Verificado en local:** una compra REST como Booking con un `X-Correlation-Id` fijo se encuentra en el panel con sus pasos
+  en 7 servicios y su saga `CREATE_BOOKING`; latencia de 15 servicios; colas de RabbitMQ; alertas; métricas `ecoairlines_*`
+  en Prometheus.
+- **Error encontrado (de V2.2):** **cada salto de una compra empezaba una traza nueva.** Los servicios se llaman con `fetch`
+  (undici) y `HttpInstrumentation` no lo ve: nunca se propagaba `traceparent`. Tempo lo mostró (cada traza tenía un solo
+  span y ninguno de cliente). Se agregó la instrumentación de undici (la 0.34.0 tenía 6 días: se usó la 0.33.0, de 20 días).
+- **Verificación final (02/11), con las 18 imágenes recompiladas de a una (≈15 min, sin errores) y los 26 contenedores arriba:**
+  - **★ Una compra de Booking es una sola traza** que cruza gateway → MS.Reservas → ESB → MS.G.Offers (gRPC) → MS.G.Bookings, y
+    su `trace_id` es el mismo en los logs y en Tempo.
+  - **Error encontrado: el salto gRPC seguía fuera de las trazas.** Los servicios son ESM y la instrumentación de gRPC se
+    engancha a `require`, por donde un `import` no pasa: `GrpcInstrumentation` estaba registrada pero nunca parcheaba.
+    `startTelemetry` ahora carga `@grpc/grpc-js` con `require` después de arrancar el SDK.
+  - **Alerta real:** al detener MS.G.CheckIn, `ServicioCaido` (crítica) llegó a Alertmanager a los 103 s y se vio en el panel.
+    Las 12 reglas están sanas.
+  - **Grafana:** `401` sin contraseña; tableros «Servicios» e «Integración y negocio»; Prometheus, Loki y Tempo conectados.
+  - Latencia de 11 servicios en el panel, colas y métricas `ecoairlines_*`.
+  - Memoria: ≈2,7 GiB recién arrancado (se estimaba ≈1,7): en la VM de 4 GiB queda justo.
+- **Pendiente:** desplegar en la VM (US$0, D50) y comprobar `/grafana/` y la memoria; se hará cuando se decida dónde se hospeda
+  todo (`PASOS_FINALES.md`). DESPLIEGUE_AZURE.md y auditoría.
+- **Recursos (26/10):** al recompilar las 20 imágenes a la vez, Docker llegó a ≈6,8 GB en la laptop (15,7 GB) y su motor se
+  cayó (`rpc error: EOF`). En reposo el sistema usa ≈1,7 GiB (la observabilidad ≈0,7). Se limitó WSL a 6 GB y 6 núcleos
+  (`.wslconfig` del usuario), se compila de a una imagen y, mientras se trabaja en la web, la observabilidad y el Booking
+  simulado quedan detenidos. El consumo y las opciones de hospedaje están en `PASOS_FINALES.md`.
+
+### V2.17 — Web: migración completa a GraphQL y pago con tarjeta — ✅ HECHA (26/10), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.17: cliente GraphQL en lugar de `api/endpoints.ts` y `api/extensions.ts`; login contra
+  Identity y menú según el rol; formulario de tarjeta con «Usar tarjeta de prueba» en reserva, maletas, asientos y cambio de
+  fecha. Verificación: recorrido completo en el navegador; en la pestaña Red, la web solo llama a `/api/graphql` y a la
+  Payment API. **D51 (aprobada):** cliente propio con `fetch` y una prueba que valida los documentos contra el esquema.
+- **Cómo se hizo (`ecoairlines-web`):**
+  - `api/client.ts`: el cliente GraphQL (D51). Convierte el ProblemDetails de `errors[].extensions` al `ApiError` que ya
+    usaban las pantallas (con `retryAfter` y el `X-Correlation-Id` como código de soporte).
+  - `api/operations.ts` (cliente) y `api/admin.ts` (administración): las mismas funciones que antes, con su documento
+    GraphQL. Donde el esquema difiere poco (rotación de la flota, eventos) se adapta ahí para no reescribir las pantallas.
+    Se borraron `endpoints.ts`, `extensions.ts`, `PaymentReferenceField.tsx` y la selección de maletas del checkout.
+  - **Login:** `login`/`register` por GraphQL (MS.Clientes → Identity); el token sigue solo en memoria. El menú y el acceso a
+    las páginas de administración salen de los **scopes** del token (`ECOAIRLINES_ADMIN`); el gateway los verifica igual.
+  - **Pago con tarjeta** (`components/CardPayment.tsx`, `api/payments.ts`):
+    - la tarjeta va del navegador a la Payment API con la clave **pública**: tokenizar y luego autorizar;
+    - a GraphQL solo llega `paymentReference`; se autoriza el monto que el ESB capturará: el precio congelado del hold, las
+      maletas (precio × cantidad) o la diferencia del cambio de fecha;
+    - «Usar tarjeta de prueba» carga las tarjetas de `GET /test-cards`;
+    - una tarjeta rechazada pide otra; si la operación falla por otro motivo, el reintento **reutiliza la misma
+      autorización** (la petición GraphQL sale idéntica y su `idempotencyKey` no choca);
+    - los datos de la tarjeta se borran al terminar y nunca se guardan ni se registran.
+  - El **cambio de asiento** no tiene costo en EcoAirlines (`changeSeats` solo cobra si llega un monto), así que no pide
+    tarjeta. Usa `changeSeats` del contrato v2 (atómico) en lugar de la extensión de un asiento.
+  - Admin: indicadores por canal (`adminIndicators`); vuelos con `flightOperations` (asientos por estado, holds, check-in,
+    alertas) y cambio de estado con motivo al cancelar; rutas, flota y rotación; eventos (`eventHistory`); observabilidad con
+    `telemetry` (salud, latencia, colas, alertas; si la pila de V2.16 está apagada lo dice y muestra la salud igual). Sin
+    listado de reservas ni de pasajeros por vuelo: el esquema no los tiene (la asistencia por vuelo llega en V2.18).
+  - Mensajes nuevos para los códigos del contrato v2, de la cuenta y de la pasarela. Un `INVALID_CREDENTIALS` (401) ya no
+    se muestra como «tu sesión expiró».
+- **Errores del backend encontrados por el recorrido (corregidos):**
+  - **ESB (V2.10): una reserva con infante fallaba siempre** (`PASSENGER_COUNT_MISMATCH`). El ESB le quitaba los infantes a
+    la lista que manda a Offers, y Offers la compara con el desglose del hold, infantes incluidos. Ahora van todos.
+  - **ESB (V2.10): los asientos elegidos al comprar se ignoraban** (mandaba `requestedSeats: []`; el contrato los trae en
+    `assignedSeats`). Ahora se respetan; afecta también a Booking. Prueba de regresión.
+  - **ESB (V2.15): la tarjeta pendiente no funcionaba como dice el plan** («la reserva responde 202 y se confirma después»):
+    la captura fallaba al instante y la compensación **anulaba** la autorización. Ahora el paso de captura espera a que la
+    pasarela autorice (consulta cada 3 s, hasta `PAYMENT_PENDING_WAIT_MS` = 45 s, menos que el lease de 60 s) y captura. Dos
+    pruebas nuevas.
+  - **ESB (V2.10/V2.12): choque de plazos.** El ESB esperaba a la saga 4,5 s antes del `202` y el cliente de los MS de
+    respuesta corta también a 4,5 s: el `202` llegaba tarde y se veía `503`. `SAGA_DEADLINE_MS` baja a 3,5 s (sigue dentro de
+    los 5 s de Booking).
+  - **Gateway:** la página de 50 vuelos de `flightOperations` pasaba el límite de complejidad (1451 > 1000). La web pide de
+    a 30.
+  - **Abierto (BKG-14):** las maletas extra enviadas al crear la reserva no se agregan ni se cobran; se preguntó a Booking.
+    La web ya no las ofrece en el checkout (se compran desde «Mis viajes»).
+- **Web y tarjeta pendiente:** como el contrato REST de «crear reserva» no tiene un `202` sin reserva, MS.Reservas responde
+  `503 PROVIDER_UNAVAILABLE` con `Retry-After` mientras la saga sigue (V2.12). La web lo trata así: muestra «Estamos
+  confirmando tu pago con el banco» y reintenta la MISMA petición con la misma clave hasta tener la reserva.
+- **Míos:** el primer `authorizeCard` reutilizaba la `Idempotency-Key` con un token de tarjeta nuevo (la pasarela habría
+  respondido `IDEMPOTENCY_KEY_REUSED`); un aviso del checkout leía un estado viejo de React; el script del recorrido
+  recargaba la página y perdía la sesión (que vive en memoria, a propósito).
+- **Verificación:**
+  - `tests/arquitectura-v2/web-graphql.spec.ts` (4 pruebas): todos los documentos de `operations.ts` y `admin.ts` son
+    válidos contra `gateway.graphql`; la Payment API recibe la clave pública y el número de tarjeta solo al tokenizar; ningún
+    archivo de la web hace `fetch` fuera de `api/client.ts` y `api/payments.ts`, ni nombra una URL REST del sistema.
+  - ESB: +3 pruebas (infante y asientos a Offers; pendiente que se autoriza; pendiente que vence).
+  - `typecheck`, `lint` y `build` de la web sin errores; pruebas v2: **625** (41 omitidas, las de bases y broker reales).
+    Conformidad v2 contra el gateway local: 49 de 49 (5 omitidas: piden el token de administrador).
+  - **★ Recorrido completo en Microsoft Edge** (`playwright-core` 1.64.0 en el scratchpad, sin descargar navegadores): 23 de
+    23 bien:
+    - registro y menú de cliente;
+    - compra con infante y asiento elegido: tarjeta «Rechazada» (pide otra) y luego «Aprobada (Visa)» → confirmada con el
+      mismo asiento;
+    - postventa: maletas con Mastercard, cambio de asiento y cambio de fecha; check-in fuera de plazo con mensaje claro;
+    - tarjeta «Pendiente»: la web avisa, espera y la reserva queda confirmada;
+    - Mis viajes, perfil y estado de vuelo;
+    - administrador: indicadores, vuelos del día, rutas, ventas por ruta y observabilidad;
+    - **★ pestaña Red:** solo `POST localhost:8088/api/graphql` y `localhost:4010` (`/test-cards`, `/payment-methods`,
+      `/payments`). Sin errores de JavaScript.
+  - **Observación abierta:** en una de cuatro corridas, el registro falló una vez porque el ESB esperó 4 s una respuesta de
+    Identity que nunca llegó a Identity (sin rastro en sus logs). No se repitió; se vigila al terminar V2.16 (puede estar
+    relacionado con el Collector apagado y la instrumentación nueva de `fetch`).
+- **Pendiente:** auditoría de Gemini y aprobación. La web en la nube (`CORS_ORIGINS`, URL) es de V2.20.
+
+### V2.18 — Web: pantallas nuevas — ✅ HECHA (02/11), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.18 y §4.9. Cliente: asistencia, estado de boletos y cambio de varios asientos. Admin: Usuarios,
+  Partners, Precios y promociones, Operaciones (con cambio de estado de vuelo), Asistencia y Telemetría. Verificación: cada
+  pantalla probada con un CLIENTE y un ADMIN. Sin decisiones nuevas: todo existía ya en `gateway.graphql`.
+- **Cómo se hizo (`ecoairlines-web`):**
+  - **Cliente:**
+    - asistencia médica: «Necesita asistencia médica» por pasajero en el checkout, predeterminada en el perfil (se propone al
+      pasajero 1) y panel «Asistencia» en la reserva para ver, pedir, cambiar o quitar;
+    - «Estado de los boletos» en el detalle, con cada tramo;
+    - «Cambiar asientos»: reutiliza el selector del checkout y cambia varios a la vez con `changeSeats` (todos o ninguno).
+  - **Admin:** barra propia del portal (`RequireAdmin`) con 8 secciones.
+    - **Usuarios:** filtros, crear, cambiar rol, bloquear y activar.
+    - **Partners:** alta con permisos, bloqueo y rotación; el secreto se muestra una vez y solo vive en el estado de la pantalla.
+    - **Precios y promociones:** multiplicadores, «Rellenar», vista previa, historial y acuerdo con Booking; un solo «Guardar».
+    - **Operaciones:** detalle por cabina y estado de asiento; solo ofrece las transiciones válidas; puerta, horas estimadas y
+      motivo; aviso antes de cancelar. Sale del Panel.
+    - **Asistencia:** por vuelo y fecha, con «Marcar lista».
+    - **Telemetría:** búsqueda por correlation ID, integración con Booking, salud, latencia, colas y alertas. Cada parte se
+      consulta por separado: si una falla, las otras se ven. El backend sale de Observabilidad, que conserva eventos, rotación
+      y navegador.
+- **Errores encontrados:**
+  - **Gateway (V2.13): el acuerdo de promociones se atribuía a la aerolínea.** Se usaba `proveedor_codigo` como `partnerId`, y
+    ese campo es el código de EcoAirlines. La pantalla no encontraba el acuerdo, mostraba el formulario vacío y **el siguiente
+    «Guardar» lo pisaba con valores en blanco**. `promotionAgreement(partnerId)` respondía `null`. La prueba no lo veía porque su
+    dato falso ponía al partner en ese campo. Ahora MS.Admin añade `partnerId` (`ms-admin.openapi.yaml` 1.3.0,
+    `PartnerPromotionAgreement`; el contrato de Booking no cambia). **Lo detectó la captura de pantalla, no el recorrido:** este
+    daba OK porque solo miraba el mensaje de éxito. Se agregaron comprobaciones.
+  - **Web:** el panel de asientos heredaba el ancho de `.panel-form` y cortaba la columna F del mapa (también visto en la captura).
+- **Míos:** la primera versión del recorrido no era repetible (cancelar un vuelo es definitivo): ahora usa fechas por corrida.
+- **Verificación:**
+  - **★ Recorrido en Microsoft Edge con un CLIENTE y un ADMIN: 48 de 48 bien** (`recorrido218.mjs`, en el scratchpad). Destacan:
+    - un CLIENTE ve «Acceso restringido» y el gateway responde `FORBIDDEN` aunque salte la web;
+    - una cuenta bloqueada no ingresa (`ACCOUNT_BLOCKED`) y el admin no puede bloquearse a sí mismo;
+    - al rotar el secreto de un partner, el nuevo sirve y el anterior da `401`; bloqueado, no obtiene token;
+    - el acuerdo guardado se ve en la pantalla, sobrevive a un segundo «Guardar» y Booking lo lee por la API de vuelos;
+    - cancelar un vuelo vendido reembolsa sus reservas;
+    - la compra se encuentra por correlation ID en Telemetría;
+    - en la pestaña Red solo aparecen `/api/graphql` y la Payment API.
+  - **★ Dato de salud:** una nota única escrita en perfil y checkout no aparece en 3.573 líneas de logs de Docker ni en Loki.
+    Tempo no se pudo revisar así (la consulta de texto libre responde `400`).
+  - Regresión de V2.17: 23 de 23. **Falla intermitente sin explicar:** en una corrida, justo después de otro recorrido, el clic
+    en «Pagar» agotó el tiempo; repetido sin cambios, pasó.
+  - `tests/arquitectura-v2/web-graphql.spec.ts` valida todos los documentos nuevos contra `gateway.graphql`.
+  - `typecheck`, `lint` y `build` sin errores; pruebas v2: **625** (41 omitidas); conformidad v2 local: 49 de 49 (5 omitidas: piden
+    el token de administrador). `ms-admin.openapi.yaml` válido en Redocly.
+- **Pendiente:** auditoría de Gemini y aprobación. El generador de contratos de MS de respuesta vive fuera del repositorio: el
+  cambio de `ms-admin.openapi.yaml` se hizo directo en el YAML.
+
+### V2.19 — Web progresiva (PWA) — ✅ HECHA (02/11), pendiente de auditoría y aprobación
+- **Qué se pidió:** PLAN.md §6, V2.19 y §4.9: `vite-plugin-pwa` con manifest, iconos y service worker; caché sin conexión de pases y
+  «Mis viajes»; nada sensible en caché. Verificación: auditoría PWA de Lighthouse; con el modo avión, el pase ya visto se abre.
+- **Cómo se hizo (`ecoairlines-web`):**
+  - `vite-plugin-pwa` 2.0.0 (30 días): manifest en español, modo `standalone`, iconos 192, 512, *maskable* y Apple, generados del
+    logo. Precaché de la aplicación con *fallback* de navegación, que excluye lo que en la nube comparte dominio (`/api`,
+    `/payment-api`, `/grafana`, `/integraciones`). **Sin `runtimeCaching`:** ninguna respuesta de la API llega a la caché.
+  - **D52: copia local mínima** (`src/lib/offline-trips.ts`). El service worker no puede servir un pase: GraphQL va por POST y sin
+    conexión no hay sesión. Se guarda lo mínimo para abordar (ver PLAN.md, D52), por usuario. «Salir» lo borra, vencer la sesión no,
+    y los vuelos se purgan un día después de salir.
+  - Página `/sin-conexion`, sin sesión ni llamadas a servicios; sin conexión, las rutas privadas llevan ahí y no al login. Aviso
+    «Sin conexión» con enlace en cualquier página. `BoardingPassCard` es el mismo pase en línea y sin conexión.
+  - **Versión nueva:** se pregunta antes de actualizar (`registerType: 'prompt'`), porque recargar cerraría la sesión.
+  - Al abrir «Check-in y pases» sin haber hecho check-in, el ESB responde `409 BOARDING_PASS_NOT_AVAILABLE`, que la web mostraba
+    como error; ya no.
+- **Error grave encontrado: la observabilidad apagada hacía fallar login y registro.** Era la «observación abierta» de V2.17, y
+  se reprodujo aquí.
+  - **Causa:** con el Collector detenido, cada exportación de telemetría ocupa 5 s un hilo de libuv resolviendo `otel-collector`
+    (`EAI_AGAIN`). Node trae 4 hilos, que también usan las demás búsquedas DNS y `scrypt`: resolver `ms-g-identity` pasó de **1 ms a
+    10 s** y MS.Clientes se rendía a los 5 s. Solo la primera petición tras un rato era lenta, por eso parecía azar.
+  - **Error mío:** yo recomendé detener el Collector en `PASOS_FINALES.md`, y mi hipótesis de V2.17 (la instrumentación de `fetch`)
+    era incorrecta. **Importa en producción:** si el Collector se caía, las ventas se degradaban.
+  - **Corrección:** `UV_THREADPOOL_SIZE: 16` en los 18 servicios Node de `docker-compose.yml` (la nube lo hereda al combinar los dos
+    archivos). Medido con el Collector apagado: `ms-g-identity` resuelve en 1 ms con 4 búsquedas atascadas, y 14 registros con
+    pausas de 8 s tardaron menos de 0,5 s, sin fallos. No se conoce otra causa de la «falla intermitente» del clic en «Pagar» de
+    V2.18: pudo ser esta, pero no se comprobó.
+- **Míos:** `TaskStop` no mata el Vite hijo: el servidor de desarrollo siguió ocupando el 5173 y el primer recorrido probó la versión
+  sin service worker; en móvil, el script esperaba un botón dentro del menú plegado; en la regresión, el cambio de fecha falló porque
+  el recorrido de V2.18 había cancelado ese vuelo (la web dijo bien «No hay vuelos disponibles»).
+- **Verificación:**
+  - **★ Lighthouse 11.7.1 con Edge: PWA 100**, Accesibilidad 100 y Buenas prácticas 100 (la categoría PWA se retiró en la 12; se usó
+    en el scratchpad, no es dependencia del proyecto).
+  - **★ Recorrido en Edge con vista móvil, contra la versión de producción: 22 de 22 bien** (`recorrido219.mjs`):
+    - compra de un vuelo de mañana y check-in reales; instalable, con service worker activo;
+    - **★ modo avión:** la aplicación abre tras recargar, «Mis viajes» lleva a lo guardado, y el pase abre con su QR;
+    - la caché solo tiene archivos de la aplicación; en el almacenamiento no hay token, documento, teléfono ni tarjeta;
+    - la versión nueva pregunta antes de actualizar; «Salir» borra lo guardado.
+  - `tests/arquitectura-v2/web-offline.spec.ts` (6 pruebas): campos guardados, separación entre usuarios, purga, borrado y que el
+    service worker no tenga `runtimeCaching`.
+  - **Regresión con los 26 contenedores:** V2.16 (traza única con gRPC) bien; V2.17, 23 de 23; V2.18, 48 de 48.
+  - `typecheck`, `lint` y `build` sin errores; pruebas v2: **631** (41 omitidas); conformidad v2 local: 49 de 49 (5 omitidas: piden el
+    token de administrador).
+  - `npm audit`: 0 en producción; 11 en herramientas de desarrollo (entre ellas una alta de `launch-editor` en Vite, solo en
+    `npm run dev`). No se tocaron.
+- **Pendiente:** auditoría de Gemini y aprobación de D52. Probar la instalación en un teléfono real requiere HTTPS: queda para V2.20.
+
+### V2.20 — Nube: todo lo demás — 🟡 EN CURSO (02/11): falta publicar la web
+
+Sin decisión de hospedaje escrita, se usó lo que ya existe y es portable (el mismo `docker compose` sirve en cualquier servidor): la
+VM de D48 y la Static Web App Free. No se creó ningún recurso. Costo de la sesión: ≈46 min de VM (≈US$0,03); quedó desasignada.
+
+**Desplegado en la VM:** todo el código hasta V2.19, con la observabilidad de D50: 26 contenedores (Caddy, Payment API, gateway, 5 MS,
+ESB, 9 MS.G, PostgreSQL, RabbitMQ, Collector, Prometheus, Alertmanager, Tempo, Loki y Grafana) y `CORS_ORIGINS` con el origen de la web.
+
+**Corregido al desplegar:**
+- **`desplegar.sh` no recreaba el Collector.** Su configuración se monta como archivo: el contenedor siguió con la de V2.14 (solo
+  `debug`), nada llegaba a Prometheus, Tempo ni Loki y `CollectorSinDatos` estaba activa. Ahora recrea todo lo que monta archivos.
+- **El gateway tardó ~3 min en sanar tras compilar** (VM burstable sin CPU, swap en 1 GiB): Compose abortaba antes de recrear Caddy, que
+  seguía con el Caddyfile viejo (Grafana en 404). `docker-compose.cloud.yml` le da `start_period: 5m`. El `exit 0` del primer
+  despliegue era del `echo` de la verificación, no del script: el log sí mostraba el error.
+
+**Verificación en la URL pública:**
+- Nodo `HEALTHY`; CORS acepta el origen de la web y rechaza otro (400); Prometheus y ESB 404; Grafana 401 sin contraseña.
+- `verify_v216.mjs` 9/9: compra de Booking con token de partner (201), y UNA traza que cruza gateway → MS.Reservas → ESB → Offers (gRPC)
+  → Bookings en Tempo; panel de telemetría con latencia, colas, alertas y métricas de negocio.
+- **Alerta real:** con `ms-g-post-sale` detenido, `ServicioCaido` disparó a los 74 s, visible por la API de Grafana con contraseña; el
+  nodo pasó a `DEGRADED` y volvió a `HEALTHY` con 0 alertas activas al levantarlo.
+- `recorrido219.mjs` 20/20 con el build de producción servido en local contra la nube (registro, tarjeta, check-in, pase con QR en modo
+  avión, «Salir»). **Edge sin CORS** en esta prueba: la nube solo autoriza el origen de la web publicada. Las 2 comprobaciones de
+  versión nueva reescriben `sw.js` y no aplican aquí.
+
+**Memoria y carga:** 2,2 GiB en uso + ≈0,9 GiB de swap de 3,8 GiB; `/vuelos/health` tardó 0,5–3,3 s y la carga llegó a 14 en 2 vCPU
+los primeros 40 min. Causas: compilar en la VM y `unattended-upgrades` (parches de Ubuntu al encender tras días apagada; escribió
+varios GB y seguía activo al terminar). No se midió la VM en reposo sin esos dos efectos. Se recomienda encenderla al menos 1 h antes
+de una prueba con Booking, cuyo timeout es de 5 s.
+
+**GitHub Actions (en pausa por decisión del responsable, 02/11):** sin decisión de hospedaje, el sistema se mantiene en la VM y compila allí. `.github/workflows/imagenes-v2.yml` queda escrito, sin ejecutar y solo con ejecución manual. Prueba el monorepo y compila por servicio solo lo que
+cambió, en amd64 y arm64, hacia GHCR. El workflow de la web pasa a las URLs del gateway y la Payment API. Solo se simuló la elección de
+servicios (esb → 1; packages/shared → 18; documentación → 0). `actionlint` no corrió: Docker Hub agotó el tiempo.
+
+**Pendiente:**
+1. **Publicar la web** en la Static Web App: el build está listo, pero el sistema de permisos rechazó el despliegue a producción y lo
+   decide el responsable. Reemplaza la web del Reto 1, que ya no funciona.
+2. Subir el commit al repositorio nuevo `Reto-2`, que pidió el responsable (GitHub no admite espacios en el nombre).
+3. Probar la instalación de la PWA en un teléfono real y repetir el recorrido en la URL pública, con CORS activo.

@@ -1,302 +1,403 @@
-# DESPLIEGUE_AZURE — Subir EcoAirlines a Azure paso a paso
+# DESPLIEGUE_AZURE — EcoAirlines en Azure
 
-Guía para publicar los 4 componentes en Azure: la **web**, la **API**, la **base de datos PostgreSQL** y **dev-auth**. Hay pasos que
-haces tú en el portal de Azure (🧑) y cambios de código que hago yo (🤖) antes de desplegar.
+Guía de lo que está desplegado en Azure, cuánto cuesta y cómo encenderlo, apagarlo, actualizarlo y repararlo. Estado al
+**02/11/2026** (fase V2.20, decisiones D48 y D50 de `PLAN/PLAN.md`).
 
-> ✅ **Desplegado el 07/10/2026** (suscripción Azure for Students, región **Brazil South**):
->
-> | Componente | URL |
-> |------------|-----|
-> | Web | https://nice-hill-090e19c10.1.azurestaticapps.net |
-> | API · Swagger | https://ecoairlines-api-gv-fjfaa7b5geg3hphs.brazilsouth-01.azurewebsites.net/docs |
-> | dev-auth | https://ecoairlines-auth-gv-fscaa6e6gqbcb7ew.brazilsouth-01.azurewebsites.net/health |
->
-> Lo aprendido en el despliegue está en la sección 6 (problemas frecuentes).
+> **Regla de oro:** el límite es el crédito de **Azure for Students: US$90** (eran US$100; US$10 se gastaron en el Reto 1).
+> **Nada en Azure detiene el gasto solo:** el presupuesto `presupuestodereto` únicamente envía alertas. Antes de crear
+> cualquier recurso con costo hay que estimarlo y aprobarlo, y la VM se apaga (desasigna) cuando no se usa.
 
 ---
 
-## 1. Qué servicio de Azure usa cada parte
+## 1. Resumen
+
+| Qué | Dónde | Estado | Costo |
+|-----|-------|--------|-------|
+| **Reto 2** — la ruta de Booking completa (gateway, 5 MS de respuesta, ESB, 9 MS.G, PostgreSQL, RabbitMQ), Payment API y observabilidad | Una VM Linux en **North Central US** | ✅ En uso | ≈US$30,60/mes encendida 24 h · ≈US$6,05/mes apagada |
+| **Reto 1** — API del monolito, dev-auth y web | App Service (plan F1) y Static Web App | ⚪ Publicado pero **sin base de datos** (se borró) | US$0 |
+
+**URL pública del Reto 2:** `https://ecoairlines-reto2.northcentralus.cloudapp.azure.com`
+
+| Para qué | Ruta |
+|----------|------|
+| Contrato de Vuelos v2 (Booking) | `/api/v2/vuelos/...` |
+| Token OAuth2 del partner | `/api/v2/oauth2/token` (y el alias `/oauth2/token`, BKG-03) |
+| Health del nodo (lo que ve Booking) | `/api/v2/vuelos/health` |
+| GraphQL de la web | `/api/graphql` (suscripciones por `wss://.../api/graphql`) |
+| Swagger del contrato v2 | `/api/docs/` |
+| Eventos de Booking hacia nosotros (`payment.*`, `package.cancelled`) | `POST /integraciones/booking/eventos`, firmado con `X-Webhook-Signature` |
+| Payment API simulada (navegador con `pk_test_…`, ESB con `sk_test_…`; D49) | `/payment-api/...` (p. ej. `/payment-api/health`) |
+| Health del gateway | `/health` |
+| Grafana: tableros, trazas, logs y alertas (usuario `admin`, contraseña `GRAFANA_ADMIN_PASSWORD`) | `/grafana/` |
+
+Todo lo demás responde `404`: el ESB, los MS.G, PostgreSQL y RabbitMQ **no** se publican en Internet.
+
+---
+
+## 2. Arquitectura desplegada
 
 ```mermaid
 flowchart LR
-  U[Navegador] --> SWA["ecoairlines-web<br/>Azure Static Web Apps (Free)"]
-  SWA -- "HTTPS + JWT" --> API["API EcoAirlines<br/>Azure App Service (Linux, Node)"]
-  SWA -- "login / registro" --> AUTH["dev-auth<br/>Azure App Service (mismo plan)"]
-  API --> DB[("Azure Database for PostgreSQL<br/>Flexible Server")]
-  GH[GitHub: AppVuelos] -- "GitHub Actions<br/>(deploy al hacer push a main)" --> SWA & API & AUTH
+  B[Booking] -- "HTTPS 443\nREST v2 + token" --> C
+  W[Web / navegador] -- "HTTPS 443\nGraphQL" --> C
+  B -- "HTTPS 443\neventos firmados" --> C
+  subgraph VM["VM vm-ecoairlines-reto2 (Ubuntu 24.04 ARM, Docker Compose)"]
+    C[Caddy\nHTTPS Let's Encrypt] --> G[gateway]
+    C --> E[ESB]
+    G --> R["5 MS de respuesta"]
+    R --> E
+    E --> M["9 MS.G"]
+    M --> P[(PostgreSQL)]
+    E --> P
+    M --> Q[(RabbitMQ)]
+    E --> Q
+  end
+  M -. "gRPC 50051 (stock)\nBKG-13: Booking aún no publicado" .-> BK[Booking InventoryStockService]
 ```
 
-| Parte | Servicio de Azure | Plan recomendado | Por qué |
-|-------|-------------------|------------------|---------|
-| Web (React + Vite) | **Azure Static Web Apps** | Free | Son archivos estáticos (HTML, JS, CSS): no necesitan servidor. Incluye HTTPS y CDN |
-| API (NestJS) | **Azure App Service** (Web App, Linux, Node) | **B1** (Basic) | Proceso Node siempre encendido. El plan F1 gratis "duerme" la app y limita a 60 min de CPU al día |
-| dev-auth (Node) | **Azure App Service**, en el **mismo plan** que la API | Comparte el B1 | Un plan puede tener varias apps sin costo extra |
-| Base de datos | **Azure Database for PostgreSQL – Flexible Server** | Burstable **B1ms**, 32 GB | PostgreSQL administrado: copias de seguridad, SSL, sin instalar nada |
+- **Una sola VM** con el mismo `infra/docker-compose.yml` que se prueba en local, más el override
+  `infra/cloud/docker-compose.cloud.yml` (Caddy, producción, sin el simulador de Booking, reinicio automático).
+- **26 contenedores:** caddy, payment-api, gateway, ms-vuelos, ms-reservas, ms-postventa, ms-clientes, ms-admin, esb, ms-g-identity,
+  ms-g-schedule, ms-g-offers, ms-g-bookings, ms-g-check-in, ms-g-post-sale, ms-g-flight-status, ms-g-webhooks,
+  ms-g-customers, postgres, rabbitmq, otel-collector, prometheus, alertmanager, loki, tempo, grafana. Usan ≈2,2 GiB + ≈0,9 GiB de swap
+  de 3,8 GiB (medido el 02/11, poco después de compilar).
+- **HTTPS:** Caddy obtiene y renueva solo el certificado de Let's Encrypt (el actual vence el 24/01/2027 y se renueva unos 30
+  días antes). Necesita el puerto 80 abierto para renovarlo.
+- **Datos:** PostgreSQL y RabbitMQ guardan sus datos en volúmenes de Docker dentro del disco de la VM. **Apagar la VM no
+  borra nada**; borrar la VM o su disco, sí.
 
-**Costo aproximado** (Azure for Students da **US$100 de crédito** sin tarjeta):
-
-| Servicio | Costo |
-|----------|-------|
-| App Service B1 | ~US$13/mes (cubre la API y dev-auth) |
-| PostgreSQL B1ms | ~US$13–16/mes. Con cuenta gratuita, 750 h/mes gratis durante 12 meses |
-| Static Web Apps Free | US$0 |
-
-> **Ahorro:** el servidor de PostgreSQL se puede **detener** cuando no lo uses (hasta 7 días seguidos) y el plan B1 se puede bajar a F1
-> después de la evaluación.
+**Por qué una VM y no Azure Container Apps (D48):** con 1 réplica fija por servicio (D39), Container Apps costaría
+US$100–130/mes, más que todo el crédito. La VM cuesta ≈US$30/mes encendida y se puede apagar entre pruebas.
 
 ---
 
-## 2. Cambios de código para la nube (🤖) — ✅ hechos (V1.M)
+## 3. Inventario y costos
 
-| # | Cambio | Estado |
-|---|--------|--------|
-| 1 | **PostgreSQL** (criterio 5): con `DATABASE_URL`, cada contexto de datos guarda sus tablas en PostgreSQL (un esquema por dominio) y las carga al arrancar. También dev-auth guarda sus cuentas (`auth.users`) | ✅ Probado con PostgreSQL 16: los datos sobreviven a un reinicio |
-| 2 | **Swagger en la nube**: con `PUBLIC_API_URL`, "Try it out" usa la URL pública y **Authorize** acepta el token; el documento de dev-auth usa `DEV_AUTH_URL` | ✅ |
-| 3 | **dev-auth en la nube**: en Azure exige `AUTH_JWT_SECRET` propio; `ADMIN_PASSWORD` cambia la clave del administrador; los usuarios de prueba conservan su `sub` | ✅ |
-| 4 | **`staticwebapp.config.json`**: recargar `/admin` no da 404 | ✅ |
-| 5 | **Workflows de GitHub Actions**: web (`azure-static-web-apps-….yml`, ahora compila con Node 24 y las URLs públicas), API (`deploy-api.yml`: compila, prueba y empaqueta las 4 capas) y dev-auth (`deploy-auth.yml`) | ✅ El paquete de la API se probó en modo producción |
+### 3.1 Grupo `rg-ecoairlines-reto2` (North Central US) — Reto 2
 
----
+Precios oficiales de la API pública de precios de Azure (USD, pago por uso, Linux), consultados el 26/10/2026.
 
-## 3. Paso a paso en el portal de Azure (🧑 lo haces tú)
+| Recurso | Nombre en Azure | Detalle | Cuándo cobra | Costo |
+|---------|-----------------|---------|--------------|-------|
+| Máquina virtual | `vm-ecoairlines-reto2` | `Standard_B2pls_v2`: 2 vCPU ARM (Ampere), 4 GiB, burstable; Ubuntu 24.04 LTS `24.04.202609040`; usuario `azureuser` | **Solo encendida** (desasignada no cobra) | **US$0,0336/h** ≈ US$24,53/mes 24 h |
+| Disco del sistema | `vm-ecoairlines-reto2_OsDisk_1_…` | SSD estándar (E4) 32 GB; tiene el sistema, Docker, las imágenes y los datos | **Siempre**, aun apagada | **US$2,40/mes** |
+| IP pública | `vm-ecoairlines-reto2PublicIP` | Estándar, estática: `20.125.198.18` con el nombre `ecoairlines-reto2.northcentralus.cloudapp.azure.com` | **Siempre**, aun apagada | **US$0,005/h** ≈ US$3,65/mes |
+| Grupo de seguridad | `vm-ecoairlines-reto2NSG` | Reglas: `allow-http-https` (80 y 443 desde Internet) y `allow-ssh-2222` (2222 solo desde la IP del responsable) | — | Gratis |
+| Red virtual y tarjeta | `vm-ecoairlines-reto2VNET`, `vm-ecoairlines-reto2VMNic` | Red privada de la VM | — | Gratis |
+| Apagado automático | `shutdown-computevm-vm-ecoairlines-reto2` | Todos los días a las **04:00 UTC = 23:00 de Ecuador**; desasigna la VM | — | Gratis |
+| Tráfico de salida | — | Los primeros 100 GB/mes de salida a Internet son gratis; el uso del proyecto es de pocos MB | Por GB sobre 100 GB | ≈US$0 |
 
-### Paso 0 — Cuenta
+### 3.2 Otros grupos
 
-1. Entra a **https://azure.microsoft.com/es-es/free/students** con tu correo institucional. Azure for Students no pide tarjeta. Si no
-   te deja, usa la cuenta gratuita normal (pide tarjeta, pero no cobra si no pasas el crédito).
-2. Entra al portal: **https://portal.azure.com**.
-3. Arriba, en el buscador, escribe **"Suscripciones"** y anota el nombre de la tuya (por ejemplo, "Azure for Students").
+| Grupo | Contenido | Costo |
+|-------|-----------|-------|
+| `rg-ecoairlines` (Reto 1) | Plan `ASP-rgecoairlines-914d` (**F1, gratis**), apps `ecoairlines-api-gv` y `ecoairlines-auth-gv`, Static Web App `ecoairlines-web` (**Free**) | US$0 |
+| `NetworkWatcherRG` | `NetworkWatcher_northcentralus`, lo crea Azure solo al crear una red | US$0 |
+| `DefaultResourceGroup-EUS2` | Vacío (lo creó Azure en el Reto 1) | US$0 |
 
-> **Región:** Azure for Students solo permite **algunas regiones** (varía por cuenta). Si aparece "La suscripción "Azure for Students"
-> no se puede aprovisionar en …", esa región no está permitida.
-> - **Para ver la lista:** buscador → **Directiva** (Azure Policy) → **Asignaciones** → la asignación de **regiones permitidas** →
->   parámetros.
-> - Si no la encuentras, prueba otras (East US, Central US, West US 2/3, South Central US, Brazil South) hasta que desaparezca el error
->   rojo.
-> - Usa **la misma región permitida para todos los recursos**. El grupo de recursos puede estar en otra: no importa.
+### 3.3 Cuánto dura el crédito
 
-### Paso 1 — Grupo de recursos
+| Uso de la VM | Horas/mes | VM | Disco + IP | **Total/mes** | Con US$90 alcanza para |
+|--------------|-----------|----|------------|---------------|------------------------|
+| Encendida 24 h, todos los días | 730 | US$24,53 | US$6,05 | **US$30,58** | ≈2,9 meses |
+| Hasta las 23:00 (apagado automático), encendida desde las 08:00 | ≈450 | US$15,12 | US$6,05 | **US$21,17** | ≈4,2 meses |
+| 8 h en días laborables (pruebas con Booking) | ≈176 | US$5,91 | US$6,05 | **US$11,96** | ≈7,5 meses |
+| Apagada todo el mes | 0 | US$0 | US$6,05 | **US$6,05** | ≈14 meses |
 
-Un grupo de recursos es una "carpeta" que agrupa todo el proyecto. Borrarlo borra todo de una vez.
+**Ahorro hecho el 26/10/2026 en el Reto 1:** plan B1 → F1 (≈US$13/mes) y borrado de su PostgreSQL B1ms (≈US$16/mes):
+≈US$29/mes que ya no se gastan.
 
-1. Buscador → **Grupos de recursos** → **+ Crear**.
-2. Suscripción: la tuya · Nombre: **`rg-ecoairlines`** · Región: **East US 2**.
-3. **Revisar y crear** → **Crear**.
+### 3.4 Ver el gasto y el crédito
 
-### Paso 2 — Base de datos PostgreSQL
-
-1. Buscador → **Azure Database for PostgreSQL flexible servers** → **+ Crear**.
-
-> ⚠️ **Cuidado con el costo.** El formulario viene en **"Producción"** con un servidor **D4ds_v4 (~USD 275/mes)**. Hay que cambiarlo
-> a **Desarrollo/pruebas** y, en **Configurar servidor**, a **Burstable → Standard_B1ms, 32 GiB**. El total estimado debe quedar en
-> **~USD 15–20/mes**: si ves más, **no lo crees**. Elige primero la **región** (si no es válida, los demás campos quedan
-> deshabilitados) y revisa el tamaño después de cambiarla.
-
-2. Pestaña **Básico**:
-
-   | Campo | Valor |
-   |-------|-------|
-   | Grupo de recursos | `rg-ecoairlines` |
-   | Nombre del servidor | `ecoairlines-db-<tus-iniciales>` (único en todo Azure, p. ej. `ecoairlines-db-ga`) |
-   | Región | la misma (East US 2) |
-   | Versión de PostgreSQL | **16** |
-   | Tipo de carga de trabajo | **Desarrollo** |
-   | Proceso y almacenamiento | **Configurar servidor** → **Flexible (Burstable)** → **Standard_B1ms**, almacenamiento **32 GiB**, sin alta disponibilidad |
-   | Método de autenticación | **Solo autenticación de PostgreSQL** |
-   | Usuario administrador | `ecoadmin` |
-   | Contraseña | una segura. **Guárdala**: la necesitarás. No la escribas en el código ni en el repositorio |
-
-3. Pestaña **Redes**:
-   - Método de conectividad: **Acceso público (direcciones IP permitidas)**.
-   - Marca **"Permitir el acceso público desde cualquier servicio de Azure en Azure a este servidor"**, para que la API pueda conectarse.
-   - **+ Agregar dirección IP del cliente actual**, para conectarte desde tu PC con pgAdmin o DBeaver.
-4. **Revisar y crear** → **Crear**. Tarda unos 5–10 minutos.
-5. Cuando termine: entra al servidor → **Bases de datos** → **+ Agregar** → nombre **`ecoairlines`** → Guardar.
-   ⚠️ **No te saltes este paso.** Azure crea el servidor solo con las bases `postgres`, `azure_maintenance` y `azure_sys`. Si
-   `ecoairlines` no existe, la API y dev-auth se cierran al arrancar y responden **503** (nos pasó en el primer despliegue).
-6. Anota el **nombre del servidor** (aparece en "Información general" como `ecoairlines-db-ga.postgres.database.azure.com`).
-
-La cadena de conexión que usará la API será:
-
-```
-postgres://ecoadmin:<CONTRASEÑA>@ecoairlines-db-ga.postgres.database.azure.com:5432/ecoairlines?sslmode=require
-```
-
-### Paso 3 — Plan de App Service y las dos apps (API y dev-auth)
-
-1. Buscador → **App Services** → **+ Crear** → **Aplicación web**.
-2. Pestaña **Básico** (para la **API**):
-
-   | Campo | Valor |
-   |-------|-------|
-   | Grupo de recursos | `rg-ecoairlines` |
-   | Nombre | `ecoairlines-api-<iniciales>` → su URL será `https://ecoairlines-api-ga.azurewebsites.net` (si Azure agrega un sufijo al nombre, anota la URL exacta que muestre) |
-   | Publicar | **Código** |
-   | Pila del entorno de ejecución | **Node 24 LTS** (si no aparece, **Node 22 LTS**) |
-   | Sistema operativo | **Linux** |
-   | Región | la misma |
-   | Plan de Linux | **Crear nuevo** → `asp-ecoairlines` |
-   | Plan de precios | **Basic B1** |
-
-3. Pestaña **Implementación**: deja la implementación continua **deshabilitada** por ahora; la conectamos con el workflow que voy a
-   preparar.
-4. **Revisar y crear** → **Crear**.
-5. Repite para **dev-auth**:
-   - Nombre: `ecoairlines-auth-<iniciales>`.
-   - Misma pila (Node), Linux y región.
-   - En el plan elige el **mismo `asp-ecoairlines`**. No crees otro: así no pagas dos veces.
-
-### Paso 4 — Static Web App (la web)
-
-1. Buscador → **Static Web Apps** → **+ Crear**.
-2. Completa el formulario:
-
-   | Campo | Valor |
-   |-------|-------|
-   | Grupo de recursos | `rg-ecoairlines` |
-   | Nombre | `ecoairlines-web` |
-   | Tipo de plan | **Free** |
-   | Origen de la implementación | **GitHub** → autoriza tu cuenta → organización `gab5453`, repositorio **`AppVuelos`**, rama **`main`** |
-   | Valores preestablecidos de compilación | **React** (o "Custom") |
-   | Ubicación de la aplicación | **`/ecoairlines-web`** |
-   | Ubicación de la salida | **`dist`** |
-
-3. **Revisar y crear** → **Crear**. Azure crea solo un workflow en tu repositorio
-   (`.github/workflows/azure-static-web-apps-....yml`) y hace el primer despliegue.
-4. Entra al recurso y anota su **URL** (algo como `https://<nombre-aleatorio>.azurestaticapps.net`).
-
-> El primer despliegue funcionará, pero la web apuntará a `localhost`. Las URLs de la API y de dev-auth se fijan **al compilar**
-> (`VITE_API_URL` y `VITE_AUTH_URL`). Yo las agrego a ese workflow cuando me pases las URLs.
-
-### Paso 5 — Generar el secreto compartido de los tokens
-
-La API y dev-auth deben compartir el mismo secreto para firmar y verificar los JWT. Genéralo en tu PC:
+- **Crédito restante:** portal de Azure → buscar **"Education"** → *Overview* (muestra el saldo de Azure for Students), o
+  <https://www.microsoftazuresponsorships.com/balance>.
+- **Gasto del mes:** portal → **Cost Management** → *Cost analysis* (agrupar por *Resource*).
+- **Presupuesto con alertas:** portal → Cost Management → *Budgets* → `presupuestodereto` (US$100/mes). Conviene bajarlo a un
+  valor más prudente (p. ej. US$25/mes) para que avise antes. **Solo avisa por correo; no apaga nada.**
+- Desde la CLI (puede tardar en reflejar el día):
 
 ```powershell
-node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+az consumption budget list --query "[].{nombre:name, monto:amount, gastado:currentSpend.amount}" -o table
 ```
 
-Guárdalo: va **solo** en la configuración de Azure (paso 6), nunca en el repositorio.
+---
 
-### Paso 6 — Variables de entorno de cada app
+## 4. Requisitos para operar
 
-En cada App Service: **Configuración** → **Variables de entorno** → pestaña **Configuración de la aplicación** → **+ Agregar** →
-**Aplicar**.
-
-**API (`ecoairlines-api-ga`):**
-
-| Nombre | Valor |
-|--------|-------|
-| `NODE_ENV` | `production` |
-| `AUTH_JWT_SECRET` | el secreto del paso 5 |
-| `AUTH_ISSUER` | `ecoairlines-auth` |
-| `AUTH_AUDIENCE` | `ecoairlines-api` |
-| `CORS_ORIGINS` | la URL de la Static Web App (p. ej. `https://xxx.azurestaticapps.net`), sin `/` al final |
-| `TRUST_PROXY` | `1` (App Service está detrás de un balanceador; sin esto, el rate limit vería a todos como la misma IP) |
-| `SWAGGER_ENABLED` | `true` |
-| `PUBLIC_API_URL` | `https://ecoairlines-api-ga.azurewebsites.net` *(lo usa el cambio 🤖 2)* |
-| `DEV_AUTH_URL` | `https://ecoairlines-auth-ga.azurewebsites.net` |
-| `DATABASE_URL` | la cadena del paso 2, **sin** `<` `>` alrededor de la contraseña y con el nombre real del servidor |
-| `WEBHOOK_DELIVERY` | `http` |
-| `SCM_DO_BUILD_DURING_DEPLOYMENT` | `false` (el paquete llega ya compilado desde GitHub Actions) |
-
-Además: **Configuración** → **Configuración general** → **Comando de inicio**: `node EcoAirlines.API/dist/main.js`. Y activa
-**Siempre activo (Always On)**, disponible en B1.
-
-**Activa los registros en las dos apps:** **Supervisión** → **Registros de App Service** → **Registro de aplicaciones: Sistema de
-archivos** → Guardar. Sin esto, la "Secuencia de registro" no muestra lo que imprime la app y no se ve por qué falla al arrancar.
-
-**dev-auth (`ecoairlines-auth-ga`):**
-
-| Nombre | Valor |
-|--------|-------|
-| `AUTH_JWT_SECRET` | **el mismo** secreto del paso 5 |
-| `AUTH_ISSUER` | `ecoairlines-auth` |
-| `AUTH_AUDIENCE` | `ecoairlines-api` |
-| `CORS_ORIGINS` | `https://xxx.azurestaticapps.net,https://ecoairlines-api-ga.azurewebsites.net` (la web **y** el Swagger de la API, separados por coma) |
-| `DATABASE_URL` | **la misma** cadena que la API (las cuentas se guardan en el esquema `auth`) |
-| `ADMIN_PASSWORD` | una clave nueva para `admin@ecoairlines.test`: la de por defecto está en el repositorio |
-| `SCM_DO_BUILD_DURING_DEPLOYMENT` | `false` |
-
-Comando de inicio: `node server.mjs`. **No** definas `NODE_ENV` en dev-auth: con `production` se niega a arrancar.
-
-> **No hace falta definir `PORT`:** App Service lo define solo y la API y dev-auth ya lo leen.
-
-### Paso 7 — Datos para los workflows ✅
-
-Los workflows usan estos datos, ya configurados:
-
-- [x] URL de la Static Web App (en `VITE_*` del workflow de la web).
-- [x] Nombre de las apps (`ecoairlines-api-gv` y `ecoairlines-auth-gv`, en `deploy-api.yml` y `deploy-auth.yml`).
-- [x] Servidor PostgreSQL (`ecoairlines-db-gv`). La contraseña va solo en `DATABASE_URL`, dentro de Azure.
-- [x] Variables del paso 6.
-
-> Si se recrea algún recurso con otro nombre, hay que actualizar esos tres archivos de `.github/workflows/`.
+1. **Azure CLI** instalada y sesión iniciada:
+   ```powershell
+   az login                 # abre el navegador; cuenta de la PUCE (Azure for Students)
+   az account show -o table # debe decir "Azure for Students"
+   ```
+   En Git Bash `az` no siempre aparece en el PATH: usar PowerShell, o la ruta completa
+   `& "C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd" ...`.
+2. **Clave SSH:** `~/.ssh/id_rsa` (la creó `az vm create --generate-ssh-keys`). Sin ella no se entra a la VM: **no borrarla**
+   (si se pierde, se reemplaza con `az vm user update -g rg-ecoairlines-reto2 -n vm-ecoairlines-reto2 -u azureuser --ssh-key-value "<nueva clave pública>"`).
+3. **El archivo de secretos** `infra/cloud/.env` (ver la sección 8). Solo existe en el equipo del responsable y en la VM.
 
 ---
 
-## 4. Despliegue (🤖 + 🧑)
+## 5. Encender y apagar
 
-1. 🤖 Subo a `main`:
-   - los cambios de la sección 2;
-   - los workflows `.github/workflows/deploy-api.yml` y `deploy-auth.yml`;
-   - las variables `VITE_*` en el workflow de la Static Web App.
-2. 🧑 Para que GitHub pueda desplegar en cada App Service:
-   - en el portal, entra a la app → **Información general** → **Descargar perfil de publicación**;
-   - en GitHub: **AppVuelos** → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**;
-   - nombres: `AZURE_API_PUBLISH_PROFILE` y `AZURE_AUTH_PUBLISH_PROFILE`; valor: el contenido completo del archivo descargado.
-   - Si el botón de descarga aparece deshabilitado: en la app → **Configuración** → **Configuración general** → activar **Autenticación
-     básica de publicación SCM** → Guardar, y volver a descargar.
-3. Cada `push` a `main` despliega solo lo que cambió (web, API o dev-auth). El avance se ve en GitHub → pestaña **Actions**.
-4. **La primera vez:** después de crear los dos secretos, en GitHub → **Actions** → "Deploy API (Azure App Service)" →
-   **Run workflow** (rama `main`), y lo mismo con "Deploy dev-auth". Las ejecuciones que fallaron antes por falta de secretos se
-   pueden ignorar.
-5. Al arrancar por primera vez contra la base vacía, la API crea sus 15 tablas y carga la red base (90 rutas y 149 aviones), y
-   dev-auth crea `auth.users`. No hay que ejecutar scripts.
+> **Importante:** "apagar" desde Linux (`sudo shutdown`) **sigue cobrando** la VM. Para dejar de pagar hay que
+> **desasignarla** (`deallocate`), que es lo que hace el apagado automático y el botón *Detener* del portal.
+
+### 5.1 Desde la CLI (PowerShell)
+
+```powershell
+# Ver el estado: "VM running" (cobra) o "VM deallocated" (no cobra la VM)
+az vm get-instance-view -g rg-ecoairlines-reto2 -n vm-ecoairlines-reto2 --query "instanceView.statuses[1].displayStatus" -o tsv
+
+# ENCENDER (~1 min). Los 26 contenedores arrancan solos (restart: unless-stopped); el sistema queda listo en ~2-3 min.
+# Tras varios días apagada, Ubuntu aplica parches y el sistema responde lento: encenderla al menos 1 h antes de probar con Booking.
+az vm start -g rg-ecoairlines-reto2 -n vm-ecoairlines-reto2
+
+# APAGAR Y DESASIGNAR (deja de cobrar la VM; quedan el disco y la IP)
+az vm deallocate -g rg-ecoairlines-reto2 -n vm-ecoairlines-reto2
+
+# Reiniciar (si algo quedó colgado)
+az vm restart -g rg-ecoairlines-reto2 -n vm-ecoairlines-reto2
+```
+
+Después de encender, comprobar que responde:
+
+```bash
+curl -s https://ecoairlines-reto2.northcentralus.cloudapp.azure.com/api/v2/vuelos/health
+# {"status":"HEALTHY", ...}: listo. "DEGRADED" o 503 durante los primeros minutos es normal (están arrancando).
+```
+
+### 5.2 Desde el portal
+
+Portal de Azure → *Máquinas virtuales* → `vm-ecoairlines-reto2` → **Iniciar** / **Detener** (Detener desasigna).
+
+### 5.3 Apagado automático
+
+Configurado a las **04:00 UTC (23:00 de Ecuador)**, todos los días. **No enciende la VM**: hay que encenderla a mano.
+
+```powershell
+# Cambiar la hora (formato HHMM en UTC; Ecuador = UTC-5). Ej.: 20:00 de Ecuador = 0100
+az vm auto-shutdown -g rg-ecoairlines-reto2 -n vm-ecoairlines-reto2 --time 0100
+# Quitarlo (p. ej. si Booking necesita el nodo toda la noche; recordar apagarla después)
+az vm auto-shutdown -g rg-ecoairlines-reto2 -n vm-ecoairlines-reto2 --off
+```
+
+### 5.4 Apagar o encender un solo servicio (dentro de la VM)
+
+```bash
+ssh -p 2222 azureuser@ecoairlines-reto2.northcentralus.cloudapp.azure.com
+cd ~/reto2/infra
+alias dc='docker compose -f docker-compose.yml -f cloud/docker-compose.cloud.yml --env-file cloud/.env'
+dc ps                      # estado de los 26 contenedores
+dc restart ms-g-offers     # reiniciar uno
+dc stop ms-admin           # detener uno (no ahorra dinero: la VM cobra igual)
+dc up -d                   # volver a levantar todo lo que falte
+```
 
 ---
 
-## 5. Verificación final
+## 6. Acceso SSH
 
-| Qué | Cómo | Esperado |
-|-----|------|----------|
-| API viva | `https://ecoairlines-api-ga.azurewebsites.net/docs` | Swagger con los 3 documentos |
-| dev-auth vivo | `https://ecoairlines-auth-ga.azurewebsites.net/health` | `{"status":"ok"}` |
-| Web | URL de la Static Web App | Inicio de EcoAirlines; recargar en `/admin` no da 404 |
-| Login | Iniciar sesión con un cliente de prueba | Entra y muestra "Hola, …" |
-| Compra completa | Buscar → reservar → pagar con referencia de prueba | Reserva `CONFIRMED` |
-| Persistencia | Reiniciar la API (App Service → **Reiniciar**) y volver a "Mis viajes" | La reserva sigue ahí |
-| Admin | `admin@…` → panel, rutas, flota, observabilidad | Datos reales |
-| Logs | App Service → **Supervisión** → **Secuencia de registro** | Ver arranque y errores |
+- **Puerto 2222**, no 22: la red de la PUCE bloquea el SSH de salida al 22. La VM escucha en los dos, pero en el NSG solo
+  está abierto el **2222** y solo desde **una IP** (la del responsable al desplegar: `157.100.143.28`).
+
+```bash
+ssh -p 2222 azureuser@ecoairlines-reto2.northcentralus.cloudapp.azure.com
+```
+
+- **Si da "Connection timed out":** casi siempre cambió tu IP pública (otra red, otra ubicación). Actualizar la regla:
+
+```powershell
+$ip = Invoke-RestMethod https://api.ipify.org
+az network nsg rule update -g rg-ecoairlines-reto2 --nsg-name vm-ecoairlines-reto2NSG -n allow-ssh-2222 --source-address-prefixes $ip
+```
+
+- **Sin SSH** (p. ej. desde una red que bloquea todo): `az vm run-command invoke` ejecuta comandos dentro de la VM:
+
+```powershell
+az vm run-command invoke -g rg-ecoairlines-reto2 -n vm-ecoairlines-reto2 --command-id RunShellScript --scripts "cd /home/azureuser/reto2/infra && docker compose -f docker-compose.yml -f cloud/docker-compose.cloud.yml --env-file cloud/.env ps" --query "value[0].message" -o tsv
+```
+
+- **Nunca** abrir el SSH a cualquier origen (`*`).
 
 ---
 
-## 6. Problemas frecuentes
+## 7. Desplegar y actualizar
+
+Todo se hace desde la raíz del repositorio, en **Git Bash**, con la VM encendida.
+
+### 7.1 Desplegar o actualizar el código
+
+```bash
+bash scripts/cloud/desplegar.sh ecoairlines-reto2.northcentralus.cloudapp.azure.com
+```
+
+Qué hace (`scripts/cloud/desplegar.sh`):
+1. Empaqueta solo lo que necesitan las imágenes (`package.json`, `package-lock.json`, `tsconfig.base.json`, `packages/`,
+   `services/`, `contract/`, `infra/`), **sin** `node_modules`, `dist` ni archivos `.env` (≈700 KB).
+2. Lo copia a la VM por SSH (puerto 2222, cambiable con `SSH_PORT`) junto con `infra/cloud/.env`, que viaja aparte.
+3. En la VM compila las imágenes **de a 2** (para no agotar los 4 GiB) y levanta todo con el override de la nube.
+4. Recrea Caddy, el Collector y la observabilidad (su configuración se monta como archivo y, si no, seguirían con la anterior).
+5. Muestra el estado de los contenedores.
+
+La primera compilación tarda ~15 min; después, Docker reutiliza las capas y solo recompila lo que cambió. Durante la
+actualización el servicio puede responder `503` unos segundos.
+
+### 7.2 Publicar el horario y los precios
+
+En una base nueva no hay vuelos hasta publicar el horario (saga "Publicar horario" del ESB). Se ejecuta **dentro** de la VM,
+con el token de servicio del ESB y el administrador como actor (nada de eso sale a Internet):
+
+```bash
+bash scripts/cloud/publicar-horario.sh ecoairlines-reto2.northcentralus.cloudapp.azure.com
+# Publicar horario: 200 {"published":{... "added":368 ...},"flights":368}
+```
+
+Es idempotente: repetirlo no duplica vuelos. Se publicó el 26/10/2026 (368 vuelos).
+
+### 7.3 Registros (logs)
+
+```bash
+ssh -p 2222 azureuser@ecoairlines-reto2.northcentralus.cloudapp.azure.com
+cd ~/reto2/infra && alias dc='docker compose -f docker-compose.yml -f cloud/docker-compose.cloud.yml --env-file cloud/.env'
+dc logs -f --tail 100 gateway          # un servicio en vivo
+dc logs --since 30m esb | grep -i error
+dc logs caddy | grep -i certificate    # renovación del certificado
+```
+
+Los registros son JSON, con `correlation_id` y `request_id`, y **nunca** contienen tokens, datos de pago ni de salud.
+
+### 7.4 Espacio en disco
+
+Cada compilación deja caché de Docker. Si el disco pasa del 80 %:
+
+```bash
+df -h /                       # uso del disco
+docker builder prune -af      # libera la caché de compilación (el 26/10 liberó 6,3 GB)
+docker image prune -f         # imágenes viejas sin usar
+```
+
+**Nunca** `docker volume prune` ni `docker compose down -v`: borran las bases de datos.
+
+### 7.5 Respaldo de las bases (opcional)
+
+```bash
+ssh -p 2222 azureuser@ecoairlines-reto2.northcentralus.cloudapp.azure.com \
+  'cd ~/reto2/infra && docker compose -f docker-compose.yml -f cloud/docker-compose.cloud.yml --env-file cloud/.env exec -T postgres pg_dumpall -U ecoairlines_admin' > respaldo-reto2-$(date +%F).sql
+```
+
+Guardarlo **fuera del repositorio** (contiene datos de usuarios).
+
+---
+
+## 8. Secretos y entrega a Booking
+
+`infra/cloud/.env` se generó **una sola vez** con:
+
+```bash
+node scripts/cloud/generar-env.mjs --domain ecoairlines-reto2.northcentralus.cloudapp.azure.com
+```
+
+| Variable | Para qué |
+|----------|----------|
+| `DOMAIN` | Nombre del certificado HTTPS |
+| `BOOKING_GRPC_ADDRESS` | A dónde envía Offers el stock (`booking.epn.edu.ec:50051`, ver BKG-13) |
+| `POSTGRES_ADMIN_PASSWORD`, `PG_PASSWORD_*` | Contraseña de PostgreSQL y de cada base (una por servicio) |
+| `RABBITMQ_PASSWORD` | RabbitMQ |
+| `IDENTITY_PRIVATE_KEY` | Clave RSA con la que Identity firma TODOS los tokens |
+| `ADMIN_PASSWORD` | Contraseña de `admin@ecoairlines.test` |
+| `BOOKING_CLIENT_SECRET` | `client_secret` del partner `BOOKING_PROTOTIPO` |
+| `ESB_CLIENT_SECRET`, `MS_*_CLIENT_SECRET` | Tokens de servicio internos (D41, D44) |
+| `WEBHOOKS_ENCRYPTION_KEY` | Cifra los secretos de los webhooks |
+| `AIRLINE_EVENTS_SECRET` | Firma (HMAC) de los eventos que nos envía Booking |
+| `PAYMENT_PUBLISHABLE_KEY`, `PAYMENT_SECRET_KEY` | Claves de la Payment API: la pública va en el navegador; la secreta solo la usa el ESB (agregadas el 26/10 con V2.15) |
+
+- **No se sube al repositorio** (`.gitignore`) y el script **no lo sobrescribe**: cambiar la clave de Identity invalidaría todos
+  los tokens, y cambiar las contraseñas de PostgreSQL dejaría las bases inaccesibles. Guardar una copia en un lugar privado.
+- **Qué se entrega a Booking, solo por un canal privado:**
+  - URL base: `https://ecoairlines-reto2.northcentralus.cloudapp.azure.com/api/v2`
+  - `client_id`: `BOOKING_PROTOTIPO` y `client_secret`: el valor de `BOOKING_CLIENT_SECRET`
+  - URL de sus eventos: `https://ecoairlines-reto2.northcentralus.cloudapp.azure.com/integraciones/booking/eventos` y el
+    secreto de la firma `AIRLINE_EVENTS_SECRET` (cabecera `X-Webhook-Signature: sha256=<HMAC-SHA256 del cuerpo>`)
+- **Cambiar un valor** (p. ej. la dirección gRPC de Booking cuando respondan BKG-13): editar `infra/cloud/.env` en el equipo
+  local, volver a ejecutar `desplegar.sh` (Compose recrea solo los contenedores afectados).
+
+---
+
+## 9. Problemas frecuentes
 
 | Síntoma | Causa probable | Solución |
 |---------|----------------|----------|
-| La API no arranca y el log lista errores de configuración | Falta `AUTH_JWT_SECRET`, `AUTH_ISSUER` o `AUTH_AUDIENCE`, o el secreto tiene menos de 32 caracteres | Revisar el paso 6 (la API valida todo al arrancar a propósito) |
-| La web muestra "No se pudo conectar con el servidor" | `VITE_API_URL` mal puesto al compilar, o `CORS_ORIGINS` sin la URL exacta de la web | Revisar el workflow de la Static Web App y `CORS_ORIGINS` (sin `/` al final) |
-| Login responde 401 en la API después de iniciar sesión | La API y dev-auth tienen distinto `AUTH_JWT_SECRET`, `AUTH_ISSUER` o `AUTH_AUDIENCE` | Deben ser idénticos en ambas apps |
-| Error de conexión a PostgreSQL | Falta permitir los servicios de Azure en "Redes", o falta `sslmode=require` | Paso 2.3 y la cadena de conexión |
-| Recargar `/admin` da 404 | Falta `staticwebapp.config.json` | Cambio 🤖 4 |
-| La primera petición tarda ~20 s | La app estaba dormida (sin Always On, o en plan F1) | Activar Always On en B1 |
-| La API y dev-auth responden **503** y la "Secuencia de registro" no muestra nada | La app se cierra al arrancar (en nuestro caso, **faltaba la base `ecoairlines`**) y los registros de aplicación están apagados | Crear la base (paso 2.5), activar "Registro de aplicaciones: Sistema de archivos" y reiniciar |
-| No aparece ningún vuelo en la web | La web no llega a la API (caída o URL mal compilada). Los vuelos no se guardan en la base: se generan al arrancar | Revisar que `/docs` de la API responda; luego recargar la web con Ctrl+F5 |
-| Observabilidad muestra `GET (sin ruta) 404` sin que nadie use la web | **No es un error**: es la sonda de Azure al arrancar la app (`GET /robots933456.txt`) o alguien que abrió la raíz de la API (botón "Explorar"). La API no tiene rutas en `/` | Ninguna. Con los registros activados, la línea de acceso muestra el `path` exacto con el mismo `requestId` |
-| `/admin/...` responde 401 | Petición sin token o con token vencido (dura 1 h) | Iniciar sesión de nuevo. Un **cliente** recibe **403**, no 401 |
-| El administrador no puede entrar | Con `ADMIN_PASSWORD` definido en dev-auth, la clave ya no es `EcoAdmin2026` | Usar la clave de `ADMIN_PASSWORD` |
+| La URL no responde | La VM está desasignada (apagado automático) | `az vm start ...` y esperar 2–3 min |
+| SSH: `Connection timed out` | Cambió tu IP pública, o se usó el puerto 22 | Puerto 2222; actualizar la regla del NSG (sección 6) |
+| `503` / health `DEGRADED` justo al encender | Los contenedores todavía arrancan | Esperar; `dc ps` debe mostrar `(healthy)` |
+| Certificado inválido | Caddy no pudo renovar (puerto 80 cerrado o la VM apagada muchos días) | Verificar la regla `allow-http-https`; `dc restart caddy`; ver `dc logs caddy` |
+| `pendingStockPushes` crece en el panel | Booking no es alcanzable (BKG-13) | Normal mientras Booking no publique su gRPC; se envían solos al conectarse |
+| Error al compilar (`npm ci ETIMEDOUT`) | Red lenta al descargar paquetes | Volver a ejecutar `desplegar.sh` |
+| La VM se queda sin memoria | Demasiadas compilaciones en paralelo | El script compila de a 2; la VM tiene 2 GB de swap |
+| Disco lleno | Caché de compilación | `docker builder prune -af` (sección 7.4) |
+| `CollectorSinDatos` activa o paneles vacíos | El Collector sigue con una configuración anterior | `dc up -d --no-deps --force-recreate otel-collector` |
+| `/vuelos/health` tarda más de 1 s al encender | Parches de Ubuntu (`unattended-upgrades`) tras días apagada | Esperar; `pgrep -a unattended` muestra si sigue activo |
 
 ---
 
-## 7. Mantenimiento y costos
+## 10. Reto 1 (lo que queda)
 
-| Tarea | Cómo |
-|-------|------|
-| **Ahorrar crédito** después de la evaluación | PostgreSQL → **Detener** (se reactiva solo a los 7 días); App Service → **Detener** en las dos apps. Volver a **Iniciar** antes de la defensa |
-| **Cambiar la clave del administrador** | dev-auth → Variables de entorno → `ADMIN_PASSWORD` → Aplicar (la app se reinicia y la clave nueva queda guardada) |
-| **Cambiar el secreto de los tokens** | Generar uno nuevo (paso 5) y ponerlo **igual** en `AUTH_JWT_SECRET` de la API y de dev-auth. Las sesiones abiertas se cierran |
-| **Cambiar la contraseña de PostgreSQL** | Servidor → **Restablecer contraseña**, y actualizar `DATABASE_URL` en las dos apps |
-| **Ver por qué falla algo** | App → **Supervisión** → **Secuencia de registro** (con "Registro de aplicaciones" activado) |
-| **Volver a desplegar sin cambios** | GitHub → **Actions** → el workflow → **Run workflow** |
-| **Borrar todo** | Eliminar el grupo de recursos `rg-ecoairlines` (irreversible: borra también la base de datos) |
+| Recurso | Estado | Costo |
+|---------|--------|-------|
+| Plan `ASP-rgecoairlines-914d` | **F1** (gratis): 60 min de CPU al día, se duerme sin uso | US$0 |
+| `ecoairlines-api-gv` (API del monolito) | Publicada, pero **sin base de datos**: falla al arrancar o al consultar | US$0 |
+| `ecoairlines-auth-gv` (dev-auth) | Publicada, sin base de datos | US$0 |
+| `ecoairlines-web` (Static Web App Free) | Publicada (`nice-hill-090e19c10.1.azurestaticapps.net`); llama a la API que ya no funciona. Será la web del Reto 2 (V2.20) | US$0 |
+
+- **Respaldo de su base:** `Integracion de sistemas/respaldos/reto1-ecoairlines-db-gv-2026-10-26.dump` (formato `pg_dump -Fc`,
+  PostgreSQL 18; restauración probada: 13 esquemas, 16 tablas con datos). Para restaurarlo en un PostgreSQL:
+  `pg_restore --no-owner --no-acl -d <base> reto1-ecoairlines-db-gv-2026-10-26.dump`.
+- Se puede borrar todo el grupo cuando ya no se necesite: `az group delete -n rg-ecoairlines --yes` (irreversible).
+- Lo que se borró el 26/10/2026 (a pedido del responsable): la PostgreSQL `ecoairlines-db-gv` y el grupo `rg-vuelos-prod`
+  (Azure SQL serverless, plan F1 y una Static Web App).
+
+---
+
+## 11. Restricciones de la suscripción (Azure for Students)
+
+- **Regiones permitidas** (política "Allowed resource deployment regions"): `eastus`, `brazilsouth`, `northcentralus`,
+  `chilecentral`, `centralus`. Cualquier otra región falla al crear.
+- **Tamaños de VM:** la suscripción no ofrece la B2s en esas regiones. En North Central US hay series B v2
+  (`B2pls_v2`, `B2als_v2`, `B2ats_v2`...). Precios Linux por mes (24 h): `B2pls_v2` ARM 4 GiB US$24,53 (la elegida),
+  `B2als_v2` AMD 4 GiB US$27,45, `B2ats_v2` AMD 1 GiB US$6,86 (no alcanza: el sistema usa ≈1,6 GiB).
+- **Brazil South** es la región más cara (B2s US$49/mes): no usarla para nada nuevo.
+
+---
+
+## 12. Borrar todo el Reto 2
+
+Si hiciera falta liberar todo el gasto (p. ej. al cerrar el curso):
+
+```powershell
+az group delete -n rg-ecoairlines-reto2 --yes   # IRREVERSIBLE: borra la VM, el disco (con las bases) y la IP
+```
+
+Antes, hacer el respaldo de la sección 7.5. Para volver a desplegar desde cero: crear la VM (sección 13), ejecutar
+`desplegar.sh` y `publicar-horario.sh`.
+
+---
+
+## 13. Cómo se creó (para recrearla)
+
+```powershell
+az group create -n rg-ecoairlines-reto2 -l northcentralus
+az vm create -g rg-ecoairlines-reto2 -n vm-ecoairlines-reto2 -l northcentralus `
+  --image Canonical:ubuntu-24_04-lts:server-arm64:24.04.202609040 --size Standard_B2pls_v2 --security-type Standard `
+  --admin-username azureuser --generate-ssh-keys `
+  --public-ip-sku Standard --public-ip-address-allocation static --public-ip-address-dns-name ecoairlines-reto2 `
+  --os-disk-size-gb 32 --storage-sku StandardSSD_LRS --custom-data infra/cloud/cloud-init.yaml --nsg-rule NONE
+az network nsg rule create -g rg-ecoairlines-reto2 --nsg-name vm-ecoairlines-reto2NSG -n allow-http-https --priority 1010 `
+  --protocol Tcp --destination-port-ranges 80 443 --access Allow --direction Inbound
+az network nsg rule create -g rg-ecoairlines-reto2 --nsg-name vm-ecoairlines-reto2NSG -n allow-ssh-2222 --priority 1020 `
+  --protocol Tcp --source-address-prefixes <tu IP> --destination-port-ranges 2222 --access Allow --direction Inbound
+az vm auto-shutdown -g rg-ecoairlines-reto2 -n vm-ecoairlines-reto2 --time 0400
+# SSH también en el 2222 (la red de la PUCE bloquea el 22)
+az vm run-command invoke -g rg-ecoairlines-reto2 -n vm-ecoairlines-reto2 --command-id RunShellScript --scripts "mkdir -p /etc/systemd/system/ssh.socket.d && printf '[Socket]\nListenStream=\nListenStream=0.0.0.0:22\nListenStream=[::]:22\nListenStream=0.0.0.0:2222\n' > /etc/systemd/system/ssh.socket.d/puertos.conf && systemctl daemon-reload && systemctl restart ssh.socket"
+```
+
+`infra/cloud/cloud-init.yaml` instala Docker y Docker Compose y crea 2 GB de swap en el primer arranque.

@@ -1,0 +1,593 @@
+import { lastSaleDate, todayIso } from '../lib/format';
+import { graphql } from './client';
+import { MONEY } from './operations';
+import type { CabinClass, FlightOperationalStatus, MoneyAmount } from './types';
+
+/*
+ * Administración sobre el GraphQL del gateway (`@auth(scopes: [ECOAIRLINES_ADMIN])` o `FLIGHTS_OPS`; → MS.Admin y MS.Vuelos).
+ * Donde la forma del esquema difiere poco de la que ya usan los paneles (horario de la flota, eventos), se adapta aquí.
+ */
+
+// ── Indicadores ──
+export interface AdminIndicators {
+  generatedAt: string;
+  totalBookings: number;
+  bookingsByChannel: { web: number; booking: number };
+  totalPassengers: number;
+  revenue: MoneyAmount;
+  refundsCalculated: MoneyAmount | null;
+  byRoute: { origin: string; destination: string; bookings: number; revenue: string }[];
+  usersTotal: number;
+  customers: number;
+  admins: number;
+  flightsToday: number;
+}
+
+export const getIndicators = (token: string) =>
+  graphql<{ adminIndicators: AdminIndicators }>(
+    `query Indicadores {
+      adminIndicators {
+        generatedAt totalBookings bookingsByChannel { web booking } totalPassengers revenue { ${MONEY} } refundsCalculated { ${MONEY} }
+        byRoute { origin destination bookings revenue } usersTotal customers admins flightsToday
+      }
+    }`,
+    {},
+    { token },
+  ).then((data) => data.adminIndicators);
+
+// ── Operaciones de vuelos (contrato v2: flightOperations y updateFlightStatus) ──
+export interface SeatsByStatus {
+  available: number;
+  held: number;
+  booked: number;
+  ticketed: number;
+  checkedIn: number;
+  boarded: number;
+}
+
+export interface FlightOperation {
+  flightNumber: string;
+  date: string;
+  origin: string;
+  destination: string;
+  departureAt: string;
+  status: FlightOperationalStatus;
+  aircraft: string | null;
+  totalSeats: number;
+  /** Porcentaje de asientos que no están AVAILABLE. */
+  loadFactor: number;
+  cabins: { cabinClass: CabinClass; totalSeats: number; seatsByStatus: SeatsByStatus }[];
+  activeHolds: number;
+  checkInOpen: boolean;
+  alerts: { code: string; severity: 'INFO' | 'WARNING' | 'CRITICAL'; message: string }[];
+}
+
+export interface FlightOperationsPage {
+  date: string;
+  totalFlights: number;
+  nextCursor: string | null;
+  items: FlightOperation[];
+}
+
+export const getFlightOperations = (
+  token: string,
+  query: { date: string; origin?: string; destination?: string; limit?: number; cursor?: string },
+) =>
+  graphql<{ flightOperations: FlightOperationsPage }>(
+    `query Operaciones($date: Date!, $origin: IataCode, $destination: IataCode, $limit: Int, $cursor: String) {
+      flightOperations(date: $date, origin: $origin, destination: $destination, limit: $limit, cursor: $cursor) {
+        date totalFlights nextCursor
+        items {
+          flightNumber date origin destination departureAt status aircraft totalSeats loadFactor activeHolds checkInOpen
+          cabins { cabinClass totalSeats seatsByStatus { available held booked ticketed checkedIn boarded } }
+          alerts { code severity message }
+        }
+      }
+    }`,
+    query,
+    { token },
+  ).then((data) => data.flightOperations);
+
+export interface FlightStatusChange {
+  date: string;
+  status: FlightOperationalStatus;
+  estimatedDepartureAt?: string;
+  estimatedArrivalAt?: string;
+  departureGate?: string;
+  /** Obligatorio al cancelar. */
+  reason?: string;
+}
+
+export const updateFlightStatus = (token: string, flightNumber: string, input: FlightStatusChange) =>
+  graphql<{ updateFlightStatus: { previousStatus: FlightOperationalStatus; affectedBookings: number; flight: { status: FlightOperationalStatus } } }>(
+    `mutation EstadoDeVuelo($flightNumber: String!, $input: FlightStatusUpdateInput!) {
+      updateFlightStatus(flightNumber: $flightNumber, input: $input) { previousStatus affectedBookings flight { status } }
+    }`,
+    { flightNumber, input },
+    { token },
+  ).then((data) => data.updateFlightStatus);
+
+// ── Telemetría (V2.16): cada parte tiene su backend y puede fallar sola ──
+export interface ServiceHealth {
+  service: string;
+  status: 'UP' | 'DEGRADED' | 'DOWN';
+  latencyMs: number | null;
+  version: string | null;
+  checkedAt: string;
+}
+export interface ServiceLatency {
+  service: string;
+  p50Ms: number;
+  p95Ms: number;
+  p99Ms: number;
+  requests: number;
+  errorRate: number;
+}
+export interface QueueStats {
+  queue: string;
+  messages: number;
+  consumers: number;
+  deadLetters: number | null;
+}
+export interface Alert {
+  id: string;
+  rule: string;
+  severity: 'INFO' | 'WARNING' | 'CRITICAL';
+  service: string | null;
+  message: string | null;
+  startedAt: string;
+}
+export interface BookingIntegration {
+  partnerId: string;
+  lastTokenAt: string | null;
+  webhooks: { subscriptions: number; pending: number; retrying: number; exhaustedLast24h: number; deliveredLast24h: number; lastDeliveredAt: string | null };
+  lastStockPushAt: string | null;
+  pendingStockPushes: number;
+  lastInboundEventAt: string | null;
+}
+export interface CorrelationTrace {
+  correlationId: string;
+  steps: { timestamp: string; service: string; operation: string; status: string; latencyMs: number; requestId: string | null; traceId: string | null }[];
+  sagas: { sagaId: string; type: string; status: string }[];
+  events: { id: string; type: string; time: string }[];
+}
+
+export const getServicesHealth = (token: string) =>
+  graphql<{ telemetry: { services: ServiceHealth[] } }>('query Salud { telemetry { services { service status latencyMs version checkedAt } } }', {}, { token }).then(
+    (data) => data.telemetry.services,
+  );
+
+/** Latencia y errores de la última hora (Prometheus). */
+export const getLatency = (token: string) =>
+  graphql<{ telemetry: { latency: ServiceLatency[] } }>('query Latencia { telemetry { latency { service p50Ms p95Ms p99Ms requests errorRate } } }', {}, { token }).then(
+    (data) => data.telemetry.latency,
+  );
+
+export const getQueues = (token: string) =>
+  graphql<{ telemetry: { queues: QueueStats[] } }>('query Colas { telemetry { queues { queue messages consumers deadLetters } } }', {}, { token }).then((data) => data.telemetry.queues);
+
+export const getAlerts = (token: string) =>
+  graphql<{ telemetry: { alerts: Alert[] } }>('query Alertas { telemetry { alerts { id rule severity service message startedAt } } }', {}, { token }).then((data) => data.telemetry.alerts);
+
+export const getBookingIntegration = (token: string) =>
+  graphql<{ telemetry: { bookingIntegration: BookingIntegration } }>(
+    `query Integracion {
+      telemetry {
+        bookingIntegration {
+          partnerId lastTokenAt lastStockPushAt pendingStockPushes lastInboundEventAt
+          webhooks { subscriptions pending retrying exhaustedLast24h deliveredLast24h lastDeliveredAt }
+        }
+      }
+    }`,
+    {},
+    { token },
+  ).then((data) => data.telemetry.bookingIntegration);
+
+/** Todo lo que generó un proceso, por su `X-Correlation-Id`; `null` si no se encontró nada. */
+export const getCorrelationTrace = (token: string, correlationId: string) =>
+  graphql<{ telemetry: { trace: CorrelationTrace | null } }>(
+    `query Traza($correlationId: String!) {
+      telemetry {
+        trace(correlationId: $correlationId) {
+          correlationId
+          steps { timestamp service operation status latencyMs requestId traceId }
+          sagas { sagaId type status }
+          events { id type time }
+        }
+      }
+    }`,
+    { correlationId },
+    { token },
+  ).then((data) => data.telemetry.trace);
+
+// ── Eventos de dominio y entregas de webhooks ──
+export interface EventDelivery {
+  consumer: string;
+  target: string;
+  /** PENDING, DELIVERED, RETRYING o EXHAUSTED (MS.G.Webhooks). */
+  outcome: string;
+  httpStatus?: number;
+  attempts?: number;
+}
+
+export interface DomainEvent {
+  eventId: string;
+  eventType: string;
+  occurredAt: string;
+  correlationId?: string;
+  data: Record<string, unknown>;
+  deliveries: EventDelivery[];
+}
+
+interface EventHistoryItem {
+  id: string;
+  type: string;
+  time: string;
+  correlationId: string | null;
+  data: Record<string, unknown> | null;
+  deliveries: { subscriptionId: string; target: string | null; outcome: string; httpStatus: number | null; attempts: number }[];
+}
+
+export const getRecentEvents = (token: string) =>
+  graphql<{ eventHistory: { items: EventHistoryItem[] } }>(
+    `query Eventos($limit: Int) {
+      eventHistory(limit: $limit) { items { id type time correlationId data deliveries { subscriptionId target outcome httpStatus attempts } } }
+    }`,
+    { limit: 50 },
+    { token },
+  ).then((data) =>
+    data.eventHistory.items.map(
+      (item): DomainEvent => ({
+        eventId: item.id,
+        eventType: item.type,
+        occurredAt: item.time,
+        ...(item.correlationId ? { correlationId: item.correlationId } : {}),
+        // null en los eventos con datos de salud: nunca llegan al panel.
+        data: item.data ?? {},
+        deliveries: item.deliveries.map((delivery) => ({
+          consumer: delivery.subscriptionId,
+          target: delivery.target ?? '—',
+          outcome: delivery.outcome,
+          ...(delivery.httpStatus ? { httpStatus: delivery.httpStatus } : {}),
+          attempts: delivery.attempts,
+        })),
+      }),
+    ),
+  );
+
+// ── Rutas programadas (saga "Publicar horario") ──
+export type WeekdayCode = 'SUN' | 'MON' | 'TUE' | 'WED' | 'THU' | 'FRI' | 'SAT';
+export type AircraftTypeName = 'Airbus A220-300' | 'Airbus A320neo' | 'Boeing 787-9';
+
+export interface ScheduledRouteRequest {
+  origin: string;
+  destination: string;
+  outboundDepartureLocal: string;
+  inboundDepartureLocal: string;
+  weekdays: WeekdayCode[];
+  aircraftType?: AircraftTypeName;
+  /** Matrículas elegidas; si se omite, el sistema asigna los aviones. */
+  aircraft?: string[];
+}
+
+export interface RouteLeg {
+  flightNumber: string;
+  origin: string;
+  destination: string;
+  departureLocal: string;
+  arrivalLocal: string;
+  arrivalDayOffset: number;
+}
+
+export interface ScheduledRoute {
+  routeId: string;
+  origin: string;
+  destination: string;
+  outbound: RouteLeg;
+  inbound: RouteLeg;
+  weekdays: WeekdayCode[];
+  aircraftType: AircraftTypeName;
+  aircraft: string[];
+  distanceKm: number;
+  durationMinutes: number;
+  source: 'NETWORK' | 'ADMIN';
+  createdAt: string;
+  updatedAt: string;
+}
+
+const LEG = 'flightNumber origin destination departureLocal arrivalLocal arrivalDayOffset';
+const ROUTE = `routeId origin destination outbound { ${LEG} } inbound { ${LEG} } weekdays aircraftType aircraft distanceKm durationMinutes source createdAt updatedAt`;
+
+/** Todas las rutas; con `airport`, las que salen o llegan a ese aeropuerto (el esquema no filtra: se filtra aquí). */
+export const listRoutes = (token: string, airport?: string) =>
+  graphql<{ routes: ScheduledRoute[] }>(`query Rutas { routes { ${ROUTE} } }`, {}, { token }).then((data) =>
+    airport ? data.routes.filter((route) => route.origin === airport || route.destination === airport) : data.routes,
+  );
+
+export const createRoute = (token: string, input: ScheduledRouteRequest) =>
+  graphql<{ createRoute: ScheduledRoute }>(`mutation CrearRuta($input: ScheduledRouteInput!) { createRoute(input: $input) { ${ROUTE} } }`, { input }, { token }).then(
+    (data) => data.createRoute,
+  );
+
+export const updateRoute = (token: string, routeId: string, input: ScheduledRouteRequest) =>
+  graphql<{ updateRoute: ScheduledRoute }>(
+    `mutation EditarRuta($routeId: String!, $input: ScheduledRouteInput!) { updateRoute(routeId: $routeId, input: $input) { ${ROUTE} } }`,
+    { routeId, input },
+    { token },
+  ).then((data) => data.updateRoute);
+
+/** Si la ruta tiene cupos vendidos responde ROUTE_HAS_SOLD_SEATS: esos vuelos se gestionan con su estado operativo. */
+export const deleteRoute = (token: string, routeId: string) =>
+  graphql<{ deleteRoute: boolean }>('mutation BajaDeRuta($routeId: String!) { deleteRoute(routeId: $routeId) }', { routeId }, { token }).then(() => undefined);
+
+// ── Flota ──
+export interface Aircraft {
+  registration: string;
+  aircraftType: AircraftTypeName;
+  base: string;
+  status: 'IN_SERVICE' | 'AVAILABLE';
+  routes: string[];
+  totalSeats: number;
+  source: 'NETWORK' | 'ADMIN';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AircraftTypeInfo {
+  aircraftType: AircraftTypeName;
+  registrationPrefix: string;
+  seats: { cabinClass: string; seats: number }[];
+  totalSeats: number;
+  maxRouteKm: number | null;
+  turnaroundMinutes: number;
+  inFleet: number;
+}
+
+const AIRCRAFT = 'registration aircraftType base status routes totalSeats source createdAt updatedAt';
+
+export const listAircraftTypes = (token: string) =>
+  graphql<{ aircraftTypes: AircraftTypeInfo[] }>(
+    'query TiposDeAvion { aircraftTypes { aircraftType registrationPrefix seats { cabinClass seats } totalSeats maxRouteKm turnaroundMinutes inFleet } }',
+    {},
+    { token },
+  ).then((data) => data.aircraftTypes);
+
+/** La flota; los filtros se aplican aquí (el esquema devuelve todos los aviones). */
+export const listAircraft = (token: string, filter: { base?: string; aircraftType?: string } = {}) =>
+  graphql<{ fleet: Aircraft[] }>(`query Flota { fleet { ${AIRCRAFT} } }`, {}, { token }).then((data) =>
+    data.fleet.filter((plane) => (!filter.base || plane.base === filter.base) && (!filter.aircraftType || plane.aircraftType === filter.aircraftType)),
+  );
+
+export const registerAircraft = (token: string, input: { aircraftType: AircraftTypeName; base: string }) =>
+  graphql<{ createAircraft: Aircraft }>(`mutation AltaDeAvion($input: AircraftInput!) { createAircraft(input: $input) { ${AIRCRAFT} } }`, { input }, { token }).then(
+    (data) => data.createAircraft,
+  );
+
+export const moveAircraft = (token: string, registration: string, base: string) =>
+  graphql<{ updateAircraftBase: Aircraft }>(
+    `mutation MoverAvion($registration: String!, $base: IataCode!) { updateAircraftBase(registration: $registration, base: $base) { ${AIRCRAFT} } }`,
+    { registration, base },
+    { token },
+  ).then((data) => data.updateAircraftBase);
+
+export const retireAircraft = (token: string, registration: string) =>
+  graphql<{ deleteAircraft: boolean }>('mutation RetirarAvion($registration: String!) { deleteAircraft(registration: $registration) }', { registration }, { token }).then(
+    () => undefined,
+  );
+
+// ── Rotación de la flota en un día ──
+export interface FleetLeg {
+  segmentId: string;
+  flightNumber: string;
+  origin: string;
+  destination: string;
+  departure: string;
+  arrival: string;
+}
+
+export interface FleetSchedule {
+  date: string;
+  /** Ventana de venta publicada (de hoy al último día con vuelos a la venta). */
+  salesWindow: { from: string; to: string; days: number };
+  totalFlights: number;
+  aircraft: { registration: string; aircraftType: string; base: string; flights: FleetLeg[] }[];
+}
+
+export const getFleetSchedule = (token: string, date: string) =>
+  graphql<{
+    fleetSchedule: {
+      date: string;
+      totalFlights: number;
+      aircraft: { registration: string; aircraftType: string; base: string; flights: { flightNumber: string; date: string; origin: string; destination: string; departureAt: string; arrivalAt: string }[] }[];
+    };
+  }>(
+    `query Rotacion($date: Date!) {
+      fleetSchedule(date: $date) { date totalFlights aircraft { registration aircraftType base flights { flightNumber date origin destination departureAt arrivalAt } } }
+    }`,
+    { date },
+    { token },
+  ).then(({ fleetSchedule: schedule }): FleetSchedule => {
+    const from = todayIso();
+    const to = lastSaleDate();
+    return {
+      date: schedule.date,
+      salesWindow: { from, to, days: Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1 },
+      totalFlights: schedule.totalFlights,
+      aircraft: schedule.aircraft.map((plane) => ({
+        ...plane,
+        flights: plane.flights.map((flight) => ({
+          // El id del segmento del contrato: vuelo y fecha de salida.
+          segmentId: `${flight.flightNumber}-${flight.date.replaceAll('-', '')}`,
+          flightNumber: flight.flightNumber,
+          origin: flight.origin,
+          destination: flight.destination,
+          departure: flight.departureAt,
+          arrival: flight.arrivalAt,
+        })),
+      })),
+    };
+  });
+
+// ── Usuarios y roles ──
+export type RoleName = 'CUSTOMER' | 'ADMIN';
+export type AccountStatus = 'ACTIVE' | 'BLOCKED';
+
+export interface User {
+  sub: string;
+  email: string;
+  fullName: string;
+  role: RoleName;
+  status: AccountStatus;
+  createdAt: string;
+  lastLoginAt: string | null;
+}
+
+const USER = 'sub email fullName role status createdAt lastLoginAt';
+
+export const listUsers = (token: string, query: { q?: string; role?: string; status?: string; limit?: number; cursor?: string }) => {
+  const { limit, cursor, ...rest } = query;
+  const filter = Object.fromEntries(Object.entries(rest).filter(([, value]) => value));
+  return graphql<{ users: { items: User[]; nextCursor: string | null } }>(
+    `query Usuarios($filter: UserFilterInput, $limit: Int, $cursor: String) { users(filter: $filter, limit: $limit, cursor: $cursor) { nextCursor items { ${USER} } } }`,
+    { filter, limit, cursor },
+    { token },
+  ).then((data) => data.users);
+};
+
+export const createUser = (token: string, input: { fullName: string; email: string; password: string; role: RoleName }) =>
+  graphql<{ createUser: User }>(`mutation CrearUsuario($input: CreateUserInput!) { createUser(input: $input) { ${USER} } }`, { input }, { token }).then((data) => data.createUser);
+
+export const changeUserRole = (token: string, sub: string, role: RoleName) =>
+  graphql<{ changeUserRole: User }>(`mutation CambiarRol($sub: UUID!, $role: RoleName!) { changeUserRole(sub: $sub, role: $role) { ${USER} } }`, { sub, role }, { token }).then(
+    (data) => data.changeUserRole,
+  );
+
+export const changeUserStatus = (token: string, sub: string, input: { status: AccountStatus; reason?: string }) =>
+  graphql<{ changeUserStatus: User }>(`mutation EstadoDeUsuario($sub: UUID!, $input: ChangeStatusInput!) { changeUserStatus(sub: $sub, input: $input) { ${USER} } }`, { sub, input }, { token }).then(
+    (data) => data.changeUserStatus,
+  );
+
+// ── Partners (sistemas B2B como Booking) ──
+export const PARTNER_SCOPES = ['FLIGHTS_READ', 'FLIGHTS_HOLD', 'FLIGHTS_BOOK', 'FLIGHTS_CANCEL', 'FLIGHTS_WEBHOOKS', 'FLIGHTS_OPS'] as const;
+export type PartnerScope = (typeof PARTNER_SCOPES)[number];
+
+export interface Partner {
+  clientId: string;
+  name: string;
+  scopes: PartnerScope[];
+  status: AccountStatus;
+  createdAt: string;
+  secretRotatedAt: string | null;
+  lastTokenAt: string | null;
+}
+
+const PARTNER = 'clientId name scopes status createdAt secretRotatedAt lastTokenAt';
+
+export const listPartners = (token: string) => graphql<{ partners: Partner[] }>(`query Partners { partners { ${PARTNER} } }`, {}, { token }).then((data) => data.partners);
+
+/** El secreto se devuelve UNA sola vez: la pantalla lo muestra y no lo guarda en ningún lado. */
+export const createPartner = (token: string, input: { clientId: string; name: string; scopes: PartnerScope[] }) =>
+  graphql<{ createPartner: { partner: Partner; clientSecret: string } }>(
+    `mutation CrearPartner($input: CreatePartnerInput!) { createPartner(input: $input) { clientSecret partner { ${PARTNER} } } }`,
+    { input },
+    { token },
+  ).then((data) => data.createPartner);
+
+export const changePartnerStatus = (token: string, clientId: string, input: { status: AccountStatus; reason?: string }) =>
+  graphql<{ changePartnerStatus: Partner }>(
+    `mutation EstadoDePartner($clientId: String!, $input: ChangeStatusInput!) { changePartnerStatus(clientId: $clientId, input: $input) { ${PARTNER} } }`,
+    { clientId, input },
+    { token },
+  ).then((data) => data.changePartnerStatus);
+
+export const rotatePartnerSecret = (token: string, clientId: string) =>
+  graphql<{ rotatePartnerSecret: { partner: Partner; clientSecret: string } }>(
+    `mutation RotarSecreto($clientId: String!) { rotatePartnerSecret(clientId: $clientId) { clientSecret partner { ${PARTNER} } } }`,
+    { clientId },
+    { token },
+  ).then((data) => data.rotatePartnerSecret);
+
+// ── Precios por clase y promociones ──
+export interface FareClassPrice {
+  cabinClass: CabinClass;
+  fareBrand: string;
+  referenceMultiplier: number;
+  multiplier: number;
+  updatedAt: string;
+}
+
+export interface PromotionAgreement {
+  partnerId: string;
+  allowsPromotions: boolean;
+  maxDiscountPercentage: number;
+  enabledDestinations: string[];
+  enabledRoutes: string[];
+  enabledCabins: CabinClass[];
+  validUntil: string | null;
+  comboConditions: string | null;
+}
+
+export interface PricesView {
+  prices: FareClassPrice[];
+  updatedAt: string;
+  promotions: PromotionAgreement[];
+}
+
+export interface PriceChange {
+  id: string;
+  cabinClass: CabinClass;
+  fareBrand: string;
+  oldMultiplier: number;
+  newMultiplier: number;
+  changedAt: string;
+}
+
+const PRICES = `prices { cabinClass fareBrand referenceMultiplier multiplier updatedAt } updatedAt
+  promotions { partnerId allowsPromotions maxDiscountPercentage enabledDestinations enabledRoutes enabledCabins validUntil comboConditions }`;
+
+export const getPrices = (token: string) => graphql<{ prices: PricesView }>(`query Precios { prices { ${PRICES} } }`, {}, { token }).then((data) => data.prices);
+
+export const getReferencePrices = (token: string) =>
+  graphql<{ referencePrices: { cabinClass: CabinClass; fareBrand: string; multiplier: number }[] }>('query PreciosDeReferencia { referencePrices { cabinClass fareBrand multiplier } }', {}, { token }).then(
+    (data) => data.referencePrices,
+  );
+
+export const getPriceHistory = (token: string, limit = 20) =>
+  graphql<{ priceHistory: { items: PriceChange[] } }>(
+    'query HistorialDePrecios($limit: Int) { priceHistory(limit: $limit) { items { id cabinClass fareBrand oldMultiplier newMultiplier changedAt } } }',
+    { limit },
+    { token },
+  ).then((data) => data.priceHistory.items);
+
+/** Un solo «Guardar»: los precios que cambiaron y el acuerdo de promociones. */
+export const savePrices = (
+  token: string,
+  input: { prices?: { cabinClass: CabinClass; fareBrand: string; multiplier: number }[]; promotion?: Omit<PromotionAgreement, 'validUntil' | 'comboConditions'> & { validUntil?: string; comboConditions?: string } },
+) => graphql<{ savePrices: PricesView }>(`mutation GuardarPrecios($input: SavePricesInput!) { savePrices(input: $input) { ${PRICES} } }`, { input }, { token }).then((data) => data.savePrices);
+
+// ── Asistencia por vuelo (dato de salud) ──
+export interface FlightAssistanceItem {
+  bookingId: string;
+  pnr: string;
+  passengerId: string;
+  passengerName: string;
+  segmentId: string;
+  seatNumber: string | null;
+  assistance: { type: string; needsCompanion: boolean; notes: string | null; status: 'REQUESTED' | 'READY' };
+}
+
+export const getFlightAssistance = (token: string, flightNumber: string, date: string) =>
+  graphql<{ flightAssistance: FlightAssistanceItem[] }>(
+    `query AsistenciaDeVuelo($flightNumber: String!, $date: Date!) {
+      flightAssistance(flightNumber: $flightNumber, date: $date) {
+        bookingId pnr passengerId passengerName segmentId seatNumber assistance { type needsCompanion notes status }
+      }
+    }`,
+    { flightNumber, date },
+    { token },
+  ).then((data) => data.flightAssistance);
+
+export const markAssistanceReady = (token: string, bookingId: string, input: { passengerId: string; segmentId: string; ready: boolean }) =>
+  graphql<{ markAssistanceReady: boolean }>('mutation AsistenciaLista($id: UUID!, $input: AssistanceReadyInput!) { markAssistanceReady(bookingId: $id, input: $input) }', { id: bookingId, input }, { token }).then(
+    () => undefined,
+  );

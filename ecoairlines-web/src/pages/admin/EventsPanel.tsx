@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getRecentEvents, type DomainEvent, type EventDelivery } from '../../api/extensions';
+import { getRecentEvents, type DomainEvent } from '../../api/admin';
 import { useAuth } from '../../auth/AuthContext';
 import { ProblemAlert } from '../../components/ProblemAlert';
 import { formatDateTime } from '../../lib/format';
 
-const OUTCOME_LABELS: Record<EventDelivery['outcome'], string> = {
+const OUTCOME_LABELS: Record<string, string> = {
+  PENDING: 'Pendiente',
   DELIVERED: 'Entregado',
-  FAILED: 'Falló',
-  SIMULATED: 'Simulado',
+  RETRYING: 'Reintentando',
+  EXHAUSTED: 'Agotado',
 };
 
 /** Resumen legible del `data` del evento: lo que identifica a la reserva, el vuelo o la ruta. */
@@ -18,7 +19,7 @@ function summary(event: DomainEvent): string {
 }
 
 /**
- * Eventos de dominio recientes (extensión `GET /admin/events`): lo que publicaron los servicios en el bus interno
+ * Eventos de dominio recientes (`eventHistory` del GraphQL, MS.Admin): lo que publicaron los servicios en el bus
  * (`booking.confirmed`, `flight.cancelled`…) y cómo se entregó cada uno a los suscriptores de webhooks.
  */
 export function EventsPanel() {
@@ -55,7 +56,7 @@ export function EventsPanel() {
       </div>
       <p className="muted small">
         Cada reserva, cambio, cancelación o check-in publica un evento en el bus interno; los suscriptores de webhooks lo reciben
-        por HTTP POST firmado con su secreto. Se muestran los últimos 50 (se reinician con la API).
+        por HTTP POST firmado con su secreto. Se muestran los últimos 50; los que llevan datos de salud no muestran su contenido.
       </p>
       {error ? <ProblemAlert error={error} /> : null}
       {!events ? (
@@ -84,7 +85,7 @@ export function EventsPanel() {
                       ? <span className="muted">Sin suscriptores</span>
                       : event.deliveries.map((delivery, index) => (
                           <div key={index}>
-                            {OUTCOME_LABELS[delivery.outcome]}
+                            {OUTCOME_LABELS[delivery.outcome] ?? delivery.outcome}
                             {delivery.httpStatus ? ` (HTTP ${delivery.httpStatus})` : ''}
                             {delivery.attempts ? ` · ${delivery.attempts} intento${delivery.attempts > 1 ? 's' : ''}` : ''}
                             <span className="muted"> · {delivery.target}</span>

@@ -1,0 +1,10 @@
+# Alertmanager (V2.16, D50): agrupa las alertas de Prometheus. Sin notificaciones externas (correo, chat): las alertas se ven
+# en el panel de administración (getAlerts de MS.Admin) y en Grafana.
+route:
+  receiver: panel
+  group_by: [alertname]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+receivers:
+  - name: panel

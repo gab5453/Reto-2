@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getSeatMap } from '../api/endpoints';
+import { getSeatMap } from '../api/operations';
 import type { SeatMapResponse } from '../api/types';
 import { ProblemAlert } from './ProblemAlert';
 

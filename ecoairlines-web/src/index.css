@@ -1919,3 +1919,92 @@ a.session-name {
   flex-wrap: wrap;
   gap: 6px;
 }
+
+/* Formulario de tarjeta (V2.17): los datos van directo a la Payment API. */
+.card-fields {
+  border: 0;
+  padding: 0;
+  margin: 0 0 1rem;
+  min-width: 0;
+}
+
+/* Asistencia médica (V2.18). */
+.assistance-box {
+  border: 0;
+  border-top: 1px solid var(--border);
+  padding: 12px 0 0;
+  margin: 12px 0 0;
+  min-width: 0;
+}
+.assistance-fields {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+.assistance-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+.assistance-item {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Navegación del portal administrativo (V2.18). */
+.admin-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-top: 12px;
+}
+.admin-nav a {
+  padding: 6px 12px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: inherit;
+  font-size: 0.92rem;
+}
+.admin-nav a.active {
+  background: var(--green-50);
+  font-weight: 600;
+}
+
+/* Secreto de un partner: se muestra una sola vez. */
+.secret-box code {
+  display: block;
+  margin: 6px 0;
+  word-break: break-all;
+  font-size: 1rem;
+}
+.check-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+/* Cambio de asientos: necesita todo el ancho (`.panel-form` es angosto y cortaba el mapa). */
+.seat-change {
+  display: grid;
+  gap: 12px;
+  justify-items: stretch;
+}
+.seat-change > .btn {
+  justify-self: start;
+}
+
+/* Web progresiva (V2.19): avisos de conexión y de versión nueva. */
+.pwa-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin: 0;
+  border-radius: 0;
+  padding-inline: 16px;
+}

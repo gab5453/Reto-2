@@ -1,0 +1,58 @@
+# OpenTelemetry Collector (V2.2; plataforma de observabilidad en V2.16, D50). Recibe OTLP de TODOS los servicios y reparte:
+#   trazas → Tempo · métricas → Prometheus (lo lee en :8889) · logs → Loki (OTLP).
+# Igual en local y en la nube (la misma VM). Nunca deja pasar tokens, firmas ni cookies.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 2s
+  # Defensa en profundidad: aunque un servicio lo enviara por error, nunca se exportan estos atributos.
+  attributes/sin-datos-sensibles:
+    actions:
+      - { key: http.request.header.authorization, action: delete }
+      - { key: http.request.header.x-webhook-signature, action: delete }
+      - { key: http.request.header.x-api-key, action: delete }
+      - { key: http.request.header.cookie, action: delete }
+  # Protege al Collector y a la VM (4 GiB) si llega una ráfaga.
+  memory_limiter:
+    check_interval: 2s
+    limit_mib: 200
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # El servicio (service.name) queda como etiqueta `service_name` de cada métrica.
+    resource_to_telemetry_conversion:
+      enabled: true
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/sin-datos-sensibles, batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/sin-datos-sensibles, batch]
+      exporters: [otlphttp/loki]

@@ -1,0 +1,79 @@
+# Alertas de EcoAirlines (V2.16, PLAN.md §6: las 8 del plan). Se ven en el panel (getAlerts de MS.Admin) y en Grafana.
+# severity: critical (acción inmediata) · warning (revisar) · info.
+groups:
+  - name: servicios
+    rules:
+      - alert: ServicioCaido
+        expr: ecoairlines_dependency_up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: '{{ $labels.service }} no alcanza a {{ $labels.dependency }} desde hace más de 1 minuto.'
+      - alert: CollectorSinDatos
+        expr: up{job="servicios"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: 'El OpenTelemetry Collector no responde: no llegan métricas de los servicios.'
+      - alert: LatenciaAlta
+        expr: histogram_quantile(0.95, sum by (service_name, le) (rate(http_server_request_duration_seconds_bucket[5m]))) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: '{{ $labels.service_name }}: el p95 de las peticiones supera 1 s ({{ $value | printf "%.2f" }} s).'
+      - alert: ErroresAltos
+        expr: |
+          sum by (service_name) (rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]))
+            / sum by (service_name) (rate(http_server_request_duration_seconds_count[5m])) > 0.05
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: '{{ $labels.service_name }}: más del 5 % de las respuestas son 5xx ({{ $value | humanizePercentage }}).'
+      - alert: NodoDown
+        expr: ecoairlines_node_status == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: 'El health del nodo de vuelos (GET /vuelos/health) está DOWN: Booking no puede vender.'
+      - alert: NodoDegradado
+        expr: ecoairlines_node_status == 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 'El health del nodo de vuelos está DEGRADED desde hace más de 5 minutos.'
+
+  - name: negocio
+    rules:
+      - alert: ColaCreciendo
+        expr: rabbitmq_queue_messages_ready{queue!~".*[.](retry|wait)[.].*|.*[.]dlq"} > 100
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 'La cola {{ $labels.queue }} acumula {{ $value }} mensajes sin procesar.'
+      - alert: MensajesEnColaDeFallidos
+        expr: rabbitmq_queue_messages{queue=~".*[.]dlq"} > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: 'La cola de fallidos {{ $labels.queue }} tiene {{ $value }} mensajes: revisar el motivo (x-last-error).'
+      - alert: SagaFallida
+        expr: increase(ecoairlines_sagas_finished_total{status="FAILED"}[15m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: 'Una saga {{ $labels.saga_type }} quedó FAILED (requiere revisión manual).'
+      - alert: SagasCompensadas
+        expr: increase(ecoairlines_sagas_finished_total{status="COMPENSATED"}[15m]) > 5
+        labels: { severity: warning }
+        annotations:
+          summary: 'Más de 5 sagas {{ $labels.saga_type }} compensadas en 15 minutos.'
+      - alert: StockSinEnviar
+        expr: ecoairlines_stock_pending > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: '{{ $value }} cambios de stock sin enviar a Booking desde hace más de 10 minutos (BKG-13).'
+      - alert: WebhooksAgotados
+        expr: increase(ecoairlines_webhooks_deliveries_total{outcome="EXHAUSTED"}[1h]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: 'Hay entregas de webhooks que agotaron sus reintentos en la última hora.'

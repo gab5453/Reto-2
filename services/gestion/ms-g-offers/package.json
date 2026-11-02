@@ -1,0 +1,32 @@
+{
+  "name": "@ecoairlines/ms-g-offers",
+  "version": "1.0.0",
+  "description": "MS.G.Offers (V2.5): servidor gRPC (búsqueda, mapa de asientos con estado, holds, inventario por estado, publicación) y cliente gRPC del stock de Booking. Contrato: contract/ms-g-offers.proto.",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "node --enable-source-maps dist/main.js"
+  },
+  "dependencies": {
+    "@ecoairlines/shared": "1.0.0",
+    "@grpc/grpc-js": "~1.14.5",
+    "@grpc/proto-loader": "~0.8.1",
+    "@nestjs/common": "^12.0.1",
+    "@nestjs/core": "^12.0.1",
+    "@nestjs/platform-express": "^12.0.1",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "grpc-health-check": "2.1.0",
+    "pg": "^8.23.1",
+    "protobufjs": "^7.6.6",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.23.1"
+  }
+}

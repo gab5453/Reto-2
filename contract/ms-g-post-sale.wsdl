@@ -1,0 +1,235 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MS.G.PostSale — servicio SOA (SOAP 1.1, document/literal) · EcoAirlines · Reto 2 · contrato v1.0.0
+  Requisito del ingeniero: al menos un servicio SOA. Tipos en ms-g-post-sale.xsd. Decisiones D28, D34, D37 y D41 de PLAN/PLAN.md.
+
+  RESPONSABILIDAD
+    Las reglas de postventa que producen "documentos de negocio" con vencimiento: cotizaciones de cancelación (15 min), ofertas
+    de cambio de fecha (15 min) y límite y precio de maletas extra. Base de datos propia: post_sale (cancellation_quotes,
+    date_change_offers). No toca reservas ni inventario: eso lo hacen Bookings y Offers en otros pasos de la saga.
+
+  QUIÉN LO LLAMA
+    Solo el ESB (orquestador y enrutador), con la librería `soap` de npm. El WSDL se publica en ?wsdl.
+    Autenticación: cabecera HTTP `Authorization: Bearer <token de servicio del ESB>` (token_use = service, D41).
+
+  CABECERAS SOAP (contrato v2 §6)
+    Petición:  <soap:Header><corr:CorrelationId>corr-123</corr:CorrelationId><corr:RequestId>req-1</corr:RequestId></soap:Header>
+    Respuesta: el mismo CorrelationId (sin cambios) y el RequestId de este servicio.
+
+  ERRORES
+    soap:Fault con faultcode soap:Client (negocio o datos) o soap:Server (INTERNAL_ERROR), faultstring = title y
+    detail/types:PostSaleFault con el `code` del contrato v2 y el `status` HTTP que debe responder el ESB.
+-->
+<wsdl:definitions name="PostSaleService"
+    xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+    xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    xmlns:tns="http://ecoairlines.com/soap/post-sale/v1"
+    xmlns:types="http://ecoairlines.com/soap/post-sale/v1/types"
+    targetNamespace="http://ecoairlines.com/soap/post-sale/v1">
+
+  <wsdl:documentation>MS.G.PostSale de EcoAirlines: cotizaciones de cancelación, ofertas de cambio de fecha y maletas extra.</wsdl:documentation>
+
+  <wsdl:types>
+    <xs:schema targetNamespace="http://ecoairlines.com/soap/post-sale/v1/import" elementFormDefault="qualified">
+      <xs:import namespace="http://ecoairlines.com/soap/post-sale/v1/types" schemaLocation="ms-g-post-sale.xsd"/>
+    </xs:schema>
+  </wsdl:types>
+
+  <!-- ============================================================ mensajes -->
+  <wsdl:message name="CorrelationIdHeader"><wsdl:part name="CorrelationId" element="types:CorrelationId"/></wsdl:message>
+  <wsdl:message name="RequestIdHeader"><wsdl:part name="RequestId" element="types:RequestId"/></wsdl:message>
+  <wsdl:message name="PostSaleFault"><wsdl:part name="fault" element="types:PostSaleFault"/></wsdl:message>
+  <wsdl:message name="CreateCancellationQuoteInput"><wsdl:part name="parameters" element="types:CreateCancellationQuoteRequest"/></wsdl:message>
+  <wsdl:message name="CreateCancellationQuoteOutput"><wsdl:part name="parameters" element="types:CreateCancellationQuoteResponse"/></wsdl:message>
+  <wsdl:message name="ConsumeCancellationQuoteInput"><wsdl:part name="parameters" element="types:ConsumeCancellationQuoteRequest"/></wsdl:message>
+  <wsdl:message name="ConsumeCancellationQuoteOutput"><wsdl:part name="parameters" element="types:ConsumeCancellationQuoteResponse"/></wsdl:message>
+  <wsdl:message name="CalculateCompensationRefundInput"><wsdl:part name="parameters" element="types:CalculateCompensationRefundRequest"/></wsdl:message>
+  <wsdl:message name="CalculateCompensationRefundOutput"><wsdl:part name="parameters" element="types:CalculateCompensationRefundResponse"/></wsdl:message>
+  <wsdl:message name="CreateDateChangeOffersInput"><wsdl:part name="parameters" element="types:CreateDateChangeOffersRequest"/></wsdl:message>
+  <wsdl:message name="CreateDateChangeOffersOutput"><wsdl:part name="parameters" element="types:CreateDateChangeOffersResponse"/></wsdl:message>
+  <wsdl:message name="ConsumeDateChangeOfferInput"><wsdl:part name="parameters" element="types:ConsumeDateChangeOfferRequest"/></wsdl:message>
+  <wsdl:message name="ConsumeDateChangeOfferOutput"><wsdl:part name="parameters" element="types:ConsumeDateChangeOfferResponse"/></wsdl:message>
+  <wsdl:message name="ReleaseDateChangeOfferInput"><wsdl:part name="parameters" element="types:ReleaseDateChangeOfferRequest"/></wsdl:message>
+  <wsdl:message name="ReleaseDateChangeOfferOutput"><wsdl:part name="parameters" element="types:ReleaseDateChangeOfferResponse"/></wsdl:message>
+  <wsdl:message name="GetBaggageOptionsInput"><wsdl:part name="parameters" element="types:GetBaggageOptionsRequest"/></wsdl:message>
+  <wsdl:message name="GetBaggageOptionsOutput"><wsdl:part name="parameters" element="types:GetBaggageOptionsResponse"/></wsdl:message>
+  <wsdl:message name="ValidateBaggagePurchaseInput"><wsdl:part name="parameters" element="types:ValidateBaggagePurchaseRequest"/></wsdl:message>
+  <wsdl:message name="ValidateBaggagePurchaseOutput"><wsdl:part name="parameters" element="types:ValidateBaggagePurchaseResponse"/></wsdl:message>
+
+  <!-- ============================================================ operaciones -->
+  <wsdl:portType name="PostSalePortType">
+    <wsdl:operation name="CreateCancellationQuote">
+      <wsdl:documentation>Cotizar la cancelación (GET /vuelos/bookings/{id}/cancellation-quote). No cambia la reserva.</wsdl:documentation>
+      <wsdl:input message="tns:CreateCancellationQuoteInput"/>
+      <wsdl:output message="tns:CreateCancellationQuoteOutput"/>
+      <wsdl:fault name="PostSaleFault" message="tns:PostSaleFault"/>
+    </wsdl:operation>
+    <wsdl:operation name="ConsumeCancellationQuote">
+      <wsdl:documentation>Saga Cancelar: usar la cotización (CUSTOMER_REQUEST u OTHER). Idempotente por sagaId.</wsdl:documentation>
+      <wsdl:input message="tns:ConsumeCancellationQuoteInput"/>
+      <wsdl:output message="tns:ConsumeCancellationQuoteOutput"/>
+      <wsdl:fault name="PostSaleFault" message="tns:PostSaleFault"/>
+    </wsdl:operation>
+    <wsdl:operation name="CalculateCompensationRefund">
+      <wsdl:documentation>Saga Cancelar sin cotización: FLIGHT_CANCELLED o SAGA_COMPENSATION, sin penalidad.</wsdl:documentation>
+      <wsdl:input message="tns:CalculateCompensationRefundInput"/>
+      <wsdl:output message="tns:CalculateCompensationRefundOutput"/>
+      <wsdl:fault name="PostSaleFault" message="tns:PostSaleFault"/>
+    </wsdl:operation>
+    <wsdl:operation name="CreateDateChangeOffers">
+      <wsdl:documentation>Ofertas de cambio de fecha (POST /vuelos/bookings/{id}/date-change/search).</wsdl:documentation>
+      <wsdl:input message="tns:CreateDateChangeOffersInput"/>
+      <wsdl:output message="tns:CreateDateChangeOffersOutput"/>
+      <wsdl:fault name="PostSaleFault" message="tns:PostSaleFault"/>
+    </wsdl:operation>
+    <wsdl:operation name="ConsumeDateChangeOffer">
+      <wsdl:documentation>Saga Cambiar fecha: usar la oferta. Idempotente por sagaId.</wsdl:documentation>
+      <wsdl:input message="tns:ConsumeDateChangeOfferInput"/>
+      <wsdl:output message="tns:ConsumeDateChangeOfferOutput"/>
+      <wsdl:fault name="PostSaleFault" message="tns:PostSaleFault"/>
+    </wsdl:operation>
+    <wsdl:operation name="ReleaseDateChangeOffer">
+      <wsdl:documentation>Compensación de Cambiar fecha: liberar la oferta usada.</wsdl:documentation>
+      <wsdl:input message="tns:ReleaseDateChangeOfferInput"/>
+      <wsdl:output message="tns:ReleaseDateChangeOfferOutput"/>
+      <wsdl:fault name="PostSaleFault" message="tns:PostSaleFault"/>
+    </wsdl:operation>
+    <wsdl:operation name="GetBaggageOptions">
+      <wsdl:documentation>Opciones de maletas extra (GET /vuelos/bookings/{id}/baggage-options).</wsdl:documentation>
+      <wsdl:input message="tns:GetBaggageOptionsInput"/>
+      <wsdl:output message="tns:GetBaggageOptionsOutput"/>
+      <wsdl:fault name="PostSaleFault" message="tns:PostSaleFault"/>
+    </wsdl:operation>
+    <wsdl:operation name="ValidateBaggagePurchase">
+      <wsdl:documentation>Saga Agregar maletas: validar el límite y calcular el monto a cobrar.</wsdl:documentation>
+      <wsdl:input message="tns:ValidateBaggagePurchaseInput"/>
+      <wsdl:output message="tns:ValidateBaggagePurchaseOutput"/>
+      <wsdl:fault name="PostSaleFault" message="tns:PostSaleFault"/>
+    </wsdl:operation>
+  </wsdl:portType>
+
+  <!-- ============================================================ binding SOAP 1.1 document/literal -->
+  <wsdl:binding name="PostSaleSoapBinding" type="tns:PostSalePortType">
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <wsdl:operation name="CreateCancellationQuote">
+      <soap:operation soapAction="http://ecoairlines.com/soap/post-sale/v1/CreateCancellationQuote" style="document"/>
+      <wsdl:input>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:input>
+      <wsdl:output>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:output>
+      <wsdl:fault name="PostSaleFault"><soap:fault name="PostSaleFault" use="literal"/></wsdl:fault>
+    </wsdl:operation>
+    <wsdl:operation name="ConsumeCancellationQuote">
+      <soap:operation soapAction="http://ecoairlines.com/soap/post-sale/v1/ConsumeCancellationQuote" style="document"/>
+      <wsdl:input>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:input>
+      <wsdl:output>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:output>
+      <wsdl:fault name="PostSaleFault"><soap:fault name="PostSaleFault" use="literal"/></wsdl:fault>
+    </wsdl:operation>
+    <wsdl:operation name="CalculateCompensationRefund">
+      <soap:operation soapAction="http://ecoairlines.com/soap/post-sale/v1/CalculateCompensationRefund" style="document"/>
+      <wsdl:input>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:input>
+      <wsdl:output>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:output>
+      <wsdl:fault name="PostSaleFault"><soap:fault name="PostSaleFault" use="literal"/></wsdl:fault>
+    </wsdl:operation>
+    <wsdl:operation name="CreateDateChangeOffers">
+      <soap:operation soapAction="http://ecoairlines.com/soap/post-sale/v1/CreateDateChangeOffers" style="document"/>
+      <wsdl:input>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:input>
+      <wsdl:output>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:output>
+      <wsdl:fault name="PostSaleFault"><soap:fault name="PostSaleFault" use="literal"/></wsdl:fault>
+    </wsdl:operation>
+    <wsdl:operation name="ConsumeDateChangeOffer">
+      <soap:operation soapAction="http://ecoairlines.com/soap/post-sale/v1/ConsumeDateChangeOffer" style="document"/>
+      <wsdl:input>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:input>
+      <wsdl:output>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:output>
+      <wsdl:fault name="PostSaleFault"><soap:fault name="PostSaleFault" use="literal"/></wsdl:fault>
+    </wsdl:operation>
+    <wsdl:operation name="ReleaseDateChangeOffer">
+      <soap:operation soapAction="http://ecoairlines.com/soap/post-sale/v1/ReleaseDateChangeOffer" style="document"/>
+      <wsdl:input>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:input>
+      <wsdl:output>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:output>
+      <wsdl:fault name="PostSaleFault"><soap:fault name="PostSaleFault" use="literal"/></wsdl:fault>
+    </wsdl:operation>
+    <wsdl:operation name="GetBaggageOptions">
+      <soap:operation soapAction="http://ecoairlines.com/soap/post-sale/v1/GetBaggageOptions" style="document"/>
+      <wsdl:input>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:input>
+      <wsdl:output>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:output>
+      <wsdl:fault name="PostSaleFault"><soap:fault name="PostSaleFault" use="literal"/></wsdl:fault>
+    </wsdl:operation>
+    <wsdl:operation name="ValidateBaggagePurchase">
+      <soap:operation soapAction="http://ecoairlines.com/soap/post-sale/v1/ValidateBaggagePurchase" style="document"/>
+      <wsdl:input>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:input>
+      <wsdl:output>
+        <soap:header message="tns:CorrelationIdHeader" part="CorrelationId" use="literal"/>
+        <soap:header message="tns:RequestIdHeader" part="RequestId" use="literal"/>
+        <soap:body use="literal"/>
+      </wsdl:output>
+      <wsdl:fault name="PostSaleFault"><soap:fault name="PostSaleFault" use="literal"/></wsdl:fault>
+    </wsdl:operation>
+  </wsdl:binding>
+
+  <wsdl:service name="PostSaleService">
+    <wsdl:documentation>Red interna (Docker Compose / nube). En desarrollo local: http://localhost:4008/soap/post-sale</wsdl:documentation>
+    <wsdl:port name="PostSaleSoapPort" binding="tns:PostSaleSoapBinding">
+      <soap:address location="http://ms-g-post-sale:8080/soap/post-sale"/>
+    </wsdl:port>
+  </wsdl:service>
+</wsdl:definitions>

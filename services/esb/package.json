@@ -1,0 +1,32 @@
+{
+  "name": "@ecoairlines/esb",
+  "version": "1.0.0",
+  "description": "ESB de EcoAirlines (V2.9): enrutador hacia los MS.G (REST, gRPC y SOAP), composición (health, operaciones, indicadores, asistencia, integración con Booking), transversal (idempotencia, referencias de Booking, Payment API, correlation ID) y entrada de eventos de Booking. Contrato: contract/esb.openapi.yaml.",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "node --enable-source-maps dist/main.js"
+  },
+  "dependencies": {
+    "@ecoairlines/shared": "1.0.0",
+    "@grpc/grpc-js": "~1.14.5",
+    "@grpc/proto-loader": "~0.8.1",
+    "@nestjs/common": "^12.0.1",
+    "@nestjs/core": "^12.0.1",
+    "@nestjs/platform-express": "^12.0.1",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "pg": "^8.23.1",
+    "protobufjs": "^7.6.6",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "soap": "1.13.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.23.1"
+  }
+}

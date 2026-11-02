@@ -1,0 +1,451 @@
+openapi: 3.0.3
+info:
+  title: MS.G.FlightStatus — estado operativo de los vuelos (interno)
+  version: 1.0.0
+  license:
+    name: Uso académico — Integración de Sistemas (sin licencia de distribución)
+  description: |
+    Microservicio de gestión **MS.G.FlightStatus** de EcoAirlines (Reto 2). Reemplaza a `FlightStatusService` y a los ajustes
+    del administrador (`flight_status_overrides`) del monolito.
+
+    **Responsabilidad:** el **estado operativo** de cada vuelo y fecha (`GET /vuelos/flights/{n}/status` del contrato v2), los
+    **cambios de estado** con validación de transiciones (`PATCH`), la puerta, las horas estimadas y reales, la demora, y el
+    **historial** de cambios.
+
+    **Cómo conoce el horario (D4):** consume el evento interno `schedule.published` (RabbitMQ) y guarda la proyección
+    `scheduled_flights`. Nunca llama a Schedule. Un vuelo que no está en la proyección responde `404`.
+
+    **Contrato interno.** Solo lo llama el **ESB**, con su token de servicio:
+    - **Enrutador:** `GET` del estado.
+    - **Orquestador:** saga "Cambiar estado de vuelo" (D37): FlightStatus (este `PATCH`) → Bookings (reservas afectadas) →
+      evento `flight.status_changed` → si es `CANCELLED`, Offers cierra la venta y se cancela cada reserva. Compensación:
+      `POST /status-changes/{changeId}/revert`.
+    - **Composición:** lista de vuelos por fecha (panel de operaciones y `vuelos_programados_hoy` del health).
+
+    **Base de datos propia:** `flight_status` (tablas `scheduled_flights`, `overrides`, `status_changes`).
+
+    ### Transiciones válidas (`409 INVALID_STATUS_TRANSITION` si no)
+    | Desde | Hacia |
+    |-------|-------|
+    | `SCHEDULED` | `DELAYED`, `BOARDING`, `CANCELLED` |
+    | `DELAYED` | `DELAYED` (nueva hora estimada), `BOARDING`, `CANCELLED` |
+    | `BOARDING` | `DEPARTED`, `DELAYED`, `CANCELLED` |
+    | `DEPARTED` | `ARRIVED`, `DIVERTED` |
+    | `DIVERTED` | `ARRIVED` |
+    | `ARRIVED`, `CANCELLED` | ninguna (estados finales) |
+
+    Además, en cualquier estado no final se puede enviar **el mismo estado** para cambiar solo la puerta o las horas estimadas
+    (no cuenta como transición, pero sí queda en el historial).
+
+    ### Reglas
+    - `DELAYED` exige `estimatedDepartureAt` posterior a la hora programada; `delayMinutes` se calcula.
+    - `DEPARTED` y `ARRIVED` guardan la hora real (`actualAt`) del momento del cambio si no se envía.
+    - `CANCELLED` exige `reason`.
+    - El autor del cambio es `X-Actor-Id` (`updated_by`, `changed_by`).
+
+    ### Trazabilidad
+    Toda operación acepta `X-Correlation-Id` y `X-Request-Id` y devuelve `X-Correlation-Id`. Errores con el `ProblemDetails` del
+    contrato v2.
+servers:
+  - url: http://ms-g-flight-status:8080
+    description: Red interna (Docker Compose / nube)
+  - url: http://localhost:4005
+    description: Desarrollo local
+security:
+  - EsbService: []
+tags:
+  - name: Estado
+    description: Estado operativo de un vuelo y sus cambios
+  - name: Vuelos
+    description: Vuelos de una fecha (composición)
+  - name: Operación
+    description: Salud del servicio
+paths:
+  /health:
+    get:
+      tags: [Operación]
+      operationId: getHealth
+      summary: Estado del servicio, de su base y de la proyección del horario
+      security: []
+      responses:
+        '200':
+          description: En funcionamiento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: La base o el bus no responden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+
+  /flights:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Vuelos]
+      operationId: listFlights
+      summary: Vuelos de una fecha con su estado
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: origin
+          in: query
+          schema:
+            type: string
+            pattern: ^[A-Z]{3}$
+        - name: destination
+          in: query
+          schema:
+            type: string
+            pattern: ^[A-Z]{3}$
+        - name: status
+          in: query
+          schema:
+            $ref: './vuelos-openapi-v2.yaml#/components/schemas/FlightOperationalStatus'
+      responses:
+        '200':
+          description: Vuelos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlightStatusList'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /flights/{flightNumber}/status:
+    parameters:
+      - $ref: '#/components/parameters/FlightNumber'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Estado]
+      operationId: getFlightStatus
+      summary: Estado operativo de un vuelo en una fecha (forma del contrato v2)
+      parameters:
+        - $ref: '#/components/parameters/Date'
+      responses:
+        '200':
+          description: Estado del vuelo
+          headers:
+            X-Correlation-Id:
+              $ref: '#/components/headers/X-Correlation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/FlightStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/FlightNotFound'
+    patch:
+      tags: [Estado]
+      operationId: updateFlightStatus
+      summary: Cambiar el estado (primer paso de la saga "Cambiar estado de vuelo")
+      description: |
+        Recibe el `FlightStatusUpdateRequest` del contrato v2 sin cambios. Responde el estado anterior y el nuevo, y un
+        `changeId` para compensar. **No** calcula `affectedBookings` ni emite el evento: eso lo hace el ESB con Bookings.
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './vuelos-openapi-v2.yaml#/components/schemas/FlightStatusUpdateRequest'
+            example:
+              date: '2026-11-20'
+              status: DELAYED
+              estimatedDepartureAt: '2026-11-20T09:15:00-05:00'
+              departureGate: A6
+              reason: Condiciones meteorológicas en GYE
+      responses:
+        '200':
+          description: Estado actualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusChangeResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/FlightNotFound'
+        '409':
+          description: Transición no permitida
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+              example:
+                type: about:blank
+                title: Transición de estado no permitida.
+                status: 409
+                code: INVALID_STATUS_TRANSITION
+                detail: No se puede pasar de ARRIVED a BOARDING.
+                correlation_id: corr-vuelos-7f3a9c
+                timestamp: '2026-10-25T10:00:00Z'
+
+  /flights/{flightNumber}/status/history:
+    parameters:
+      - $ref: '#/components/parameters/FlightNumber'
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Estado]
+      operationId: getFlightStatusHistory
+      summary: Historial de cambios de un vuelo en una fecha (del más antiguo al más reciente)
+      parameters:
+        - $ref: '#/components/parameters/Date'
+      responses:
+        '200':
+          description: Historial
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StatusChange'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/FlightNotFound'
+
+  /status-changes/{changeId}/revert:
+    parameters:
+      - name: changeId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/CorrelationId'
+    post:
+      tags: [Estado]
+      operationId: revertStatusChange
+      summary: Compensación de la saga — vuelve al estado anterior a un cambio
+      description: |
+        Solo si es el **último** cambio del vuelo (si hubo otro después, `409 CHANGE_NOT_LATEST`). Revertir un cambio ya
+        revertido responde `200` con el mismo resultado (idempotente). Queda en el historial como reversión.
+      responses:
+        '200':
+          description: Estado restaurado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusChangeResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/FlightNotFound'
+        '409':
+          description: Hubo un cambio posterior
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+components:
+  securitySchemes:
+    EsbService:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de servicio del ESB (`token_use = service`, scope `ecoairlines:internal`), verificado con la JWKS de MS.G.Identity.
+
+  parameters:
+    FlightNumber:
+      $ref: './vuelos-openapi-v2.yaml#/components/parameters/FlightNumber'
+    Date:
+      name: date
+      in: query
+      required: true
+      description: Fecha local de salida
+      schema:
+        type: string
+        format: date
+      example: '2026-11-20'
+    ActorId:
+      name: X-Actor-Id
+      in: header
+      required: true
+      description: '`sub` del administrador que hace el cambio (auditoría). Solo lo envía el ESB.'
+      schema:
+        type: string
+        format: uuid
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador del proceso completo (contrato v2, §6). Se propaga sin cambios.
+      schema:
+        type: string
+        maxLength: 100
+      example: corr-vuelos-7f3a9c
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 100
+
+  headers:
+    X-Correlation-Id:
+      description: El mismo valor recibido (o el creado si no llegó).
+      schema:
+        type: string
+
+  responses:
+    ValidationFailed:
+      description: Datos inválidos
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    Unauthorized:
+      description: Falta el token del ESB o no es válido
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    FlightNotFound:
+      description: El vuelo no opera en esa fecha
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          example:
+            type: about:blank
+            title: El vuelo no opera en esa fecha.
+            status: 404
+            code: NOT_FOUND
+            correlation_id: corr-vuelos-7f3a9c
+            timestamp: '2026-10-25T10:00:00Z'
+
+  schemas:
+    StatusChangeResult:
+      type: object
+      additionalProperties: false
+      required: [changeId, previousStatus, flight]
+      properties:
+        changeId:
+          type: string
+          format: uuid
+        previousStatus:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/FlightOperationalStatus'
+        flight:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/FlightStatus'
+
+    StatusChange:
+      type: object
+      additionalProperties: false
+      required: [changeId, previousStatus, newStatus, changedBy, changedAt, reverted]
+      properties:
+        changeId:
+          type: string
+          format: uuid
+        previousStatus:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/FlightOperationalStatus'
+        newStatus:
+          $ref: './vuelos-openapi-v2.yaml#/components/schemas/FlightOperationalStatus'
+        departureGate:
+          type: string
+          nullable: true
+        estimatedDepartureAt:
+          type: string
+          format: date-time
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+        changedBy:
+          type: string
+          format: uuid
+        changedAt:
+          type: string
+          format: date-time
+        reverted:
+          type: boolean
+          description: '`true` si una compensación lo deshizo'
+
+    FlightStatusList:
+      type: object
+      additionalProperties: false
+      required: [date, total, items]
+      properties:
+        date:
+          type: string
+          format: date
+        total:
+          type: integer
+          minimum: 0
+        items:
+          type: array
+          items:
+            $ref: './vuelos-openapi-v2.yaml#/components/schemas/FlightStatus'
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        database:
+          type: string
+          enum: [up, down, memory]
+        bus:
+          type: string
+          enum: [up, down, memory]
+        projectionUpdatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Último `schedule.published` aplicado
+        latency_ms:
+          type: integer
+          minimum: 0
+
+    ProblemDetails:
+      type: object
+      additionalProperties: false
+      description: Formato del `ProblemDetails` del contrato v2 (RFC 7807) con los códigos de este servicio.
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        code:
+          type: string
+          enum: [VALIDATION_FAILED, UNAUTHORIZED, FORBIDDEN, NOT_FOUND, INTERNAL_ERROR, INVALID_STATUS_TRANSITION, CHANGE_NOT_LATEST]
+        correlation_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        invalidParams:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              reason:
+                type: string

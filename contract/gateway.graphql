@@ -1,0 +1,1728 @@
+# =====================================================================================================================
+# EcoAirlines — esquema GraphQL del gateway (/api/graphql) · contrato v1.1.0 · Reto 2, V2.1 paso 8 (1.1.0: V2.13)
+# =====================================================================================================================
+#
+# QUÉ ES
+#   La ÚNICA forma en que la web de EcoAirlines accede al sistema (D23). Booking NO lo usa: entra por /api/v2/vuelos (REST).
+#   Parte del SDL de `contract/vuelos-graphql.yaml` (Reto 1, sin modificarlo) y lo EXTIENDE sin romperlo:
+#     - lo nuevo del contrato de Vuelos v2 (estado por asiento, emisión de boletos, cambio de asientos, estado de vuelo,
+#       operaciones, promociones, ProblemDetails v2, nuevos eventos);
+#     - las funciones propias de EcoAirlines (registro, perfil, asistencia médica y el panel de administración).
+#   La compatibilidad con la base se comprueba con `findBreakingChanges` de graphql-js (ver CAMBIOS.md, V2.1 paso 8).
+#
+# CÓMO SE RESUELVE
+#   Cada campo llama a UN microservicio de respuesta (REST interno), nunca al ESB ni a un MS.G. En los comentarios
+#   la flecha "→ MS.<servicio> <operationId>" indica cuál. Así la web pasa por la misma validación, seguridad y sagas que Booking.
+#
+# TRANSPORTE
+#   POST /api/graphql (también GET para queries). Respuesta HTTP 200 aunque haya errores de negocio en `errors`; 400 solo
+#   para documentos inválidos; 401 si falta el token en una operación protegida. Profundidad máxima 10, complejidad máxima
+#   1000, introspección solo en desarrollo. Suscripciones: WebSocket `graphql-transport-ws` en /api/graphql.
+#   Cabeceras: Authorization (token de usuario), X-Correlation-Id (si no llega, el gateway lo crea; se devuelve siempre),
+#   X-Device-Fingerprint (obligatoria en `searchFlights`).
+#
+# SEGURIDAD (D22, D29, D30)
+#   Solo tokens de USUARIO (token_use = user) emitidos por MS.G.Identity; se verifican con su JWKS. Un token de partner o de
+#   servicio responde UNAUTHENTICATED. `@auth(scopes)` exige TODOS los scopes indicados; los scopes salen del rol:
+#     CLIENTE: flights:read flights:hold flights:book flights:cancel ecoairlines:profile
+#     ADMIN:   flights:read flights:webhooks flights:ops flights:admin ecoairlines:admin
+#   El dueño es el `sub` del token; ningún input acepta ownerId. Un recurso ajeno responde NOT_FOUND (prevención de IDOR).
+#
+# IDEMPOTENCIA (contrato v2)
+#   Las mutations marcadas con @idempotent exigen `idempotencyKey: UUID!` (se envía como Idempotency-Key al MS de respuesta).
+#   Misma clave y mismos argumentos → mismo resultado sin repetir; argumentos distintos → IDEMPOTENCY_KEY_REUSED. 24 h.
+#
+# ERRORES
+#   Cada error replica el ProblemDetails del contrato v2 en `extensions`: code (ProblemCode), status (HTTP equivalente),
+#   type, title, detail, instance, correlation_id, timestamp, invalidParams y, en 409/429/503, retryAfter.
+#   `message` = title.
+#
+# PAGOS (D7, D28)
+#   La tarjeta va del navegador a la Payment API (que autoriza); aquí solo viaja `paymentReference`. El ESB la captura en la
+#   saga. Nunca hay datos de tarjeta en este esquema.
+# =====================================================================================================================
+
+# ---------------------------------------------------------------------------------------------------------- directivas
+
+"La operación no requiere autenticación."
+directive @public on FIELD_DEFINITION
+
+"Requiere token de usuario válido que contenga TODOS los scopes indicados."
+directive @auth(scopes: [Scope!]!) on FIELD_DEFINITION
+
+"La mutation exige el argumento idempotencyKey (UUID) y aplica las reglas de idempotencia."
+directive @idempotent on FIELD_DEFINITION
+
+"Restricciones de validación equivalentes a las de OpenAPI."
+directive @constraint(
+  pattern: String
+  minimum: Int
+  maximum: Int
+  minItems: Int
+  maxItems: Int
+) on ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION
+
+# ------------------------------------------------------------------------------------------------------------- scalars
+
+"UUID (RFC 4122)."
+scalar UUID
+"Fecha ISO-8601 (YYYY-MM-DD)."
+scalar Date
+"Fecha y hora ISO-8601 / RFC 3339."
+scalar DateTime
+"Código IATA de aeropuerto (^[A-Z]{3}$)."
+scalar IataCode
+"Código de moneda ISO-4217 (^[A-Z]{3}$)."
+scalar CurrencyCode
+"Monto decimal serializado como String (ej. \"125.40\")."
+scalar Decimal
+"URL absoluta."
+scalar URL
+"Objeto JSON libre (solo para los datos de un evento en el historial)."
+scalar JSON
+
+# ---------------------------------------------------------------------------------------------------------- root types
+
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+
+type Query {
+  # ===== Búsqueda y catálogo (base) =====
+  "Búsqueda de vuelos (multidestino). Requiere header X-Device-Fingerprint. → MS.Vuelos searchFlights"
+  searchFlights(input: SearchFlightsInput!): SearchResult! @public
+
+  "Mapa de asientos con el estado de cada asiento. → MS.Vuelos getSeatMap"
+  seatMap(offerId: String!, segmentId: String!): SeatMap! @public
+
+  # ===== Hold (base) =====
+  "Estado de un hold. → MS.Reservas getHold"
+  hold(holdId: UUID!): Hold! @auth(scopes: [FLIGHTS_READ])
+
+  # ===== Reservas (base) =====
+  "Reservas del usuario (paginado por cursor). → MS.Reservas listBookings"
+  bookings(
+    filter: BookingFilterInput
+    limit: Int = 10 @constraint(minimum: 1, maximum: 50)
+    cursor: String
+  ): BookingPage! @auth(scopes: [FLIGHTS_READ])
+
+  "Detalle de una reserva propia. → MS.Reservas getBooking"
+  booking(bookingId: UUID!): Booking! @auth(scopes: [FLIGHTS_READ])
+
+  # ===== Postventa (base) =====
+  "Alternativas para cambio de fecha. → MS.Postventa searchDateChange"
+  dateChangeOptions(bookingId: UUID!, input: DateChangeSearchInput!): [DateChangeOption!]!
+    @auth(scopes: [FLIGHTS_READ])
+
+  # ===== Estado de vuelos (base) =====
+  "Estado operativo de un vuelo en una fecha. → MS.Vuelos getFlightStatus"
+  flightStatus(flightNumber: String!, date: Date!): FlightStatus! @public
+
+  # ===== Webhooks (base) =====
+  "Suscripciones de webhooks del administrador (con la pista del secreto). → MS.Clientes listOwnWebhooks"
+  webhookSubscriptions: [WebhookSubscription!]! @auth(scopes: [FLIGHTS_WEBHOOKS])
+
+  # ===== Cliente (propias) =====
+  "Datos del usuario del token (sin llamar a ningún servicio)."
+  me: CurrentUser! @auth(scopes: [])
+
+  "Perfil del cliente con su asistencia predeterminada; null si aún no lo guardó. → MS.Clientes getMyProfile"
+  myProfile: CustomerProfile @auth(scopes: [ECOAIRLINES_PROFILE])
+
+  # ===== Administración (propias, salvo las marcadas como contrato v2) =====
+  "Indicadores del panel. → MS.Admin getIndicators"
+  adminIndicators: AdminIndicators! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "Usuarios. → MS.Admin listUsers"
+  users(filter: UserFilterInput, limit: Int = 20 @constraint(minimum: 1, maximum: 100), cursor: String): UserPage!
+    @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin getUser"
+  user(sub: UUID!): User! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin listRoles"
+  roles: [Role!]! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "Partners (sistemas B2B como Booking). → MS.Admin listPartners"
+  partners: [Partner!]! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin getPartner"
+  partner(clientId: String!): Partner! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "Precios por clase y acuerdos de promociones. → MS.Admin getPrices"
+  prices: PricesView! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "Valores de referencia para «Rellenar» (no guarda nada). → MS.Admin getReferencePrices"
+  referencePrices: [FarePrice!]! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin getPriceHistory"
+  priceHistory(limit: Int = 20 @constraint(minimum: 1, maximum: 100), cursor: String): PriceChangePage!
+    @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "→ MS.Admin listRoutes"
+  routes: [ScheduledRoute!]! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin getRoute"
+  route(routeId: String!): ScheduledRoute! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin listAircraftTypes"
+  aircraftTypes: [AircraftTypeInfo!]! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin listAircraft"
+  fleet: [Aircraft!]! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin getAircraft"
+  aircraft(registration: String!): Aircraft! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "Rotación de la flota en una fecha. → MS.Admin getFleetSchedule"
+  fleetSchedule(date: Date!): FleetSchedule! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "Panel de operaciones (contrato v2). → MS.Vuelos listFlightOperations"
+  flightOperations(
+    date: Date!
+    origin: IataCode
+    destination: IataCode
+    status: FlightOperationalStatus
+    limit: Int = 10 @constraint(minimum: 1, maximum: 50)
+    cursor: String
+  ): FlightOperationsPage! @auth(scopes: [FLIGHTS_OPS])
+
+  "Acuerdo de promociones con un partner (contrato v2). → MS.Admin getPrices (filtrado por partner)"
+  promotionAgreement(partnerId: String!): PromotionAgreement @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "Pasajeros con asistencia de un vuelo (dato de salud). → MS.Admin listFlightAssistance"
+  flightAssistance(flightNumber: String!, date: Date!): [FlightAssistanceItem!]! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "Historial de eventos y entregas de webhooks. → MS.Admin listEventHistory"
+  eventHistory(from: DateTime, to: DateTime, limit: Int = 20 @constraint(minimum: 1, maximum: 100), cursor: String):
+    EventHistoryPage! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "Telemetría del sistema (cada campo llama a su operación de MS.Admin)."
+  telemetry: Telemetry! @auth(scopes: [ECOAIRLINES_ADMIN])
+}
+
+type Mutation {
+  # ===== Autenticación (propias) =====
+  "Registro público (siempre CLIENTE). → MS.Clientes register"
+  register(input: RegisterInput!): AuthPayload! @public
+  "Inicio de sesión. → MS.Clientes login"
+  login(input: LoginInput!): AuthPayload! @public
+
+  # ===== Perfil (propias) =====
+  "Crear o reemplazar el perfil. → MS.Clientes saveMyProfile"
+  saveMyProfile(input: CustomerProfileInput!): CustomerProfile! @auth(scopes: [ECOAIRLINES_PROFILE])
+
+  # ===== Hold (base) =====
+  "Bloquea inventario y congela el precio. → MS.Reservas createHold"
+  holdInventory(idempotencyKey: UUID!, input: HoldInput!): Hold!
+    @auth(scopes: [FLIGHTS_HOLD]) @idempotent
+
+  "Libera un hold anticipadamente. → MS.Reservas releaseHold"
+  releaseHold(holdId: UUID!): ReleaseHoldPayload! @auth(scopes: [FLIGHTS_HOLD])
+
+  # ===== Reservas y emisión (base + contrato v2) =====
+  """
+  Crea la reserva a partir de un hold, con asistencia médica opcional por pasajero. El pago es un `paymentReference`
+  autorizado por la Payment API, que el ESB captura. → MS.Reservas createWebBooking
+  """
+  createBooking(idempotencyKey: UUID!, input: CreateBookingInput!): CreateBookingPayload!
+    @auth(scopes: [FLIGHTS_BOOK]) @idempotent
+
+  "Emite (o reintenta emitir) los boletos; idempotente (issued = 0 si ya estaban). → MS.Reservas issueTickets"
+  issueTickets(bookingId: UUID!): TicketIssuance! @auth(scopes: [FLIGHTS_BOOK])
+
+  "Cambia los asientos de uno o varios pasajeros (todos o ninguno). → MS.Reservas changeSeats"
+  changeSeats(idempotencyKey: UUID!, bookingId: UUID!, input: ChangeSeatsInput!): SeatChangeResult!
+    @auth(scopes: [FLIGHTS_BOOK]) @idempotent
+
+  "Pide o cambia la asistencia médica de un pasajero. → MS.Reservas saveAssistance"
+  savePassengerAssistance(bookingId: UUID!, passengerId: String!, input: AssistanceInput!): PassengerAssistance!
+    @auth(scopes: [FLIGHTS_BOOK])
+  "Quita la asistencia de un pasajero. → MS.Reservas deleteAssistance"
+  deletePassengerAssistance(bookingId: UUID!, passengerId: String!): Boolean! @auth(scopes: [FLIGHTS_BOOK])
+
+  # ===== Postventa (base) =====
+  "Agrega maletas extra. → MS.Postventa addBaggage"
+  addBaggage(idempotencyKey: UUID!, bookingId: UUID!, input: AddBaggageInput!): AddBaggagePayload!
+    @auth(scopes: [FLIGHTS_BOOK]) @idempotent
+
+  "Confirma un cambio de fecha cotizado (changeOfferId). → MS.Postventa confirmDateChange"
+  confirmDateChange(idempotencyKey: UUID!, bookingId: UUID!, input: ConfirmDateChangeInput!): ConfirmDateChangePayload!
+    @auth(scopes: [FLIGHTS_BOOK]) @idempotent
+
+  "Cancela la reserva con una cotización vigente (reasonCode CUSTOMER_REQUEST). → MS.Postventa cancelBooking"
+  cancelBooking(idempotencyKey: UUID!, bookingId: UUID!, input: CancelBookingInput!): CancelBookingPayload!
+    @auth(scopes: [FLIGHTS_CANCEL]) @idempotent
+
+  # ===== Check-in (base) =====
+  "Check-in de la reserva (48 h antes; requiere boletos emitidos). → MS.Reservas checkIn"
+  checkIn(bookingId: UUID!): CheckInResult! @auth(scopes: [FLIGHTS_BOOK])
+
+  # ===== Webhooks (base) =====
+  "→ MS.Clientes createWebhook"
+  registerWebhook(input: RegisterWebhookInput!): WebhookSubscription! @auth(scopes: [FLIGHTS_WEBHOOKS])
+  "→ MS.Clientes deleteWebhook"
+  deleteWebhook(id: UUID!): DeleteWebhookPayload! @auth(scopes: [FLIGHTS_WEBHOOKS])
+
+  # ===== Administración (propias, salvo las marcadas como contrato v2) =====
+  "→ MS.Admin createUser"
+  createUser(input: CreateUserInput!): User! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin changeUserRole"
+  changeUserRole(sub: UUID!, role: RoleName!): User! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin changeUserStatus"
+  changeUserStatus(sub: UUID!, input: ChangeStatusInput!): User! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "El secreto se devuelve UNA sola vez. → MS.Admin createPartner"
+  createPartner(input: CreatePartnerInput!): PartnerWithSecret! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin changePartnerStatus"
+  changePartnerStatus(clientId: String!, input: ChangeStatusInput!): Partner! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "El secreto nuevo se devuelve UNA sola vez. → MS.Admin rotatePartnerSecret"
+  rotatePartnerSecret(clientId: String!): PartnerWithSecret! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "Un solo «Guardar»: precios por clase y descuento máximo de promociones (≤ 50 %). → MS.Admin savePrices"
+  savePrices(input: SavePricesInput!): PricesView! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "Saga \"Publicar horario\". → MS.Admin createRoute"
+  createRoute(input: ScheduledRouteInput!): ScheduledRoute! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin updateRoute"
+  updateRoute(routeId: String!, input: ScheduledRouteInput!): ScheduledRoute! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin deleteRoute"
+  deleteRoute(routeId: String!): Boolean! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "→ MS.Admin createAircraft"
+  createAircraft(input: AircraftInput!): Aircraft! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin updateAircraft"
+  updateAircraftBase(registration: String!, base: IataCode!): Aircraft! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "→ MS.Admin deleteAircraft"
+  deleteAircraft(registration: String!): Boolean! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "Cambia el estado de un vuelo (contrato v2; saga con reembolsos si se cancela). → MS.Vuelos updateFlightStatus"
+  updateFlightStatus(flightNumber: String!, input: FlightStatusUpdateInput!): FlightStatusUpdate!
+    @auth(scopes: [FLIGHTS_OPS])
+
+  "Marca que el aeropuerto confirmó la asistencia de un pasajero. → MS.Admin markAssistanceReady"
+  markAssistanceReady(bookingId: UUID!, input: AssistanceReadyInput!): Boolean! @auth(scopes: [ECOAIRLINES_ADMIN])
+}
+
+type Subscription {
+  "Eventos de las reservas del usuario (equivalente en tiempo real a los webhooks; filtrado por dueño)."
+  bookingEvents(events: [WebhookEventType!]): WebhookEvent! @auth(scopes: [FLIGHTS_READ])
+}
+
+# --------------------------------------------------------------------------------------------------------------- enums
+
+enum Scope {
+  "flights:read"
+  FLIGHTS_READ
+  "flights:hold"
+  FLIGHTS_HOLD
+  "flights:book"
+  FLIGHTS_BOOK
+  "flights:cancel"
+  FLIGHTS_CANCEL
+  "flights:webhooks"
+  FLIGHTS_WEBHOOKS
+  "flights:ops (contrato v2; solo ADMIN)"
+  FLIGHTS_OPS
+  "flights:admin (contrato v2; solo ADMIN)"
+  FLIGHTS_ADMIN
+  "ecoairlines:profile (propio)"
+  ECOAIRLINES_PROFILE
+  "ecoairlines:admin (propio)"
+  ECOAIRLINES_ADMIN
+}
+
+"Códigos del ProblemDetails del contrato v2 y los propios que la web puede recibir."
+enum ProblemCode {
+  VALIDATION_FAILED
+  SEAT_TAKEN
+  AMOUNT_MISMATCH
+  BOOKING_NOT_CONFIRMED
+  BAGGAGE_LIMIT_EXCEEDED
+  CUTOFF_PASSED
+  FARE_NOT_CHANGEABLE
+  FLIGHT_ALREADY_DEPARTED
+  CHANGE_OFFER_EXPIRED
+  OFFER_NO_LONGER_AVAILABLE
+  QUOTE_EXPIRED
+  ALREADY_CANCELLED
+  RATE_LIMIT_EXCEEDED
+  INFANT_SEAT_NOT_ALLOWED
+  PAYMENT_REFERENCE_INVALID
+  PAYMENT_NOT_AUTHORIZED
+  PNR_CREATION_FAILED
+  TICKET_ISSUANCE_FAILED
+  TICKET_ALREADY_ISSUED
+  CHECK_IN_NOT_AVAILABLE
+  CHECK_IN_FAILED
+  BOARDING_PASS_NOT_AVAILABLE
+  SEAT_CABIN_MISMATCH
+  FLIGHT_STATUS_NOT_AVAILABLE
+  "Token ausente o inválido (401)."
+  UNAUTHENTICATED
+  "Scopes insuficientes (403)."
+  FORBIDDEN
+  "Recurso inexistente o ajeno (404)."
+  NOT_FOUND
+  "Error no controlado (500)."
+  INTERNAL_ERROR
+  # --- contrato v2
+  IDEMPOTENCY_KEY_REUSED
+  PROVIDER_UNAVAILABLE
+  HOLD_EXPIRED
+  HOLD_ALREADY_CONSUMED
+  INFANT_WITHOUT_ADULT
+  PASSENGER_COUNT_MISMATCH
+  DOCUMENT_EXPIRED
+  PASSPORT_REQUIRED_INTERNATIONAL
+  BOOKING_NOT_CANCELLABLE
+  FLIGHT_CANCELLED
+  INVALID_STATUS_TRANSITION
+  PROMOTION_DISCOUNT_OUT_OF_RANGE
+  # --- propios de EcoAirlines
+  INVALID_CREDENTIALS
+  ACCOUNT_BLOCKED
+  EMAIL_ALREADY_REGISTERED
+  CANNOT_MODIFY_SELF
+  LAST_ADMIN
+  PARTNER_ALREADY_EXISTS
+  ROUTE_HAS_SOLD_SEATS
+  NOT_ENOUGH_AIRCRAFT
+  AIRCRAFT_IN_SERVICE
+  MULTIPLIER_OUT_OF_RANGE
+}
+
+"Resultado de una mutation que puede completarse de forma síncrona o asíncrona."
+enum OperationOutcome {
+  "Completada (equivale a HTTP 200/201)."
+  COMPLETED
+  "Aceptada y en proceso asíncrono (equivale a HTTP 202)."
+  ACCEPTED
+}
+
+enum CabinClass {
+  ECONOMY
+  PREMIUM_ECONOMY
+  BUSINESS
+  FIRST
+}
+
+enum FlightOperationalStatus {
+  SCHEDULED
+  BOARDING
+  DEPARTED
+  DELAYED
+  ARRIVED
+  CANCELLED
+  DIVERTED
+}
+
+enum SeatCharacteristic {
+  WINDOW
+  AISLE
+  EXTRA_LEGROOM
+  EMERGENCY_EXIT
+}
+
+"Máquina de estados del asiento (contrato v2 §10)."
+enum SeatStatus {
+  AVAILABLE
+  HELD
+  BOOKED
+  TICKETED
+  CHECKED_IN
+  BOARDED
+}
+
+enum HoldStatus {
+  HELD
+  RELEASED
+  EXPIRED
+  CONSUMED
+}
+
+enum PassengerType {
+  ADULT
+  YOUTH
+  CHILD
+  INFANT
+}
+
+enum DocumentType {
+  PASSPORT
+  NATIONAL_ID
+}
+
+enum Gender {
+  M
+  F
+  X
+}
+
+enum BookingStatus {
+  PENDING
+  PENDING_PAYMENT
+  TICKET_ISSUING
+  CONFIRMED
+  FAILED
+  CHANGE_PENDING
+  CANCELLATION_PENDING
+  CANCELLED
+}
+
+enum TicketStatus {
+  PENDING
+  ISSUING
+  ISSUED
+  FAILED
+  VOIDED
+  REFUNDED
+}
+
+enum TicketSegmentStatus {
+  PENDING
+  ISSUED
+  FAILED
+}
+
+enum CheckInStatus {
+  NOT_ELIGIBLE
+  AVAILABLE
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+enum PassengerCheckInStatus {
+  CHECKED_IN
+  NOT_CHECKED_IN
+  FAILED
+}
+
+enum BarcodeType {
+  AZTEC
+  PDF417
+  QR
+}
+
+"Los valores REST llevan puntos (booking.confirmed), inválidos en enums GraphQL; el gateway los traduce."
+enum WebhookEventType {
+  BOOKING_CONFIRMED
+  BOOKING_FAILED
+  BOOKING_CHANGED
+  BOOKING_CANCELLED
+  BOOKING_BAGGAGE_ADDED
+  HOLD_EXPIRED
+  FLIGHT_SCHEDULE_CHANGED
+  FLIGHT_CANCELLED
+  BOOKING_TICKET_ISSUING
+  BOOKING_TICKET_ISSUED
+  BOOKING_TICKET_FAILED
+  BOOKING_CHECKED_IN
+  "hold.created (contrato v2)"
+  HOLD_CREATED
+  "booking.seat_changed (contrato v2)"
+  BOOKING_SEAT_CHANGED
+  "flight.status_changed (contrato v2)"
+  FLIGHT_STATUS_CHANGED
+}
+
+"Asistencia médica o de movilidad (códigos IATA). Dato de salud."
+enum AssistanceType {
+  "Silla de ruedas hasta la puerta"
+  WCHR
+  "No sube escaleras"
+  WCHS
+  "Inmóvil: ayuda hasta el asiento"
+  WCHC
+  "Discapacidad visual"
+  BLND
+  "Discapacidad auditiva"
+  DEAF
+  "Discapacidad intelectual o del desarrollo"
+  DPNA
+  "Caso médico"
+  MEDA
+}
+
+enum AssistanceStatus {
+  REQUESTED
+  READY
+}
+
+enum RoleName {
+  CUSTOMER
+  ADMIN
+}
+
+enum AccountStatus {
+  ACTIVE
+  BLOCKED
+}
+
+"Scopes que puede tener un partner (nunca flights:admin ni ecoairlines:*)."
+enum PartnerScope {
+  FLIGHTS_READ
+  FLIGHTS_HOLD
+  FLIGHTS_BOOK
+  FLIGHTS_CANCEL
+  FLIGHTS_WEBHOOKS
+  FLIGHTS_OPS
+}
+
+enum RefundStatus {
+  CALCULATED
+  SETTLED
+  NOT_REFUNDABLE
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum ServiceState {
+  UP
+  DEGRADED
+  DOWN
+}
+
+# ----------------------------------------------------------------------------------------------------- tipos comunes
+
+type MoneyAmount {
+  currency: CurrencyCode!
+  baseFare: Decimal
+  taxes: Decimal
+  total: Decimal!
+}
+
+type PassengerBreakdown {
+  adults: Int!
+  youths: Int!
+  children: Int!
+  infants: Int!
+}
+
+input PassengerBreakdownInput {
+  adults: Int = 1 @constraint(minimum: 1)
+  youths: Int = 0 @constraint(minimum: 0)
+  children: Int = 0 @constraint(minimum: 0)
+  infants: Int = 0 @constraint(minimum: 0)
+}
+
+"Referencia a un pago autorizado por la Payment API. Este esquema nunca recibe datos de tarjeta."
+input PaymentReferenceInput {
+  "Identificador del pago devuelto por la Payment API (pay_…)."
+  paymentReference: String!
+}
+
+input SeatAssignmentInput {
+  segmentId: String!
+  seatNumber: String!
+}
+
+type SeatAssignment {
+  segmentId: String!
+  seatNumber: String!
+}
+
+# ------------------------------------------------------------------------------------------------- búsqueda y catálogo
+
+input SearchFlightsInput {
+  itineraries: [SearchItineraryInput!]! @constraint(minItems: 1, maxItems: 6)
+  passengers: PassengerBreakdownInput!
+}
+
+input SearchItineraryInput {
+  origin: IataCode!
+  destination: IataCode!
+  departureDate: Date!
+}
+
+type SearchResult {
+  totalOffers: Int!
+  offers: [FlightOffer!]!
+}
+
+type Airline {
+  code: String
+  name: String
+}
+
+type FlightOffer {
+  offerId: String!
+  airline: Airline!
+  itineraries: [ItineraryOption!]!
+  grandTotal: MoneyAmount!
+}
+
+type ItineraryOption {
+  itineraryId: String!
+  totalDurationMinutes: Int!
+  stopsCount: Int!
+  segments: [FlightSegment!]!
+  pricingOptions: [CabinPricing!]!
+}
+
+type FlightSegment {
+  segmentId: String!
+  flightNumber: String!
+  departure: FlightEndpoint!
+  arrival: FlightEndpoint!
+  layoverMinutes: Int
+  "Código IATA de la aerolínea comercial."
+  marketingCarrier: String!
+  "Código IATA de la aerolínea que opera el vuelo."
+  operatingCarrier: String!
+  "Tipo de aeronave, cuando esté disponible."
+  aircraft: String
+  durationMinutes: Int
+  status: FlightOperationalStatus
+}
+
+type FlightEndpoint {
+  iataCode: IataCode!
+  at: DateTime!
+  terminal: String
+}
+
+type CabinPricing {
+  cabinClass: CabinClass!
+  fareBrand: String!
+  "Asientos AVAILABLE (el mismo valor que recibe Booking por gRPC)."
+  availableSeats: Int!
+  fareRules: FareRules!
+  baggageAllowance: BaggageAllowance!
+  extraCheckedBaggagePrice: MoneyAmount
+  pricePerPassengerType: [PassengerTypePrice!]!
+}
+
+type FareRules {
+  isRefundable: Boolean!
+  isChangeable: Boolean!
+}
+
+type BaggageAllowance {
+  personalItemIncluded: Boolean
+  carryOnIncluded: Int
+  checkedBaggageIncluded: Int
+}
+
+type PassengerTypePrice {
+  passengerType: PassengerType
+  price: MoneyAmount
+}
+
+"Mapa de asientos sin precios. Los asientos seleccionables deben corresponder a la cabina adquirida."
+type SeatMap {
+  segmentId: String!
+  cabins: [SeatMapCabin!]!
+}
+
+type SeatMapCabin {
+  cabinClass: CabinClass!
+  rows: [SeatRow!]!
+}
+
+type SeatRow {
+  rowNumber: Int!
+  seats: [Seat!]!
+}
+
+type Seat {
+  seatNumber: String!
+  "Atajo de v1: status == AVAILABLE."
+  isAvailable: Boolean!
+  characteristics: [SeatCharacteristic!]!
+  "Estado del asiento (contrato v2)."
+  status: SeatStatus!
+}
+
+# ---------------------------------------------------------------------------------------------------------------- hold
+
+input HoldInput {
+  offerId: String!
+  itinerarySelections: [ItinerarySelectionInput!]! @constraint(minItems: 1)
+  passengersBreakdown: PassengerBreakdownInput!
+  "Minutos que vive el hold (contrato v2)."
+  ttlMinutes: Int = 15 @constraint(minimum: 5, maximum: 30)
+}
+
+input ItinerarySelectionInput {
+  itineraryId: String!
+  cabinClass: CabinClass!
+  fareBrand: String!
+}
+
+"Unifica HoldResponse y HoldStatusResponse del contrato REST."
+type Hold {
+  holdId: UUID!
+  status: HoldStatus!
+  expiresAt: DateTime!
+  ttlMinutes: Int
+  remainingSeconds: Int!
+  lockedPrice: MoneyAmount!
+}
+
+type ReleaseHoldPayload {
+  holdId: UUID!
+  status: HoldStatus!
+}
+
+# ------------------------------------------------------------------------------------------------- reservas y emisión
+
+input CreateBookingInput {
+  holdId: UUID!
+  passengers: [PassengerInput!]! @constraint(minItems: 1, maxItems: 9)
+  payment: PaymentReferenceInput!
+  "Asistencia médica por pasajero (opcional; propia de EcoAirlines)."
+  assistance: [PassengerAssistanceInput!]
+}
+
+input PassengerInput {
+  passengerId: String!
+  passengerType: PassengerType!
+  "Obligatorio cuando passengerType = INFANT."
+  associatedAdultId: String
+  firstName: String!
+  lastName: String!
+  documentType: DocumentType!
+  documentNumber: String!
+  nationality: String!
+  documentExpiryDate: Date
+  birthDate: Date!
+  gender: Gender!
+  contact: ContactInput!
+  "Un INFANT no puede tener asientos asignados (INFANT_SEAT_NOT_ALLOWED)."
+  assignedSeats: [SeatAssignmentInput!]
+  extraBaggage: [ExtraBaggageInput!]
+}
+
+input ContactInput {
+  email: String!
+  phone: String!
+}
+
+input ExtraBaggageInput {
+  itineraryId: String!
+  quantity: Int! @constraint(minimum: 1)
+}
+
+type Passenger {
+  passengerId: String!
+  passengerType: PassengerType!
+  associatedAdultId: String
+  firstName: String!
+  lastName: String!
+  documentType: DocumentType!
+  documentNumber: String!
+  nationality: String!
+  documentExpiryDate: Date
+  birthDate: Date!
+  gender: Gender!
+  contact: Contact!
+  assignedSeats: [SeatAssignment!]!
+  extraBaggage: [ExtraBaggage!]!
+}
+
+type Contact {
+  email: String!
+  phone: String!
+}
+
+type ExtraBaggage {
+  itineraryId: String!
+  quantity: Int!
+}
+
+input BookingFilterInput {
+  pnr: String
+  status: BookingStatus
+  createdFrom: Date
+  createdTo: Date
+}
+
+type BookingPage {
+  "Cursor para la siguiente página; null cuando no hay más resultados."
+  nextCursor: String
+  items: [BookingSummary!]!
+}
+
+type BookingSummary {
+  bookingId: UUID!
+  pnr: String!
+  status: BookingStatus!
+  origin: IataCode
+  destination: IataCode
+  departureDate: Date
+  grandTotal: MoneyAmount!
+  "Navegación al detalle completo (misma validación de propiedad)."
+  booking: Booking!
+}
+
+"Detalle completo de la reserva. Nunca expone el ownerId ni el canal."
+type Booking {
+  bookingId: UUID!
+  pnr: String!
+  status: BookingStatus!
+  grandTotal: MoneyAmount!
+  createdAt: DateTime!
+  updatedAt: DateTime
+  itineraries: [ItineraryOption!]!
+  passengers: [Passenger!]!
+  changes: [BookingChange!]!
+
+  # ----- campos resueltos por otras operaciones (sub-recursos REST) -----
+  "→ MS.Reservas listTickets"
+  tickets: [Ticket!]! @auth(scopes: [FLIGHTS_READ])
+  "→ MS.Reservas getTicket (NOT_FOUND si no existe)"
+  ticket(ticketId: String!): Ticket! @auth(scopes: [FLIGHTS_READ])
+  "→ MS.Postventa getBaggageOptions"
+  baggageOptions: [BaggageOption!]! @auth(scopes: [FLIGHTS_READ])
+  "→ MS.Postventa getCancellationQuote (genera una cotización nueva en cada resolución)"
+  cancellationQuote: CancellationQuote! @auth(scopes: [FLIGHTS_READ])
+  "→ MS.Reservas listBoardingPasses"
+  boardingPasses: [BoardingPass!]! @auth(scopes: [FLIGHTS_READ])
+  "Asistencia médica de los pasajeros (dato de salud). → MS.Reservas listAssistance"
+  assistance: [PassengerAssistance!]! @auth(scopes: [FLIGHTS_READ])
+  "Reembolsos de la reserva (si se canceló). → MS.Reservas listRefunds"
+  refunds: [Refund!]! @auth(scopes: [FLIGHTS_READ])
+}
+
+type BookingChange {
+  changedAt: DateTime!
+  description: String
+}
+
+type CreateBookingPayload {
+  "COMPLETED = reserva creada y boletos emitidos (201); ACCEPTED = emisión en curso, TICKET_ISSUING (202)."
+  outcome: OperationOutcome!
+  booking: Booking!
+}
+
+type Ticket {
+  ticketId: String!
+  bookingId: UUID!
+  passengerId: String!
+  passengerName: String
+  eTicketNumber: String
+  status: TicketStatus!
+  issuedAt: DateTime
+  segments: [TicketSegment!]!
+  failureReason: String
+}
+
+type TicketSegment {
+  segmentId: String!
+  status: TicketSegmentStatus!
+  couponNumber: String
+  flightNumber: String
+  departureIataCode: IataCode
+  arrivalIataCode: IataCode
+  departureAt: DateTime
+  arrivalAt: DateTime
+  seatNumber: String
+}
+
+"Resultado de emitir boletos (contrato v2, TicketIssuanceResponse)."
+type TicketIssuance {
+  bookingId: UUID!
+  pnr: String!
+  status: BookingStatus!
+  tickets: [Ticket!]!
+  "Boletos emitidos en esta llamada (0 si ya estaban todos)."
+  issued: Int!
+}
+
+# --------------------------------------------------------------------------------------------------- asientos (v2)
+
+input ChangeSeatsInput {
+  seats: [SeatChangeItemInput!]! @constraint(minItems: 1)
+  "Requerido si el cambio tiene costo (paymentReference autorizado por la Payment API)."
+  payment: PaymentReferenceInput
+}
+
+input SeatChangeItemInput {
+  passengerId: String!
+  segmentId: String!
+  seatNumber: String!
+}
+
+type SeatChangeResult {
+  bookingId: UUID!
+  seats: [ChangedSeat!]!
+  amountCharged: MoneyAmount
+}
+
+type ChangedSeat {
+  passengerId: String!
+  segmentId: String!
+  previousSeatNumber: String
+  seatNumber: String!
+  status: SeatStatus!
+}
+
+# ---------------------------------------------------------------------------------------------- asistencia (propia)
+
+input AssistanceInput {
+  type: AssistanceType!
+  needsCompanion: Boolean = false
+  notes: String @constraint(pattern: "^.{0,200}$")
+}
+
+input PassengerAssistanceInput {
+  passengerId: String!
+  type: AssistanceType!
+  needsCompanion: Boolean = false
+  notes: String @constraint(pattern: "^.{0,200}$")
+}
+
+type PassengerAssistance {
+  passengerId: String!
+  type: AssistanceType!
+  needsCompanion: Boolean!
+  notes: String
+  status: AssistanceStatus!
+  updatedAt: DateTime!
+}
+
+# --------------------------------------------------------------------------------------------------- postventa: maletas
+
+type BaggageOption {
+  passengerId: String!
+  itineraryId: String!
+  price: MoneyAmount!
+  maxAllowed: Int!
+  alreadyPurchased: Int!
+}
+
+input AddBaggageInput {
+  passengerId: String!
+  itineraryId: String!
+  quantity: Int! @constraint(minimum: 1)
+  payment: PaymentReferenceInput!
+}
+
+type BaggageAdded {
+  passengerId: String!
+  itineraryId: String!
+  totalBaggage: Int!
+}
+
+type AddBaggagePayload {
+  "COMPLETED = maleta agregada (200); ACCEPTED = en proceso (202)."
+  outcome: OperationOutcome!
+  "Presente cuando outcome = COMPLETED."
+  baggage: BaggageAdded
+}
+
+# --------------------------------------------------------------------------------------------- postventa: cambio de fecha
+
+input DateChangeSearchInput {
+  changes: [DateChangeItemInput!]! @constraint(minItems: 1)
+}
+
+input DateChangeItemInput {
+  itineraryId: String!
+  newDepartureDate: Date!
+}
+
+type DateChangeOption {
+  changeOfferId: String!
+  expiresAt: DateTime!
+  segments: [FlightSegment!]!
+  priceDifference: PriceDifference!
+}
+
+type PriceDifference {
+  fareDifference: Decimal!
+  taxDifference: Decimal!
+  changeFee: Decimal!
+  totalToPay: Decimal!
+}
+
+input ConfirmDateChangeInput {
+  changeOfferId: String!
+  "Requerido cuando priceDifference.totalToPay > 0."
+  payment: PaymentReferenceInput
+  assignedSeats: [SeatAssignmentInput!]
+}
+
+type ConfirmDateChangePayload {
+  "COMPLETED = cambio confirmado (200); ACCEPTED = CHANGE_PENDING (202)."
+  outcome: OperationOutcome!
+  booking: Booking!
+}
+
+# ------------------------------------------------------------------------------------------------ postventa: cancelación
+
+type CancellationQuote {
+  quoteId: String!
+  isRefundable: Boolean!
+  refundAmount: Decimal!
+  penaltyAmount: Decimal!
+  currency: CurrencyCode!
+  expiresAt: DateTime!
+}
+
+input CancelBookingInput {
+  quoteId: String!
+  reason: String
+}
+
+type CancelBookingPayload {
+  "COMPLETED = cancelada (200); ACCEPTED = CANCELLATION_PENDING (202)."
+  outcome: OperationOutcome!
+  bookingId: UUID!
+  status: BookingStatus!
+  "Reembolso (contrato v2). En la web se ejecuta en la Payment API: SETTLED."
+  refund: Refund
+  ticketsVoided: [String!]
+  "Asientos devueltos a AVAILABLE."
+  seatsReleased: Int
+}
+
+type Refund {
+  refundId: String!
+  amount: Decimal!
+  penaltyAmount: Decimal!
+  currency: CurrencyCode!
+  percentage: Float
+  status: RefundStatus!
+}
+
+# ------------------------------------------------------------------------------------------- check-in y boarding pass
+
+type CheckInResult {
+  bookingId: UUID!
+  status: CheckInStatus!
+  checkedInPassengers: [PassengerCheckIn!]!
+}
+
+type PassengerCheckIn {
+  passengerId: String!
+  status: PassengerCheckInStatus!
+  segments: [SegmentCheckIn!]!
+}
+
+type SegmentCheckIn {
+  segmentId: String!
+  seat: String
+  status: PassengerCheckInStatus!
+}
+
+type BoardingPass {
+  passengerId: String!
+  segmentId: String!
+  seat: String!
+  boardingGroup: String
+  boardingPosition: String
+  barcode: String!
+  barcodeType: BarcodeType!
+  "Puerta vigente (contrato v2)."
+  gate: String
+}
+
+# ---------------------------------------------------------------------------------------------------- estado de vuelos
+
+type FlightStatus {
+  flightNumber: String!
+  date: Date!
+  marketingCarrier: String!
+  operatingCarrier: String!
+  departure: FlightStatusEndpoint!
+  arrival: FlightStatusEndpoint!
+  aircraft: String
+  status: FlightOperationalStatus!
+  "Contrato v2."
+  delayMinutes: Int
+  updatedAt: DateTime
+}
+
+type FlightStatusEndpoint {
+  iataCode: IataCode!
+  terminal: String
+  scheduledAt: DateTime!
+  estimatedAt: DateTime
+  actualAt: DateTime
+  "Contrato v2."
+  gate: String
+}
+
+"FlightStatusUpdateRequest del contrato v2."
+input FlightStatusUpdateInput {
+  date: Date!
+  status: FlightOperationalStatus!
+  estimatedDepartureAt: DateTime
+  estimatedArrivalAt: DateTime
+  departureGate: String
+  "Obligatorio si status = CANCELLED."
+  reason: String
+}
+
+type FlightStatusUpdate {
+  previousStatus: FlightOperationalStatus!
+  flight: FlightStatus!
+  "Reservas afectadas (si se cancela, cada una se cancela con reembolso, D37)."
+  affectedBookings: Int!
+  eventId: String
+}
+
+# -------------------------------------------------------------------------------------------------- operaciones (v2)
+
+type FlightOperationsPage {
+  date: Date!
+  totalFlights: Int!
+  nextCursor: String
+  items: [FlightOperation!]!
+}
+
+type FlightOperation {
+  flightNumber: String!
+  date: Date!
+  origin: IataCode!
+  destination: IataCode!
+  departureAt: DateTime!
+  status: FlightOperationalStatus!
+  aircraft: String
+  totalSeats: Int!
+  "Porcentaje de asientos que no están AVAILABLE."
+  loadFactor: Float!
+  cabins: [CabinOccupancy!]!
+  activeHolds: Int!
+  nextHoldExpiryAt: DateTime
+  checkInOpen: Boolean!
+  alerts: [OperationAlert!]!
+}
+
+type CabinOccupancy {
+  cabinClass: CabinClass!
+  totalSeats: Int!
+  seatsByStatus: SeatsByStatus!
+}
+
+type SeatsByStatus {
+  available: Int!
+  held: Int!
+  booked: Int!
+  ticketed: Int!
+  checkedIn: Int!
+  boarded: Int!
+}
+
+type OperationAlert {
+  code: String!
+  severity: AlertSeverity!
+  message: String!
+}
+
+# ------------------------------------------------------------------------------------------------------------ webhooks
+
+input RegisterWebhookInput {
+  url: URL!
+  events: [WebhookEventType!]! @constraint(minItems: 1)
+  "Secreto (mínimo 16 caracteres) para firmar cada entrega con HMAC-SHA256."
+  secret: String!
+}
+
+type WebhookSubscription {
+  id: UUID!
+  url: URL!
+  events: [WebhookEventType!]!
+  "Enmascarado (••••1234): solo los últimos 4 caracteres. En el contrato v2 (REST, Booking) el secreto es writeOnly y no se devuelve."
+  secret: String!
+  active: Boolean
+  createdAt: DateTime
+}
+
+type DeleteWebhookPayload {
+  id: UUID!
+  deleted: Boolean!
+}
+
+"Evento de una reserva del usuario (forma del WebhookPayload; los datos del CloudEvent del contrato v2)."
+type WebhookEvent {
+  eventId: String!
+  eventType: WebhookEventType!
+  occurredAt: DateTime!
+  apiVersion: String!
+  data: WebhookEventData!
+  "X-Correlation-Id del proceso que originó el evento (contrato v2)."
+  correlationId: String
+}
+
+type WebhookEventData {
+  bookingId: UUID
+  pnr: String
+  status: BookingStatus
+  refundAmount: Decimal
+}
+
+# ------------------------------------------------------------------------------------------- autenticación y perfil
+
+input RegisterInput {
+  fullName: String! @constraint(pattern: "^.{1,80}$")
+  email: String!
+  password: String! @constraint(pattern: "^.{8,128}$")
+}
+
+input LoginInput {
+  email: String!
+  password: String!
+}
+
+type AuthPayload {
+  "Token de usuario (RS256). La web lo guarda solo en memoria."
+  accessToken: String!
+  expiresIn: Int!
+  user: CurrentUser!
+}
+
+type CurrentUser {
+  sub: UUID!
+  fullName: String!
+  email: String!
+  role: RoleName!
+  scopes: [Scope!]!
+}
+
+input CustomerProfileInput {
+  firstName: String!
+  lastName: String!
+  documentType: DocumentType!
+  documentNumber: String!
+  nationality: String! @constraint(pattern: "^[A-Z]{2}$")
+  documentExpiryDate: Date
+  birthDate: Date!
+  gender: Gender!
+  contact: ContactInput!
+  defaultAssistance: AssistanceInput
+}
+
+type CustomerProfile {
+  firstName: String!
+  lastName: String!
+  documentType: DocumentType!
+  documentNumber: String!
+  nationality: String!
+  documentExpiryDate: Date
+  birthDate: Date!
+  gender: Gender!
+  contact: Contact!
+  defaultAssistance: DefaultAssistance
+  updatedAt: DateTime!
+}
+
+type DefaultAssistance {
+  type: AssistanceType!
+  needsCompanion: Boolean!
+  notes: String
+}
+
+# ------------------------------------------------------------------------------------ administración: usuarios y partners
+
+input UserFilterInput {
+  q: String
+  role: RoleName
+  status: AccountStatus
+}
+
+type UserPage {
+  items: [User!]!
+  nextCursor: String
+}
+
+type User {
+  sub: UUID!
+  email: String!
+  fullName: String!
+  role: RoleName!
+  status: AccountStatus!
+  createdAt: DateTime!
+  createdBy: UUID
+  updatedAt: DateTime
+  lastLoginAt: DateTime
+}
+
+type Role {
+  name: RoleName!
+  displayName: String!
+  description: String
+  scopes: [String!]!
+}
+
+input CreateUserInput {
+  fullName: String!
+  email: String!
+  password: String! @constraint(pattern: "^.{8,128}$")
+  role: RoleName!
+}
+
+input ChangeStatusInput {
+  status: AccountStatus!
+  reason: String @constraint(pattern: "^.{0,200}$")
+}
+
+input CreatePartnerInput {
+  clientId: String! @constraint(pattern: "^[A-Z][A-Z0-9_]{2,39}$")
+  name: String!
+  "Si no llega, recibe todos los PartnerScope."
+  scopes: [PartnerScope!]
+}
+
+type Partner {
+  clientId: String!
+  name: String!
+  scopes: [PartnerScope!]!
+  status: AccountStatus!
+  createdAt: DateTime!
+  secretRotatedAt: DateTime
+  "Última vez que pidió un token: indica si Booking está conectado."
+  lastTokenAt: DateTime
+}
+
+type PartnerWithSecret {
+  partner: Partner!
+  "Se muestra UNA sola vez: copiarlo y entregarlo al partner por un canal privado."
+  clientSecret: String!
+}
+
+# ----------------------------------------------------------------------------------- administración: precios y promociones
+
+type FarePrice {
+  cabinClass: CabinClass!
+  fareBrand: String!
+  multiplier: Float!
+}
+
+type FareClassPrice {
+  cabinClass: CabinClass!
+  fareBrand: String!
+  referenceMultiplier: Float!
+  multiplier: Float!
+  updatedAt: DateTime!
+  updatedBy: UUID
+}
+
+"Acuerdo B2B de promociones (ContratoPromociones del contrato v2, en camelCase)."
+type PromotionAgreement {
+  partnerId: String!
+  allowsPromotions: Boolean!
+  "0–50 % (D35)."
+  maxDiscountPercentage: Float!
+  enabledDestinations: [String!]!
+  enabledRoutes: [String!]!
+  enabledCabins: [CabinClass!]!
+  validUntil: Date
+  comboConditions: String
+  updatedAt: DateTime
+}
+
+type PricesView {
+  prices: [FareClassPrice!]!
+  updatedAt: DateTime!
+  promotions: [PromotionAgreement!]!
+}
+
+input FarePriceInput {
+  cabinClass: CabinClass!
+  fareBrand: String!
+  "0,5–10."
+  multiplier: Float!
+}
+
+input PromotionAgreementInput {
+  partnerId: String!
+  allowsPromotions: Boolean!
+  maxDiscountPercentage: Float!
+  enabledDestinations: [String!]
+  enabledRoutes: [String!]
+  enabledCabins: [CabinClass!]
+  validUntil: Date
+  comboConditions: String
+}
+
+"Un solo «Guardar» de la pantalla: precios que cambian y, opcionalmente, el acuerdo de promociones."
+input SavePricesInput {
+  prices: [FarePriceInput!]
+  promotion: PromotionAgreementInput
+}
+
+type PriceChange {
+  id: UUID!
+  cabinClass: CabinClass!
+  fareBrand: String!
+  oldMultiplier: Float!
+  newMultiplier: Float!
+  changedBy: UUID!
+  changedAt: DateTime!
+}
+
+type PriceChangePage {
+  items: [PriceChange!]!
+  nextCursor: String
+}
+
+# ------------------------------------------------------------------------------------- administración: rutas y flota
+
+enum Weekday {
+  SUN
+  MON
+  TUE
+  WED
+  THU
+  FRI
+  SAT
+}
+
+input ScheduledRouteInput {
+  origin: IataCode!
+  destination: IataCode!
+  "HH:mm local en el origen."
+  outboundDepartureLocal: String! @constraint(pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$")
+  "HH:mm local en el destino."
+  inboundDepartureLocal: String! @constraint(pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$")
+  weekdays: [Weekday!]! @constraint(minItems: 1, maxItems: 7)
+  aircraftType: String
+  aircraft: [String!]
+}
+
+type RouteLeg {
+  flightNumber: String!
+  origin: IataCode!
+  destination: IataCode!
+  departureLocal: String!
+  arrivalLocal: String!
+  arrivalDayOffset: Int!
+}
+
+type ScheduledRoute {
+  routeId: String!
+  origin: IataCode!
+  destination: IataCode!
+  outbound: RouteLeg!
+  inbound: RouteLeg!
+  weekdays: [Weekday!]!
+  aircraftType: String!
+  aircraft: [String!]!
+  distanceKm: Int!
+  durationMinutes: Int!
+  source: String!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+input AircraftInput {
+  aircraftType: String!
+  base: IataCode!
+}
+
+type Aircraft {
+  registration: String!
+  aircraftType: String!
+  base: IataCode!
+  "IN_SERVICE o AVAILABLE."
+  status: String!
+  routes: [String!]!
+  totalSeats: Int!
+  source: String!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+type CabinSeats {
+  cabinClass: CabinClass!
+  seats: Int!
+}
+
+type AircraftTypeInfo {
+  aircraftType: String!
+  registrationPrefix: String!
+  seats: [CabinSeats!]!
+  totalSeats: Int!
+  maxRouteKm: Int
+  turnaroundMinutes: Int!
+  inFleet: Int!
+}
+
+type FleetFlight {
+  flightNumber: String!
+  date: Date!
+  routeId: String!
+  origin: IataCode!
+  destination: IataCode!
+  departureAt: DateTime!
+  arrivalAt: DateTime!
+}
+
+type FleetAircraftDay {
+  registration: String!
+  aircraftType: String!
+  base: IataCode!
+  flights: [FleetFlight!]!
+}
+
+type FleetSchedule {
+  date: Date!
+  totalFlights: Int!
+  aircraft: [FleetAircraftDay!]!
+}
+
+# ----------------------------------------------------------------------------- administración: asistencia e indicadores
+
+type FlightAssistanceItem {
+  bookingId: UUID!
+  pnr: String!
+  passengerId: String!
+  passengerName: String!
+  segmentId: String!
+  seatNumber: String
+  assistance: PassengerAssistance!
+}
+
+input AssistanceReadyInput {
+  passengerId: String!
+  segmentId: String!
+  ready: Boolean!
+}
+
+type RouteSales {
+  origin: IataCode!
+  destination: IataCode!
+  bookings: Int!
+  revenue: Decimal!
+}
+
+type ChannelCount {
+  web: Int!
+  booking: Int!
+}
+
+type AdminIndicators {
+  generatedAt: DateTime!
+  totalBookings: Int!
+  bookingsByChannel: ChannelCount!
+  totalPassengers: Int!
+  revenue: MoneyAmount!
+  refundsCalculated: MoneyAmount
+  byRoute: [RouteSales!]!
+  usersTotal: Int!
+  customers: Int!
+  admins: Int!
+  flightsToday: Int!
+}
+
+# ------------------------------------------------------------------------------------------ administración: eventos
+
+type EventDelivery {
+  subscriptionId: UUID!
+  target: String
+  outcome: String!
+  httpStatus: Int
+  attempts: Int!
+  nextRetryAt: DateTime
+}
+
+type EventHistoryItem {
+  seq: Int!
+  id: String!
+  type: String!
+  subject: String
+  time: DateTime!
+  correlationId: String
+  "true si puede salir a Booking."
+  public: Boolean!
+  "null en los eventos con datos de salud."
+  data: JSON
+  deliveries: [EventDelivery!]!
+}
+
+type EventHistoryPage {
+  items: [EventHistoryItem!]!
+  nextCursor: String
+}
+
+# ------------------------------------------------------------------------------------------ administración: telemetría
+
+type Telemetry {
+  "→ MS.Admin getServicesHealth"
+  services: [ServiceHealth!]!
+  "→ MS.Admin getLatency"
+  latency(from: DateTime, to: DateTime): [ServiceLatency!]!
+  "Todo lo que generó un proceso, por su X-Correlation-Id. → MS.Admin getCorrelationTrace"
+  trace(correlationId: String!): CorrelationTrace
+  "→ MS.Admin getQueues"
+  queues: [QueueStats!]!
+  "→ MS.Admin getAlerts"
+  alerts: [Alert!]!
+  "→ MS.Admin getBookingIntegration"
+  bookingIntegration: BookingIntegration!
+}
+
+type ServiceHealth {
+  service: String!
+  status: ServiceState!
+  latencyMs: Int
+  version: String
+  checkedAt: DateTime!
+}
+
+type ServiceLatency {
+  service: String!
+  p50Ms: Float!
+  p95Ms: Float!
+  p99Ms: Float!
+  requests: Int!
+  errorRate: Float!
+}
+
+type TraceStep {
+  timestamp: DateTime!
+  service: String!
+  operation: String!
+  status: String!
+  latencyMs: Int!
+  requestId: String
+  traceId: String
+}
+
+type SagaSummary {
+  sagaId: String!
+  type: String!
+  status: String!
+}
+
+type CorrelationTrace {
+  correlationId: String!
+  steps: [TraceStep!]!
+  sagas: [SagaSummary!]!
+  events: [EventHistoryItem!]!
+}
+
+type QueueStats {
+  queue: String!
+  messages: Int!
+  consumers: Int!
+  deadLetters: Int
+}
+
+type Alert {
+  id: String!
+  rule: String!
+  severity: AlertSeverity!
+  service: String
+  message: String
+  startedAt: DateTime!
+}
+
+type DeliveryStats {
+  subscriptions: Int!
+  pending: Int!
+  retrying: Int!
+  exhaustedLast24h: Int!
+  deliveredLast24h: Int!
+  lastDeliveredAt: DateTime
+}
+
+type BookingIntegration {
+  partnerId: String!
+  lastTokenAt: DateTime
+  webhooks: DeliveryStats!
+  lastStockPushAt: DateTime
+  pendingStockPushes: Int!
+  lastInboundEventAt: DateTime
+}

@@ -1,5 +1,5 @@
-// Tipos de `contract/vuelos-openapi.yaml`. El frontend solo consume estos schemas:
-// no agrega ni espera campos que el contrato no define.
+// Tipos de los datos que la web pide al GraphQL del gateway (`contract/gateway.graphql`, que conserva los schemas del contrato
+// de Vuelos). Solo declaran los campos que piden las consultas de `operations.ts` y `admin.ts`.
 
 export type CabinClass = 'ECONOMY' | 'PREMIUM_ECONOMY' | 'BUSINESS' | 'FIRST';
 export type PassengerType = 'ADULT' | 'YOUTH' | 'CHILD' | 'INFANT';
@@ -144,22 +144,43 @@ export interface PaymentReference {
   paymentReference: string;
 }
 
+export type AssistanceType = 'WCHR' | 'WCHS' | 'WCHC' | 'BLND' | 'DEAF' | 'DPNA' | 'MEDA';
+
+/** Asistencia médica o de movilidad. Dato de salud: nunca se registra ni se guarda en el navegador. */
+export interface AssistanceInput {
+  type: AssistanceType;
+  needsCompanion: boolean;
+  notes?: string | null;
+}
+
+export interface PassengerAssistance extends AssistanceInput {
+  passengerId: string;
+  status: 'REQUESTED' | 'READY';
+  updatedAt: string;
+}
+
 export interface BookingRequest {
   holdId: string;
   passengers: PassengerItem[];
   payment: PaymentReference;
+  assistance?: (AssistanceInput & { passengerId: string })[];
 }
 
 export interface TicketSegment {
   segmentId: string;
   status: 'PENDING' | 'ISSUED' | 'FAILED';
   couponNumber?: string | null;
+  flightNumber?: string | null;
+  departureIataCode?: string | null;
+  arrivalIataCode?: string | null;
+  seatNumber?: string | null;
 }
 
 export interface Ticket {
   ticketId: string;
   bookingId: string;
   passengerId: string;
+  passengerName?: string | null;
   eTicketNumber?: string | null;
   status: 'PENDING' | 'ISSUING' | 'ISSUED' | 'FAILED' | 'VOIDED' | 'REFUNDED';
   issuedAt?: string | null;
@@ -263,6 +284,7 @@ export interface BoardingPass {
   boardingPosition?: string | null;
   barcode: string;
   barcodeType: 'AZTEC' | 'PDF417' | 'QR';
+  gate?: string | null;
 }
 
 export interface BoardingPassListResponse {
@@ -287,4 +309,33 @@ export interface FlightStatus {
   arrival: FlightStatusEndpoint;
   aircraft?: string | null;
   status: FlightOperationalStatus;
+  delayMinutes?: number | null;
+}
+
+export interface SeatChangeItem {
+  passengerId: string;
+  segmentId: string;
+  seatNumber: string;
+}
+
+export interface SeatChangeResult {
+  bookingId: string;
+  seats: (SeatChangeItem & { previousSeatNumber?: string | null; status: string })[];
+}
+
+export interface CustomerProfileRequest {
+  firstName: string;
+  lastName: string;
+  documentType: 'PASSPORT' | 'NATIONAL_ID';
+  documentNumber: string;
+  nationality: string;
+  documentExpiryDate?: string | null;
+  birthDate: string;
+  gender: 'M' | 'F' | 'X';
+  contact: { email: string; phone: string };
+  defaultAssistance?: AssistanceInput | null;
+}
+
+export interface CustomerProfile extends CustomerProfileRequest {
+  updatedAt: string;
 }

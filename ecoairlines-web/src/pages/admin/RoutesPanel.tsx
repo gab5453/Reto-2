@@ -10,7 +10,7 @@ import {
   type ScheduledRoute,
   type ScheduledRouteRequest,
   type WeekdayCode,
-} from '../../api/extensions';
+} from '../../api/admin';
 import { useAuth } from '../../auth/AuthContext';
 import { ProblemAlert } from '../../components/ProblemAlert';
 import { AIRPORTS } from '../../data/airports';
@@ -311,13 +311,11 @@ export function RoutesPanel({ onChanged }: { onChanged?: () => void }) {
                 <th scope="col">Vuelta</th>
                 <th scope="col">Días</th>
                 <th scope="col">Avión</th>
-                <th scope="col">Cupos vendidos</th>
                 <th scope="col">Acciones</th>
               </tr>
             </thead>
             <tbody>
               {sorted.map((route) => {
-                const locked = route.customerSeats > 0;
                 return (
                   <tr key={route.routeId} className={route.source === 'ADMIN' ? 'row-highlight' : undefined}>
                     <td>
@@ -334,13 +332,12 @@ export function RoutesPanel({ onChanged }: { onChanged?: () => void }) {
                     </td>
                     <td className="small">{daysLabel(route.weekdays)}</td>
                     <td className="small">{route.aircraftType}<br /><span className="muted">{route.aircraft.join(', ')}</span></td>
-                    <td>{route.customerSeats}</td>
                     <td>
                       <div className="row-actions">
-                        <button type="button" className="btn btn-ghost btn-sm" disabled={locked} title={locked ? 'Tiene pasajeros: use el estado operativo del vuelo' : undefined} onClick={() => startEdit(route)}>
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => startEdit(route)}>
                           Editar
                         </button>
-                        <button type="button" className="btn btn-ghost btn-sm" disabled={locked} title={locked ? 'Tiene pasajeros: use el estado operativo del vuelo' : undefined} onClick={() => void remove(route)}>
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void remove(route)}>
                           Dar de baja
                         </button>
                       </div>

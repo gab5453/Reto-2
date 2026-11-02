@@ -1,0 +1,1904 @@
+# =====================================================================================================================
+# GENERADO por contract/tools/generar_events_asyncapi.py — no editar a mano: cambie el generador y vuelva a ejecutarlo.
+# =====================================================================================================================
+asyncapi: 3.0.0
+info:
+  title: EcoAirlines — eventos (bus interno, webhooks a Booking y eventos de Booking)
+  version: 1.0.0
+  description: "Contrato de **eventos** de EcoAirlines (Reto 2). Documenta el bus interno, lo que sale hacia Booking Prototipo y lo\
+    \ que llega\ndesde Booking. Decisiones D4, D33, D34, D37, D40 y D41 de `PLAN/PLAN.md`; contrato de Vuelos v2, §8.\n\n### Formato:\
+    \ CloudEvents 1.0 (contrato v2 §8)\nTodos los mensajes son CloudEvents en modo estructurado (`application/cloudevents+json`): `specversion`,\
+    \ `type`, `source =\n/aerolineas/ecoairlines/vuelos`, `id` (único, para deduplicar), `time`, `subject` (bookingId, holdId o vuelo/fecha),\n\
+    `correlationid` (el `X-Correlation-Id` del proceso que lo originó, **sin cambios**) y `data`.\n- `type` **público**: `ec.edu.epn.booking.vuelos.<evento>`\
+    \ (los define el contrato del grupo; sus schemas se referencian).\n- `type` **interno**: `ec.ecoairlines.internal.<evento>` (nunca\
+    \ sale de EcoAirlines).\n\n### Bus interno — RabbitMQ (D8)\n- Exchange `ecoairlines.events`, tipo **topic**, durable. **Routing\
+    \ key = nombre corto** del evento (`booking.confirmed`).\n- Propiedades AMQP: `message_id` = `id` del CloudEvent, `correlation_id`\
+    \ = `correlationid`, `content_type` =\n  `application/cloudevents+json`, `delivery_mode` = 2 (persistente); cabecera `x-request-id`.\n\
+    - Cada productor publica desde su **outbox** (ESB y MS.G.Offers): el evento se guarda en la misma transacción que el cambio (en\
+    \ el\n  ESB, en el mismo paso de la saga) y un relé lo envía después con **confirmación del broker**, así no se pierden ni se publican\n\
+    \  eventos de cambios que no se guardaron. Entrega \"al menos una vez\": un evento puede repetirse (la réplica se cayó entre\n \
+    \ publicar y marcar), por eso los consumidores son **idempotentes** y deduplican por `id`.\n- **Reintentos y cola de fallidos**\
+    \ (por cada cola de consumidor `<cola>`): si el consumidor falla, el mensaje espera en\n  `<cola>.retry.1s`, `.5s`, `.30s` y `.2m`\
+    \ (colas con TTL fijo cuyo *dead letter* lo devuelve SOLO a `<cola>`, sin duplicarlo en\n  los otros consumidores) con la cabecera\
+    \ `x-attempts`. Al **5.º intento** fallido va al exchange `ecoairlines.dlx` (*direct*,\n  routing key = `<cola>`) y queda en `<cola>.dlq`\
+    \ con `x-last-error`, `x-original-routing-key` y `x-failed-at`; el consumidor\n  escribe una línea de ALERTA (la alerta de la plataforma\
+    \ de observabilidad llega en V2.16). Un mensaje ilegible va directo a\n  `<cola>.dlq`.\n\n| Cola | Enlaces (routing keys) | Consumidor\
+    \ |\n|------|------------------------|------------|\n| `webhooks.events` (+ `.retry.*`, `.dlq`) | `#` (todo) | MS.G.Webhooks: guarda\
+    \ el historial y entrega los **públicos** a los suscriptores |\n| `flight-status.schedule` (+ `.retry.*`, `.dlq`) | `schedule.published`\
+    \ | MS.G.FlightStatus: proyección `scheduled_flights` (D4) |\n| `esb.deferred` ← `esb.deferred.wait.<demora>` (TTL + DLX) | — (cola\
+    \ directa) | ESB: retoma una saga pendiente en el momento de su reintento (2 s, 10 s, 30 s, 2 min, 10 min, 30 min). Es un acelerador:\
+    \ si RabbitMQ no está, el ESB la encuentra igual en `saga_log` |\n\n### Hacia Booking\n1. **Webhooks** (obligatorio): MS.G.Webhooks\
+    \ hace `POST` a la URL de cada suscripción con el CloudEvent, firmado con\n   `X-Webhook-Signature: sha256=<HMAC-SHA256(secret,\
+    \ cuerpo)>`; reintentos a 1 min, 5 min, 30 min, 2 h y 6 h. Solo eventos\n   **públicos**, y de `booking.*` / `hold.*` solo los **del\
+    \ canal del partner** (D40). Respaldo: `GET /vuelos/eventos`.\n2. **Stock** (obligatorio): no es un evento de este contrato; MS.G.Offers\
+    \ llama por gRPC a `PushStockUpdate`\n   (`booking-inventory.proto`, D33).\n3. **Puente al bus del ecosistema** (opcional, si el\
+    \ grupo lo pide): el ESB republica los públicos en el exchange\n   `booking.events` con routing key `vuelos.<evento>`.\n\n### Desde\
+    \ Booking (hallazgo BKG-01: canal por confirmar)\n`payment.confirmed` → saga \"Emitir boletos\" · `payment.failed` → saga \"Pago\
+    \ fallido\" · `package.cancelled` → saga \"Cancelar\"\ncon `SAGA_COMPENSATION`. Mientras el grupo responde, el ESB acepta las dos\
+    \ vías documentadas abajo (AMQP en `booking.events` y\nwebhook firmado). Sin duplicados (D34): `inbound_events` por `id`, y sagas\
+    \ idempotentes.\n\n### Datos sensibles\nNingún evento lleva tokens, datos de tarjeta ni datos de salud. `booking.assistance_requested`\
+    \ solo dice **que** cambió la\nasistencia de un pasajero, no cuál es.\n"
+  license:
+    name: Uso académico — Integración de Sistemas (sin licencia de distribución)
+defaultContentType: application/cloudevents+json
+servers:
+  ecoairlines-bus:
+    host: rabbitmq:5672
+    protocol: amqp
+    protocolVersion: 0.9.1
+    description: RabbitMQ interno de EcoAirlines (Docker Compose / nube). Exchange `ecoairlines.events`.
+  booking-bus:
+    host: booking.epn.edu.ec:5672
+    protocol: amqp
+    protocolVersion: 0.9.1
+    description: Bus del ecosistema de Booking (exchange `booking.events`). Opcional; credenciales por confirmar (BKG-01).
+  booking-webhooks:
+    host: rda1-backend-integracion-sistemas.onrender.com
+    protocol: https
+    description: Receptor de webhooks de Booking (la URL exacta es la de cada suscripción).
+  ecoairlines-public:
+    host: ecoairlines-gateway.azurecontainerapps.io
+    protocol: https
+    description: Gateway público de EcoAirlines (entrada de eventos de Booking por webhook, BKG-01).
+channels:
+  holdCreated:
+    address: hold.created
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      HoldCreated:
+        $ref: '#/components/messages/HoldCreated'
+    bindings: &id001
+      amqp:
+        is: routingKey
+        exchange:
+          name: ecoairlines.events
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  holdExpired:
+    address: hold.expired
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      HoldExpired:
+        $ref: '#/components/messages/HoldExpired'
+    bindings: *id001
+  bookingConfirmed:
+    address: booking.confirmed
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      BookingConfirmed:
+        $ref: '#/components/messages/BookingConfirmed'
+    bindings: *id001
+  bookingFailed:
+    address: booking.failed
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      BookingFailed:
+        $ref: '#/components/messages/BookingFailed'
+    bindings: *id001
+  bookingTicketIssuing:
+    address: booking.ticket_issuing
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      BookingTicketIssuing:
+        $ref: '#/components/messages/BookingTicketIssuing'
+    bindings: *id001
+  bookingTicketIssued:
+    address: booking.ticket_issued
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      BookingTicketIssued:
+        $ref: '#/components/messages/BookingTicketIssued'
+    bindings: *id001
+  bookingTicketFailed:
+    address: booking.ticket_failed
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      BookingTicketFailed:
+        $ref: '#/components/messages/BookingTicketFailed'
+    bindings: *id001
+  bookingChanged:
+    address: booking.changed
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      BookingChanged:
+        $ref: '#/components/messages/BookingChanged'
+    bindings: *id001
+  bookingBaggageAdded:
+    address: booking.baggage_added
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      BookingBaggageAdded:
+        $ref: '#/components/messages/BookingBaggageAdded'
+    bindings: *id001
+  bookingSeatChanged:
+    address: booking.seat_changed
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      BookingSeatChanged:
+        $ref: '#/components/messages/BookingSeatChanged'
+    bindings: *id001
+  bookingCancelled:
+    address: booking.cancelled
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      BookingCancelled:
+        $ref: '#/components/messages/BookingCancelled'
+    bindings: *id001
+  bookingCheckedIn:
+    address: booking.checked_in
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      BookingCheckedIn:
+        $ref: '#/components/messages/BookingCheckedIn'
+    bindings: *id001
+  flightStatusChanged:
+    address: flight.status_changed
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      FlightStatusChanged:
+        $ref: '#/components/messages/FlightStatusChanged'
+    bindings: *id001
+  flightCancelled:
+    address: flight.cancelled
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      FlightCancelled:
+        $ref: '#/components/messages/FlightCancelled'
+    bindings: *id001
+  flightScheduleChanged:
+    address: flight.schedule_changed
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      FlightScheduleChanged:
+        $ref: '#/components/messages/FlightScheduleChanged'
+    bindings: *id001
+  schedulePublishedInternal:
+    address: schedule.published
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      SchedulePublishedInternal:
+        $ref: '#/components/messages/SchedulePublishedInternal'
+    bindings: *id001
+  pricingChangedInternal:
+    address: pricing.changed
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      PricingChangedInternal:
+        $ref: '#/components/messages/PricingChangedInternal'
+    bindings: *id001
+  userCreatedInternal:
+    address: user.created
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      UserCreatedInternal:
+        $ref: '#/components/messages/UserCreatedInternal'
+    bindings: *id001
+  userRoleChangedInternal:
+    address: user.role_changed
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      UserRoleChangedInternal:
+        $ref: '#/components/messages/UserRoleChangedInternal'
+    bindings: *id001
+  userBlockedInternal:
+    address: user.blocked
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      UserBlockedInternal:
+        $ref: '#/components/messages/UserBlockedInternal'
+    bindings: *id001
+  partnerCreatedInternal:
+    address: partner.created
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      PartnerCreatedInternal:
+        $ref: '#/components/messages/PartnerCreatedInternal'
+    bindings: *id001
+  partnerBlockedInternal:
+    address: partner.blocked
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      PartnerBlockedInternal:
+        $ref: '#/components/messages/PartnerBlockedInternal'
+    bindings: *id001
+  partnerSecretRotatedInternal:
+    address: partner.secret_rotated
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      PartnerSecretRotatedInternal:
+        $ref: '#/components/messages/PartnerSecretRotatedInternal'
+    bindings: *id001
+  bookingAssistanceRequestedInternal:
+    address: booking.assistance_requested
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    messages:
+      BookingAssistanceRequestedInternal:
+        $ref: '#/components/messages/BookingAssistanceRequestedInternal'
+    bindings: *id001
+  esbDeferred:
+    address: esb.deferred.{sagaType}
+    servers:
+    - $ref: '#/servers/ecoairlines-bus'
+    parameters:
+      sagaType:
+        enum:
+        - CREATE_BOOKING
+        - ISSUE_TICKETS
+        - PAYMENT_FAILED
+        - CHANGE_SEATS
+        - CHECK_IN
+        - CANCEL_BOOKING
+        - CHANGE_DATE
+        - ADD_BAGGAGE
+        - ASSISTANCE_READY
+        - UPDATE_FLIGHT_STATUS
+        - SAVE_PRICES
+        - PUBLISH_TIMETABLE
+    messages:
+      DeferredTask:
+        $ref: '#/components/messages/DeferredTask'
+    description: 'Se publica en la cola de espera de su demora, `esb.deferred.wait.{2s,10s,30s,2m,10m,30m}` (TTL fijo por cola: sin
+      bloqueo cabeza de fila); al vencer, el dead letter la lleva a la cola `esb.deferred`, que consume el ESB.'
+    bindings:
+      amqp:
+        is: queue
+        queue:
+          name: esb.deferred
+          durable: true
+          exclusive: false
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  bookingWebhook:
+    address: '{subscriptionUrl}'
+    servers:
+    - $ref: '#/servers/booking-webhooks'
+    parameters:
+      subscriptionUrl:
+        description: '`url` de la suscripción (POST /vuelos/webhooks del contrato v2)'
+    description: 'Entrega de webhooks del contrato v2 (callback `vuelosEvent`): POST del CloudEvent firmado.'
+    messages: &id002
+      HoldCreated:
+        $ref: '#/components/messages/HoldCreated'
+      HoldExpired:
+        $ref: '#/components/messages/HoldExpired'
+      BookingConfirmed:
+        $ref: '#/components/messages/BookingConfirmed'
+      BookingFailed:
+        $ref: '#/components/messages/BookingFailed'
+      BookingTicketIssuing:
+        $ref: '#/components/messages/BookingTicketIssuing'
+      BookingTicketIssued:
+        $ref: '#/components/messages/BookingTicketIssued'
+      BookingTicketFailed:
+        $ref: '#/components/messages/BookingTicketFailed'
+      BookingChanged:
+        $ref: '#/components/messages/BookingChanged'
+      BookingBaggageAdded:
+        $ref: '#/components/messages/BookingBaggageAdded'
+      BookingSeatChanged:
+        $ref: '#/components/messages/BookingSeatChanged'
+      BookingCancelled:
+        $ref: '#/components/messages/BookingCancelled'
+      BookingCheckedIn:
+        $ref: '#/components/messages/BookingCheckedIn'
+      FlightStatusChanged:
+        $ref: '#/components/messages/FlightStatusChanged'
+      FlightCancelled:
+        $ref: '#/components/messages/FlightCancelled'
+      FlightScheduleChanged:
+        $ref: '#/components/messages/FlightScheduleChanged'
+  bookingEcosystemBridge:
+    address: vuelos.{evento}
+    servers:
+    - $ref: '#/servers/booking-bus'
+    parameters:
+      evento:
+        description: Nombre corto del evento público (p. ej. booking.confirmed)
+    description: 'Opcional (contrato v2 §8): exchange `booking.events`, routing key `vuelos.<evento>`.'
+    messages: *id002
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: booking.events
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  fromBookingPaymentConfirmed:
+    address: pagos.payment.confirmed
+    servers:
+    - $ref: '#/servers/booking-bus'
+    messages:
+      BookingPaymentConfirmed:
+        $ref: '#/components/messages/BookingPaymentConfirmed'
+    description: Vía AMQP en el bus del ecosistema (routing key por confirmar, BKG-01).
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: booking.events
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  fromBookingPaymentFailed:
+    address: pagos.payment.failed
+    servers:
+    - $ref: '#/servers/booking-bus'
+    messages:
+      BookingPaymentFailed:
+        $ref: '#/components/messages/BookingPaymentFailed'
+    description: Vía AMQP en el bus del ecosistema (routing key por confirmar, BKG-01).
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: booking.events
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  fromBookingPackageCancelled:
+    address: paquetes.package.cancelled
+    servers:
+    - $ref: '#/servers/booking-bus'
+    messages:
+      BookingPackageCancelled:
+        $ref: '#/components/messages/BookingPackageCancelled'
+    description: Vía AMQP en el bus del ecosistema (routing key por confirmar, BKG-01).
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: booking.events
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+        bindingVersion: 0.3.0
+  bookingEventsWebhookIn:
+    address: /api/integraciones/booking/eventos
+    servers:
+    - $ref: '#/servers/ecoairlines-public'
+    description: 'Vía webhook (propuesta, BKG-01): Booking hace POST del CloudEvent firmado con HMAC-SHA256 (secreto compartido).'
+    messages:
+      BookingPaymentConfirmed:
+        $ref: '#/components/messages/BookingPaymentConfirmed'
+      BookingPaymentFailed:
+        $ref: '#/components/messages/BookingPaymentFailed'
+      BookingPackageCancelled:
+        $ref: '#/components/messages/BookingPackageCancelled'
+operations:
+  publishHoldCreated:
+    action: send
+    channel:
+      $ref: '#/channels/holdCreated'
+    messages:
+    - $ref: '#/channels/holdCreated/messages/HoldCreated'
+    summary: Lo publica MS.G.Offers desde su outbox.
+    x-service: MS.G.Offers
+  consumeHoldCreated:
+    action: receive
+    channel:
+      $ref: '#/channels/holdCreated'
+    messages:
+    - $ref: '#/channels/holdCreated/messages/HoldCreated'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishHoldExpired:
+    action: send
+    channel:
+      $ref: '#/channels/holdExpired'
+    messages:
+    - $ref: '#/channels/holdExpired/messages/HoldExpired'
+    summary: Lo publica MS.G.Offers desde su outbox.
+    x-service: MS.G.Offers
+  consumeHoldExpired:
+    action: receive
+    channel:
+      $ref: '#/channels/holdExpired'
+    messages:
+    - $ref: '#/channels/holdExpired/messages/HoldExpired'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishBookingConfirmed:
+    action: send
+    channel:
+      $ref: '#/channels/bookingConfirmed'
+    messages:
+    - $ref: '#/channels/bookingConfirmed/messages/BookingConfirmed'
+    summary: Lo publica ESB desde su outbox.
+    x-service: ESB
+  consumeBookingConfirmed:
+    action: receive
+    channel:
+      $ref: '#/channels/bookingConfirmed'
+    messages:
+    - $ref: '#/channels/bookingConfirmed/messages/BookingConfirmed'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishBookingFailed:
+    action: send
+    channel:
+      $ref: '#/channels/bookingFailed'
+    messages:
+    - $ref: '#/channels/bookingFailed/messages/BookingFailed'
+    summary: Lo publica ESB desde su outbox.
+    x-service: ESB
+  consumeBookingFailed:
+    action: receive
+    channel:
+      $ref: '#/channels/bookingFailed'
+    messages:
+    - $ref: '#/channels/bookingFailed/messages/BookingFailed'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishBookingTicketIssuing:
+    action: send
+    channel:
+      $ref: '#/channels/bookingTicketIssuing'
+    messages:
+    - $ref: '#/channels/bookingTicketIssuing/messages/BookingTicketIssuing'
+    summary: Lo publica ESB desde su outbox.
+    x-service: ESB
+  consumeBookingTicketIssuing:
+    action: receive
+    channel:
+      $ref: '#/channels/bookingTicketIssuing'
+    messages:
+    - $ref: '#/channels/bookingTicketIssuing/messages/BookingTicketIssuing'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishBookingTicketIssued:
+    action: send
+    channel:
+      $ref: '#/channels/bookingTicketIssued'
+    messages:
+    - $ref: '#/channels/bookingTicketIssued/messages/BookingTicketIssued'
+    summary: Lo publica ESB desde su outbox.
+    x-service: ESB
+  consumeBookingTicketIssued:
+    action: receive
+    channel:
+      $ref: '#/channels/bookingTicketIssued'
+    messages:
+    - $ref: '#/channels/bookingTicketIssued/messages/BookingTicketIssued'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishBookingTicketFailed:
+    action: send
+    channel:
+      $ref: '#/channels/bookingTicketFailed'
+    messages:
+    - $ref: '#/channels/bookingTicketFailed/messages/BookingTicketFailed'
+    summary: Lo publica ESB desde su outbox.
+    x-service: ESB
+  consumeBookingTicketFailed:
+    action: receive
+    channel:
+      $ref: '#/channels/bookingTicketFailed'
+    messages:
+    - $ref: '#/channels/bookingTicketFailed/messages/BookingTicketFailed'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishBookingChanged:
+    action: send
+    channel:
+      $ref: '#/channels/bookingChanged'
+    messages:
+    - $ref: '#/channels/bookingChanged/messages/BookingChanged'
+    summary: Lo publica ESB desde su outbox.
+    x-service: ESB
+  consumeBookingChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/bookingChanged'
+    messages:
+    - $ref: '#/channels/bookingChanged/messages/BookingChanged'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishBookingBaggageAdded:
+    action: send
+    channel:
+      $ref: '#/channels/bookingBaggageAdded'
+    messages:
+    - $ref: '#/channels/bookingBaggageAdded/messages/BookingBaggageAdded'
+    summary: Lo publica ESB desde su outbox.
+    x-service: ESB
+  consumeBookingBaggageAdded:
+    action: receive
+    channel:
+      $ref: '#/channels/bookingBaggageAdded'
+    messages:
+    - $ref: '#/channels/bookingBaggageAdded/messages/BookingBaggageAdded'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishBookingSeatChanged:
+    action: send
+    channel:
+      $ref: '#/channels/bookingSeatChanged'
+    messages:
+    - $ref: '#/channels/bookingSeatChanged/messages/BookingSeatChanged'
+    summary: Lo publica ESB desde su outbox.
+    x-service: ESB
+  consumeBookingSeatChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/bookingSeatChanged'
+    messages:
+    - $ref: '#/channels/bookingSeatChanged/messages/BookingSeatChanged'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishBookingCancelled:
+    action: send
+    channel:
+      $ref: '#/channels/bookingCancelled'
+    messages:
+    - $ref: '#/channels/bookingCancelled/messages/BookingCancelled'
+    summary: Lo publica ESB desde su outbox.
+    x-service: ESB
+  consumeBookingCancelled:
+    action: receive
+    channel:
+      $ref: '#/channels/bookingCancelled'
+    messages:
+    - $ref: '#/channels/bookingCancelled/messages/BookingCancelled'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishBookingCheckedIn:
+    action: send
+    channel:
+      $ref: '#/channels/bookingCheckedIn'
+    messages:
+    - $ref: '#/channels/bookingCheckedIn/messages/BookingCheckedIn'
+    summary: Lo publica ESB desde su outbox.
+    x-service: ESB
+  consumeBookingCheckedIn:
+    action: receive
+    channel:
+      $ref: '#/channels/bookingCheckedIn'
+    messages:
+    - $ref: '#/channels/bookingCheckedIn/messages/BookingCheckedIn'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishFlightStatusChanged:
+    action: send
+    channel:
+      $ref: '#/channels/flightStatusChanged'
+    messages:
+    - $ref: '#/channels/flightStatusChanged/messages/FlightStatusChanged'
+    summary: Lo publica ESB desde su outbox.
+    x-service: ESB
+  consumeFlightStatusChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/flightStatusChanged'
+    messages:
+    - $ref: '#/channels/flightStatusChanged/messages/FlightStatusChanged'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishFlightCancelled:
+    action: send
+    channel:
+      $ref: '#/channels/flightCancelled'
+    messages:
+    - $ref: '#/channels/flightCancelled/messages/FlightCancelled'
+    summary: Lo publica ESB desde su outbox.
+    x-service: ESB
+  consumeFlightCancelled:
+    action: receive
+    channel:
+      $ref: '#/channels/flightCancelled'
+    messages:
+    - $ref: '#/channels/flightCancelled/messages/FlightCancelled'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishFlightScheduleChanged:
+    action: send
+    channel:
+      $ref: '#/channels/flightScheduleChanged'
+    messages:
+    - $ref: '#/channels/flightScheduleChanged/messages/FlightScheduleChanged'
+    summary: Lo publica ESB desde su outbox.
+    x-service: ESB
+  consumeFlightScheduleChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/flightScheduleChanged'
+    messages:
+    - $ref: '#/channels/flightScheduleChanged/messages/FlightScheduleChanged'
+    summary: 'MS.G.Webhooks (cola webhooks.events): historial y entrega a los suscriptores.'
+    x-service: MS.G.Webhooks
+  publishSchedulePublishedInternal:
+    action: send
+    channel:
+      $ref: '#/channels/schedulePublishedInternal'
+    messages:
+    - $ref: '#/channels/schedulePublishedInternal/messages/SchedulePublishedInternal'
+    summary: Lo publica ESB desde su outbox. Nunca sale de EcoAirlines.
+    x-service: ESB
+  consumeSchedulePublishedInternal:
+    action: receive
+    channel:
+      $ref: '#/channels/schedulePublishedInternal'
+    messages:
+    - $ref: '#/channels/schedulePublishedInternal/messages/SchedulePublishedInternal'
+    summary: Lo consume MS.G.FlightStatus.
+    x-service: MS.G.FlightStatus
+  publishPricingChangedInternal:
+    action: send
+    channel:
+      $ref: '#/channels/pricingChangedInternal'
+    messages:
+    - $ref: '#/channels/pricingChangedInternal/messages/PricingChangedInternal'
+    summary: Lo publica ESB desde su outbox. Nunca sale de EcoAirlines.
+    x-service: ESB
+  consumePricingChangedInternal:
+    action: receive
+    channel:
+      $ref: '#/channels/pricingChangedInternal'
+    messages:
+    - $ref: '#/channels/pricingChangedInternal/messages/PricingChangedInternal'
+    summary: Lo consume MS.G.Webhooks (historial).
+    x-service: MS.G.Webhooks (historial)
+  publishUserCreatedInternal:
+    action: send
+    channel:
+      $ref: '#/channels/userCreatedInternal'
+    messages:
+    - $ref: '#/channels/userCreatedInternal/messages/UserCreatedInternal'
+    summary: Lo publica ESB desde su outbox. Nunca sale de EcoAirlines.
+    x-service: ESB
+  consumeUserCreatedInternal:
+    action: receive
+    channel:
+      $ref: '#/channels/userCreatedInternal'
+    messages:
+    - $ref: '#/channels/userCreatedInternal/messages/UserCreatedInternal'
+    summary: Lo consume MS.G.Webhooks (historial).
+    x-service: MS.G.Webhooks (historial)
+  publishUserRoleChangedInternal:
+    action: send
+    channel:
+      $ref: '#/channels/userRoleChangedInternal'
+    messages:
+    - $ref: '#/channels/userRoleChangedInternal/messages/UserRoleChangedInternal'
+    summary: Lo publica ESB desde su outbox. Nunca sale de EcoAirlines.
+    x-service: ESB
+  consumeUserRoleChangedInternal:
+    action: receive
+    channel:
+      $ref: '#/channels/userRoleChangedInternal'
+    messages:
+    - $ref: '#/channels/userRoleChangedInternal/messages/UserRoleChangedInternal'
+    summary: Lo consume MS.G.Webhooks (historial).
+    x-service: MS.G.Webhooks (historial)
+  publishUserBlockedInternal:
+    action: send
+    channel:
+      $ref: '#/channels/userBlockedInternal'
+    messages:
+    - $ref: '#/channels/userBlockedInternal/messages/UserBlockedInternal'
+    summary: Lo publica ESB desde su outbox. Nunca sale de EcoAirlines.
+    x-service: ESB
+  consumeUserBlockedInternal:
+    action: receive
+    channel:
+      $ref: '#/channels/userBlockedInternal'
+    messages:
+    - $ref: '#/channels/userBlockedInternal/messages/UserBlockedInternal'
+    summary: Lo consume MS.G.Webhooks (historial).
+    x-service: MS.G.Webhooks (historial)
+  publishPartnerCreatedInternal:
+    action: send
+    channel:
+      $ref: '#/channels/partnerCreatedInternal'
+    messages:
+    - $ref: '#/channels/partnerCreatedInternal/messages/PartnerCreatedInternal'
+    summary: Lo publica ESB desde su outbox. Nunca sale de EcoAirlines.
+    x-service: ESB
+  consumePartnerCreatedInternal:
+    action: receive
+    channel:
+      $ref: '#/channels/partnerCreatedInternal'
+    messages:
+    - $ref: '#/channels/partnerCreatedInternal/messages/PartnerCreatedInternal'
+    summary: Lo consume MS.G.Webhooks (historial).
+    x-service: MS.G.Webhooks (historial)
+  publishPartnerBlockedInternal:
+    action: send
+    channel:
+      $ref: '#/channels/partnerBlockedInternal'
+    messages:
+    - $ref: '#/channels/partnerBlockedInternal/messages/PartnerBlockedInternal'
+    summary: Lo publica ESB desde su outbox. Nunca sale de EcoAirlines.
+    x-service: ESB
+  consumePartnerBlockedInternal:
+    action: receive
+    channel:
+      $ref: '#/channels/partnerBlockedInternal'
+    messages:
+    - $ref: '#/channels/partnerBlockedInternal/messages/PartnerBlockedInternal'
+    summary: Lo consume MS.G.Webhooks (historial).
+    x-service: MS.G.Webhooks (historial)
+  publishPartnerSecretRotatedInternal:
+    action: send
+    channel:
+      $ref: '#/channels/partnerSecretRotatedInternal'
+    messages:
+    - $ref: '#/channels/partnerSecretRotatedInternal/messages/PartnerSecretRotatedInternal'
+    summary: Lo publica ESB desde su outbox. Nunca sale de EcoAirlines.
+    x-service: ESB
+  consumePartnerSecretRotatedInternal:
+    action: receive
+    channel:
+      $ref: '#/channels/partnerSecretRotatedInternal'
+    messages:
+    - $ref: '#/channels/partnerSecretRotatedInternal/messages/PartnerSecretRotatedInternal'
+    summary: Lo consume MS.G.Webhooks (historial).
+    x-service: MS.G.Webhooks (historial)
+  publishBookingAssistanceRequestedInternal:
+    action: send
+    channel:
+      $ref: '#/channels/bookingAssistanceRequestedInternal'
+    messages:
+    - $ref: '#/channels/bookingAssistanceRequestedInternal/messages/BookingAssistanceRequestedInternal'
+    summary: Lo publica ESB desde su outbox. Nunca sale de EcoAirlines.
+    x-service: ESB
+  consumeBookingAssistanceRequestedInternal:
+    action: receive
+    channel:
+      $ref: '#/channels/bookingAssistanceRequestedInternal'
+    messages:
+    - $ref: '#/channels/bookingAssistanceRequestedInternal/messages/BookingAssistanceRequestedInternal'
+    summary: Lo consume MS.G.Webhooks (historial, sin datos).
+    x-service: MS.G.Webhooks (historial, sin datos)
+  scheduleDeferredTask:
+    action: send
+    channel:
+      $ref: '#/channels/esbDeferred'
+    summary: El ESB programa un reintento.
+    messages:
+    - $ref: '#/channels/esbDeferred/messages/DeferredTask'
+    x-service: ESB
+  runDeferredTask:
+    action: receive
+    channel:
+      $ref: '#/channels/esbDeferred'
+    summary: El ESB ejecuta el reintento.
+    messages:
+    - $ref: '#/channels/esbDeferred/messages/DeferredTask'
+    x-service: ESB
+  deliverWebhook:
+    action: send
+    channel:
+      $ref: '#/channels/bookingWebhook'
+    messages:
+    - $ref: '#/channels/bookingWebhook/messages/HoldCreated'
+    - $ref: '#/channels/bookingWebhook/messages/HoldExpired'
+    - $ref: '#/channels/bookingWebhook/messages/BookingConfirmed'
+    - $ref: '#/channels/bookingWebhook/messages/BookingFailed'
+    - $ref: '#/channels/bookingWebhook/messages/BookingTicketIssuing'
+    - $ref: '#/channels/bookingWebhook/messages/BookingTicketIssued'
+    - $ref: '#/channels/bookingWebhook/messages/BookingTicketFailed'
+    - $ref: '#/channels/bookingWebhook/messages/BookingChanged'
+    - $ref: '#/channels/bookingWebhook/messages/BookingBaggageAdded'
+    - $ref: '#/channels/bookingWebhook/messages/BookingSeatChanged'
+    - $ref: '#/channels/bookingWebhook/messages/BookingCancelled'
+    - $ref: '#/channels/bookingWebhook/messages/BookingCheckedIn'
+    - $ref: '#/channels/bookingWebhook/messages/FlightStatusChanged'
+    - $ref: '#/channels/bookingWebhook/messages/FlightCancelled'
+    - $ref: '#/channels/bookingWebhook/messages/FlightScheduleChanged'
+    summary: MS.G.Webhooks entrega cada evento público suscrito, firmado con HMAC-SHA256, con reintentos 1 min → 6 h.
+    description: 'Filtro D40: `booking.*` y `hold.*` solo si la reserva o el hold son del canal del partner; `flight.*` a todos.'
+    bindings:
+      http:
+        method: POST
+        bindingVersion: 0.3.0
+    x-service: MS.G.Webhooks
+  bridgeToBookingBus:
+    action: send
+    channel:
+      $ref: '#/channels/bookingEcosystemBridge'
+    messages:
+    - $ref: '#/channels/bookingEcosystemBridge/messages/HoldCreated'
+    - $ref: '#/channels/bookingEcosystemBridge/messages/HoldExpired'
+    - $ref: '#/channels/bookingEcosystemBridge/messages/BookingConfirmed'
+    - $ref: '#/channels/bookingEcosystemBridge/messages/BookingFailed'
+    - $ref: '#/channels/bookingEcosystemBridge/messages/BookingTicketIssuing'
+    - $ref: '#/channels/bookingEcosystemBridge/messages/BookingTicketIssued'
+    - $ref: '#/channels/bookingEcosystemBridge/messages/BookingTicketFailed'
+    - $ref: '#/channels/bookingEcosystemBridge/messages/BookingChanged'
+    - $ref: '#/channels/bookingEcosystemBridge/messages/BookingBaggageAdded'
+    - $ref: '#/channels/bookingEcosystemBridge/messages/BookingSeatChanged'
+    - $ref: '#/channels/bookingEcosystemBridge/messages/BookingCancelled'
+    - $ref: '#/channels/bookingEcosystemBridge/messages/BookingCheckedIn'
+    - $ref: '#/channels/bookingEcosystemBridge/messages/FlightStatusChanged'
+    - $ref: '#/channels/bookingEcosystemBridge/messages/FlightCancelled'
+    - $ref: '#/channels/bookingEcosystemBridge/messages/FlightScheduleChanged'
+    summary: 'Opcional: el ESB republica los eventos públicos en el bus del ecosistema.'
+    x-service: ESB
+    x-optional: true
+  receiveBookingPaymentConfirmed:
+    action: receive
+    channel:
+      $ref: '#/channels/fromBookingPaymentConfirmed'
+    messages:
+    - $ref: '#/channels/fromBookingPaymentConfirmed/messages/BookingPaymentConfirmed'
+    summary: 'Entrada de eventos del ESB: deduplica por `id` (inbound_events) y dispara la saga.'
+    x-service: ESB
+  receiveBookingPaymentFailed:
+    action: receive
+    channel:
+      $ref: '#/channels/fromBookingPaymentFailed'
+    messages:
+    - $ref: '#/channels/fromBookingPaymentFailed/messages/BookingPaymentFailed'
+    summary: 'Entrada de eventos del ESB: deduplica por `id` (inbound_events) y dispara la saga.'
+    x-service: ESB
+  receiveBookingPackageCancelled:
+    action: receive
+    channel:
+      $ref: '#/channels/fromBookingPackageCancelled'
+    messages:
+    - $ref: '#/channels/fromBookingPackageCancelled/messages/BookingPackageCancelled'
+    summary: 'Entrada de eventos del ESB: deduplica por `id` (inbound_events) y dispara la saga.'
+    x-service: ESB
+  receiveBookingEventsByWebhook:
+    action: receive
+    channel:
+      $ref: '#/channels/bookingEventsWebhookIn'
+    messages:
+    - $ref: '#/channels/bookingEventsWebhookIn/messages/BookingPaymentConfirmed'
+    - $ref: '#/channels/bookingEventsWebhookIn/messages/BookingPaymentFailed'
+    - $ref: '#/channels/bookingEventsWebhookIn/messages/BookingPackageCancelled'
+    summary: 'Entrada de eventos del ESB por webhook: verifica la firma, deduplica por `id` y dispara la saga.'
+    bindings:
+      http:
+        method: POST
+        bindingVersion: 0.3.0
+    x-service: ESB
+components:
+  schemas:
+    CloudEventEnvelope:
+      type: object
+      required:
+      - specversion
+      - type
+      - source
+      - id
+      - time
+      - correlationid
+      - data
+      properties:
+        specversion:
+          type: string
+          const: '1.0'
+        type:
+          type: string
+        source:
+          type: string
+          const: /aerolineas/ecoairlines/vuelos
+        id:
+          type: string
+          description: Único; los consumidores deduplican por él
+        time:
+          type: string
+          format: date-time
+        subject:
+          type: string
+        datacontenttype:
+          type: string
+          const: application/json
+        correlationid:
+          type: string
+          maxLength: 100
+          description: X-Correlation-Id del proceso (sin cambios)
+        data:
+          type: object
+    UserChange:
+      type: object
+      required:
+      - sub
+      - role
+      - status
+      - actorId
+      properties:
+        sub: &id003
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum:
+          - CUSTOMER
+          - ADMIN
+        status:
+          type: string
+          enum:
+          - ACTIVE
+          - BLOCKED
+        actorId: *id003
+        reason:
+          type: string
+          maxLength: 200
+    PartnerChange:
+      type: object
+      required:
+      - clientId
+      - status
+      - actorId
+      properties:
+        clientId:
+          type: string
+        status:
+          type: string
+          enum:
+          - ACTIVE
+          - BLOCKED
+        actorId: *id003
+        reason:
+          type: string
+          maxLength: 200
+    ScheduledFlight:
+      type: object
+      required:
+      - flightNumber
+      - date
+      - routeId
+      - origin
+      - destination
+      - departureAt
+      - arrivalAt
+      - aircraftType
+      - registration
+      description: Igual que ScheduledFlight de ms-g-schedule.openapi.yaml
+      properties:
+        flightNumber:
+          type: string
+        date:
+          type: string
+          format: date
+        routeId:
+          type: string
+        origin:
+          type: string
+        destination:
+          type: string
+        departureAt:
+          type: string
+          format: date-time
+        arrivalAt:
+          type: string
+          format: date-time
+        aircraftType:
+          type: string
+        registration:
+          type: string
+    DeferredTask:
+      type: object
+      required:
+      - sagaId
+      - sagaType
+      - step
+      - attempt
+      - notBefore
+      properties:
+        sagaId: *id003
+        sagaType:
+          type: string
+          enum:
+          - CREATE_BOOKING
+          - ISSUE_TICKETS
+          - PAYMENT_FAILED
+          - CHANGE_SEATS
+          - CHECK_IN
+          - CANCEL_BOOKING
+          - CHANGE_DATE
+          - ADD_BAGGAGE
+          - ASSISTANCE_READY
+          - UPDATE_FLIGHT_STATUS
+          - SAVE_PRICES
+          - PUBLISH_TIMETABLE
+        step:
+          type: string
+          example: offers.release
+          description: Paso de la saga que quedó pendiente
+        attempt:
+          type: integer
+          minimum: 1
+        notBefore:
+          type: string
+          format: date-time
+        correlationId:
+          type: string
+  messages:
+    HoldCreated:
+      name: hold.created
+      title: hold.created (público)
+      summary: Se bloquearon asientos (hold creado).
+      contentType: application/cloudevents+json
+      correlationId: &id004
+        $ref: '#/components/correlationIds/CloudEventCorrelation'
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventHoldCreated
+      bindings: &id005
+        amqp:
+          contentEncoding: utf-8
+          messageType: cloudevent
+          bindingVersion: 0.3.0
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.hold.created
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+          x-owner-id:
+            type: string
+            maxLength: 200
+            description: 'Solo en el bus interno (cabecera AMQP), nunca en la entrega: dueño del hold o la reserva (D29: `sub` de la
+              web o `partner:<clientId>:<X-User-Id>`). Lo pone quien publica (Offers en hold.*, el ESB en booking.*) y MS.G.Webhooks
+              lo usa para el filtro D40.'
+    HoldExpired:
+      name: hold.expired
+      title: hold.expired (público)
+      summary: Venció un hold; sus asientos vuelven a AVAILABLE.
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventHoldExpired
+      bindings: *id005
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.hold.expired
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+          x-owner-id:
+            type: string
+            maxLength: 200
+            description: 'Solo en el bus interno (cabecera AMQP), nunca en la entrega: dueño del hold o la reserva (D29: `sub` de la
+              web o `partner:<clientId>:<X-User-Id>`). Lo pone quien publica (Offers en hold.*, el ESB en booking.*) y MS.G.Webhooks
+              lo usa para el filtro D40.'
+    BookingConfirmed:
+      name: booking.confirmed
+      title: booking.confirmed (público)
+      summary: Reserva creada (saga "Crear reserva").
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventBookingConfirmed
+      bindings: *id005
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.confirmed
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+          x-owner-id:
+            type: string
+            maxLength: 200
+            description: 'Solo en el bus interno (cabecera AMQP), nunca en la entrega: dueño del hold o la reserva (D29: `sub` de la
+              web o `partner:<clientId>:<X-User-Id>`). Lo pone quien publica (Offers en hold.*, el ESB en booking.*) y MS.G.Webhooks
+              lo usa para el filtro D40.'
+    BookingFailed:
+      name: booking.failed
+      title: booking.failed (público)
+      summary: La reserva falló (pago fallido o saga compensada).
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventBookingFailed
+      bindings: *id005
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.failed
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+          x-owner-id:
+            type: string
+            maxLength: 200
+            description: 'Solo en el bus interno (cabecera AMQP), nunca en la entrega: dueño del hold o la reserva (D29: `sub` de la
+              web o `partner:<clientId>:<X-User-Id>`). Lo pone quien publica (Offers en hold.*, el ESB en booking.*) y MS.G.Webhooks
+              lo usa para el filtro D40.'
+    BookingTicketIssuing:
+      name: booking.ticket_issuing
+      title: booking.ticket_issuing (público)
+      summary: 'Compatibilidad con v1: la emisión quedó en curso (TICKET_ISSUING).'
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          allOf:
+          - $ref: ./vuelos-openapi-v2.yaml#/components/schemas/CloudEventBase
+          - type: object
+            properties:
+              type:
+                type: string
+                enum:
+                - ec.edu.epn.booking.vuelos.booking.ticket_issuing
+              data:
+                type: object
+                required:
+                - bookingId
+                - pnr
+                - status
+                properties: &id006
+                  bookingId:
+                    type: string
+                    format: uuid
+                  pnr:
+                    type: string
+                  status:
+                    $ref: ./vuelos-openapi-v2.yaml#/components/schemas/BookingStatus
+                  errorCode:
+                    type: string
+                    example: TICKET_ISSUANCE_FAILED
+      bindings: *id005
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.ticket_issuing
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+          x-owner-id:
+            type: string
+            maxLength: 200
+            description: 'Solo en el bus interno (cabecera AMQP), nunca en la entrega: dueño del hold o la reserva (D29: `sub` de la
+              web o `partner:<clientId>:<X-User-Id>`). Lo pone quien publica (Offers en hold.*, el ESB en booking.*) y MS.G.Webhooks
+              lo usa para el filtro D40.'
+    BookingTicketIssued:
+      name: booking.ticket_issued
+      title: booking.ticket_issued (público)
+      summary: Boletos emitidos (lo consume Facturación).
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventTicketIssued
+      bindings: *id005
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.ticket_issued
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+          x-owner-id:
+            type: string
+            maxLength: 200
+            description: 'Solo en el bus interno (cabecera AMQP), nunca en la entrega: dueño del hold o la reserva (D29: `sub` de la
+              web o `partner:<clientId>:<X-User-Id>`). Lo pone quien publica (Offers en hold.*, el ESB en booking.*) y MS.G.Webhooks
+              lo usa para el filtro D40.'
+    BookingTicketFailed:
+      name: booking.ticket_failed
+      title: booking.ticket_failed (público)
+      summary: Falló la emisión de boletos.
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          allOf:
+          - $ref: ./vuelos-openapi-v2.yaml#/components/schemas/CloudEventBase
+          - type: object
+            properties:
+              type:
+                type: string
+                enum:
+                - ec.edu.epn.booking.vuelos.booking.ticket_failed
+              data:
+                type: object
+                required:
+                - bookingId
+                - pnr
+                - status
+                properties: *id006
+      bindings: *id005
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.ticket_failed
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+          x-owner-id:
+            type: string
+            maxLength: 200
+            description: 'Solo en el bus interno (cabecera AMQP), nunca en la entrega: dueño del hold o la reserva (D29: `sub` de la
+              web o `partner:<clientId>:<X-User-Id>`). Lo pone quien publica (Offers en hold.*, el ESB en booking.*) y MS.G.Webhooks
+              lo usa para el filtro D40.'
+    BookingChanged:
+      name: booking.changed
+      title: booking.changed (público)
+      summary: Cambio de fecha confirmado.
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventBookingChanged
+      bindings: *id005
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.changed
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+          x-owner-id:
+            type: string
+            maxLength: 200
+            description: 'Solo en el bus interno (cabecera AMQP), nunca en la entrega: dueño del hold o la reserva (D29: `sub` de la
+              web o `partner:<clientId>:<X-User-Id>`). Lo pone quien publica (Offers en hold.*, el ESB en booking.*) y MS.G.Webhooks
+              lo usa para el filtro D40.'
+    BookingBaggageAdded:
+      name: booking.baggage_added
+      title: booking.baggage_added (público)
+      summary: Maletas extra agregadas.
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventBookingChanged
+      bindings: *id005
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.baggage_added
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+          x-owner-id:
+            type: string
+            maxLength: 200
+            description: 'Solo en el bus interno (cabecera AMQP), nunca en la entrega: dueño del hold o la reserva (D29: `sub` de la
+              web o `partner:<clientId>:<X-User-Id>`). Lo pone quien publica (Offers en hold.*, el ESB en booking.*) y MS.G.Webhooks
+              lo usa para el filtro D40.'
+    BookingSeatChanged:
+      name: booking.seat_changed
+      title: booking.seat_changed (público)
+      summary: Asientos cambiados.
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventBookingChanged
+      bindings: *id005
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.seat_changed
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+          x-owner-id:
+            type: string
+            maxLength: 200
+            description: 'Solo en el bus interno (cabecera AMQP), nunca en la entrega: dueño del hold o la reserva (D29: `sub` de la
+              web o `partner:<clientId>:<X-User-Id>`). Lo pone quien publica (Offers en hold.*, el ESB en booking.*) y MS.G.Webhooks
+              lo usa para el filtro D40.'
+    BookingCancelled:
+      name: booking.cancelled
+      title: booking.cancelled (público)
+      summary: Reserva cancelada (reembolso calculado o ejecutado).
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventBookingCancelled
+      bindings: *id005
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.cancelled
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+          x-owner-id:
+            type: string
+            maxLength: 200
+            description: 'Solo en el bus interno (cabecera AMQP), nunca en la entrega: dueño del hold o la reserva (D29: `sub` de la
+              web o `partner:<clientId>:<X-User-Id>`). Lo pone quien publica (Offers en hold.*, el ESB en booking.*) y MS.G.Webhooks
+              lo usa para el filtro D40.'
+    BookingCheckedIn:
+      name: booking.checked_in
+      title: booking.checked_in (público)
+      summary: Check-in realizado.
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventCheckedIn
+      bindings: *id005
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.checked_in
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+          x-owner-id:
+            type: string
+            maxLength: 200
+            description: 'Solo en el bus interno (cabecera AMQP), nunca en la entrega: dueño del hold o la reserva (D29: `sub` de la
+              web o `partner:<clientId>:<X-User-Id>`). Lo pone quien publica (Offers en hold.*, el ESB en booking.*) y MS.G.Webhooks
+              lo usa para el filtro D40.'
+    FlightStatusChanged:
+      name: flight.status_changed
+      title: flight.status_changed (público)
+      summary: Cambió el estado de un vuelo (lo usan Autos y Alojamientos).
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventFlightStatusChanged
+      bindings: *id005
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.flight.status_changed
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+    FlightCancelled:
+      name: flight.cancelled
+      title: flight.cancelled (público)
+      summary: 'Compatibilidad con v1: vuelo cancelado (los nuevos suscriptores usan flight.status_changed).'
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          allOf:
+          - $ref: ./vuelos-openapi-v2.yaml#/components/schemas/CloudEventBase
+          - type: object
+            properties:
+              type:
+                type: string
+                enum:
+                - ec.edu.epn.booking.vuelos.flight.cancelled
+              data:
+                type: object
+                required:
+                - flightNumber
+                - date
+                - newStatus
+                properties: &id007
+                  flightNumber:
+                    type: string
+                  date:
+                    type: string
+                    format: date
+                  previousStatus:
+                    $ref: ./vuelos-openapi-v2.yaml#/components/schemas/FlightOperationalStatus
+                  newStatus:
+                    $ref: ./vuelos-openapi-v2.yaml#/components/schemas/FlightOperationalStatus
+                  estimatedDepartureAt:
+                    type: string
+                    format: date-time
+                    nullable: true
+      bindings: *id005
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.flight.cancelled
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+    FlightScheduleChanged:
+      name: flight.schedule_changed
+      title: flight.schedule_changed (público)
+      summary: 'Compatibilidad con v1: cambio de horario (los nuevos usan flight.status_changed).'
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          allOf:
+          - $ref: ./vuelos-openapi-v2.yaml#/components/schemas/CloudEventBase
+          - type: object
+            properties:
+              type:
+                type: string
+                enum:
+                - ec.edu.epn.booking.vuelos.flight.schedule_changed
+              data:
+                type: object
+                required:
+                - flightNumber
+                - date
+                - newStatus
+                properties: *id007
+      bindings: *id005
+      x-cloudevent-type: ec.edu.epn.booking.vuelos.flight.schedule_changed
+      x-public: true
+      headers:
+        type: object
+        description: 'Cabeceras: las HTTP de la entrega por webhook y, en hold.* y booking.*, la AMQP `x-owner-id` del bus interno'
+        properties:
+          X-Webhook-Signature:
+            type: string
+            pattern: ^sha256=[0-9a-f]{64}$
+            description: Solo en la entrega por webhook
+          X-Correlation-Id:
+            type: string
+            maxLength: 100
+            description: Solo en la entrega por webhook
+    SchedulePublishedInternal:
+      name: schedule.published
+      title: schedule.published (interno)
+      summary: Horario publicado (saga "Publicar horario"). Lleva los vuelos, porque FlightStatus no llama a Schedule (D4).
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            type:
+              type: string
+              const: ec.ecoairlines.internal.schedule.published
+            subject:
+              type: string
+              description: routeId o «timetable»
+            data:
+              type: object
+              required:
+              - publishId
+              - from
+              - to
+              - flights
+              properties:
+                publishId: *id003
+                routeId:
+                  type: string
+                  description: Ausente si se publicó el horario completo
+                from:
+                  type: string
+                  format: date
+                to:
+                  type: string
+                  format: date
+                flights:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ScheduledFlight'
+      bindings: *id005
+      x-cloudevent-type: ec.ecoairlines.internal.schedule.published
+      x-public: false
+    PricingChangedInternal:
+      name: pricing.changed
+      title: pricing.changed (interno)
+      summary: Se guardaron precios por clase o el descuento máximo (saga "Guardar precios y descuento máximo").
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            type:
+              type: string
+              const: ec.ecoairlines.internal.pricing.changed
+            subject:
+              type: string
+              description: «fare-prices»
+            data:
+              type: object
+              required:
+              - actorId
+              - changedPrices
+              - promotionUpdated
+              properties:
+                actorId: *id003
+                promotionUpdated:
+                  type: boolean
+                changedPrices:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                    - cabinClass
+                    - fareBrand
+                    - oldMultiplier
+                    - newMultiplier
+                    properties:
+                      cabinClass:
+                        type: string
+                      fareBrand:
+                        type: string
+                      oldMultiplier:
+                        type: number
+                      newMultiplier:
+                        type: number
+      bindings: *id005
+      x-cloudevent-type: ec.ecoairlines.internal.pricing.changed
+      x-public: false
+    UserCreatedInternal:
+      name: user.created
+      title: user.created (interno)
+      summary: Un administrador creó un usuario.
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            type:
+              type: string
+              const: ec.ecoairlines.internal.user.created
+            subject:
+              type: string
+              description: sub del usuario
+            data:
+              $ref: '#/components/schemas/UserChange'
+      bindings: *id005
+      x-cloudevent-type: ec.ecoairlines.internal.user.created
+      x-public: false
+    UserRoleChangedInternal:
+      name: user.role_changed
+      title: user.role_changed (interno)
+      summary: Cambió el rol de un usuario.
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            type:
+              type: string
+              const: ec.ecoairlines.internal.user.role_changed
+            subject:
+              type: string
+              description: sub del usuario
+            data:
+              $ref: '#/components/schemas/UserChange'
+      bindings: *id005
+      x-cloudevent-type: ec.ecoairlines.internal.user.role_changed
+      x-public: false
+    UserBlockedInternal:
+      name: user.blocked
+      title: user.blocked (interno)
+      summary: Se bloqueó o activó un usuario.
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            type:
+              type: string
+              const: ec.ecoairlines.internal.user.blocked
+            subject:
+              type: string
+              description: sub del usuario
+            data:
+              $ref: '#/components/schemas/UserChange'
+      bindings: *id005
+      x-cloudevent-type: ec.ecoairlines.internal.user.blocked
+      x-public: false
+    PartnerCreatedInternal:
+      name: partner.created
+      title: partner.created (interno)
+      summary: Alta de un partner (nunca lleva el secreto).
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            type:
+              type: string
+              const: ec.ecoairlines.internal.partner.created
+            subject:
+              type: string
+              description: clientId
+            data:
+              $ref: '#/components/schemas/PartnerChange'
+      bindings: *id005
+      x-cloudevent-type: ec.ecoairlines.internal.partner.created
+      x-public: false
+    PartnerBlockedInternal:
+      name: partner.blocked
+      title: partner.blocked (interno)
+      summary: Se bloqueó o activó un partner.
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            type:
+              type: string
+              const: ec.ecoairlines.internal.partner.blocked
+            subject:
+              type: string
+              description: clientId
+            data:
+              $ref: '#/components/schemas/PartnerChange'
+      bindings: *id005
+      x-cloudevent-type: ec.ecoairlines.internal.partner.blocked
+      x-public: false
+    PartnerSecretRotatedInternal:
+      name: partner.secret_rotated
+      title: partner.secret_rotated (interno)
+      summary: Se generó un secreto nuevo para un partner (nunca lo lleva).
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            type:
+              type: string
+              const: ec.ecoairlines.internal.partner.secret_rotated
+            subject:
+              type: string
+              description: clientId
+            data:
+              $ref: '#/components/schemas/PartnerChange'
+      bindings: *id005
+      x-cloudevent-type: ec.ecoairlines.internal.partner.secret_rotated
+      x-public: false
+    BookingAssistanceRequestedInternal:
+      name: booking.assistance_requested
+      title: booking.assistance_requested (interno)
+      summary: 'Cambió la asistencia médica de un pasajero. Dato de salud: NO lleva el tipo ni las notas y nunca sale a Booking.'
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            type:
+              type: string
+              const: ec.ecoairlines.internal.booking.assistance_requested
+            subject:
+              type: string
+              description: bookingId
+            data:
+              type: object
+              required:
+              - bookingId
+              - passengerId
+              - action
+              properties:
+                bookingId: *id003
+                passengerId:
+                  type: string
+                action:
+                  type: string
+                  enum:
+                  - REQUESTED
+                  - UPDATED
+                  - REMOVED
+                  - READY
+      bindings: *id005
+      x-cloudevent-type: ec.ecoairlines.internal.booking.assistance_requested
+      x-public: false
+    DeferredTask:
+      name: esb.deferred
+      title: Reintento diferido (interno)
+      contentType: application/json
+      summary: Retoma una saga pendiente (después del punto sin retorno, o una compensación que no pudo hacerse) en el momento de su
+        reintento.
+      payload:
+        $ref: '#/components/schemas/DeferredTask'
+      bindings:
+        amqp:
+          messageType: deferred-task
+          bindingVersion: 0.3.0
+    BookingPaymentConfirmed:
+      name: payment.confirmed
+      title: payment.confirmed (de Booking)
+      summary: 'Booking confirmó el pago de una reserva → saga "Emitir boletos" (idempotente: issued = 0 si ya estaban).'
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventPaymentConfirmed
+      x-cloudevent-type: ec.edu.epn.booking.pagos.payment.confirmed
+    BookingPaymentFailed:
+      name: payment.failed
+      title: payment.failed (de Booking)
+      summary: 'Booking no pudo cobrar → saga "Pago fallido": liberar el hold y marcar la reserva FAILED.'
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventPaymentConfirmed
+      x-cloudevent-type: ec.edu.epn.booking.pagos.payment.failed
+    BookingPackageCancelled:
+      name: package.cancelled
+      title: package.cancelled (de Booking)
+      summary: Falló otra parte del combo → saga "Cancelar" con reasonCode SAGA_COMPENSATION (siempre sin penalidad, D42).
+      contentType: application/cloudevents+json
+      correlationId: *id004
+      payload:
+        schemaFormat: application/vnd.oai.openapi;version=3.0.0
+        schema:
+          $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventPackageCancelled
+      x-cloudevent-type: ec.edu.epn.booking.paquetes.package.cancelled
+  correlationIds:
+    CloudEventCorrelation:
+      description: X-Correlation-Id del proceso, en el atributo `correlationid` del CloudEvent.
+      location: $message.payload#/correlationid

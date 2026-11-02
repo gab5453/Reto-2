@@ -1,0 +1,9 @@
+# Tableros versionados (V2.16): los JSON de infra/observability/grafana/dashboards.
+apiVersion: 1
+providers:
+  - name: ecoairlines
+    folder: EcoAirlines
+    type: file
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

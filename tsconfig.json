@@ -1,10 +1,29 @@
 {
-  // Solución: compila las 4 capas en orden de dependencias (equivale a EcoAirlines.sln).
+  // Solución: el monolito (4 capas, en orden de dependencias) y los paquetes del Reto 2 (packages/ y services/).
   "files": [],
   "references": [
     { "path": "./EcoAirlines.DataAccess" },
     { "path": "./EcoAirlines.DataManagement" },
     { "path": "./EcoAirlines.Business" },
-    { "path": "./EcoAirlines.API" }
+    { "path": "./EcoAirlines.API" },
+    { "path": "./packages/shared" },
+    { "path": "./services/externos/booking-simulado" },
+    { "path": "./services/gestion/ms-g-identity" },
+    { "path": "./services/gestion/ms-g-schedule" },
+    { "path": "./services/gestion/ms-g-offers" },
+    { "path": "./services/gestion/ms-g-bookings" },
+    { "path": "./services/gestion/ms-g-check-in" },
+    { "path": "./services/gestion/ms-g-post-sale" },
+    { "path": "./services/gestion/ms-g-flight-status" },
+    { "path": "./services/gestion/ms-g-webhooks" },
+    { "path": "./services/gestion/ms-g-customers" },
+    { "path": "./services/esb" },
+    { "path": "./services/respuesta/ms-vuelos" },
+    { "path": "./services/respuesta/ms-reservas" },
+    { "path": "./services/respuesta/ms-postventa" },
+    { "path": "./services/respuesta/ms-clientes" },
+    { "path": "./services/respuesta/ms-admin" },
+    { "path": "./services/gateway" },
+    { "path": "./services/externos/payment-api" }
   ]
 }

@@ -1,0 +1,109 @@
+openapi: 3.0.3
+info:
+  title: MS.Postventa — maletas, cambio de fecha y cancelación (respuesta)
+  version: 1.0.1
+  license:
+    name: Uso académico — Integración de Sistemas (sin licencia de distribución)
+  description: |
+    Microservicio de respuesta **MS.Postventa** de EcoAirlines (Reto 2). Implementa las **6 operaciones** del contrato
+    de Vuelos v2 cuyo `x-microservice` es `MS.Postventa`, referenciadas desde `vuelos-openapi-v2.yaml` (idénticas por
+    construcción). No tiene operaciones propias.
+
+    | Operación | Cadena en el ESB |
+    |-----------|------------------|
+    | `getBaggageOptions` | Composición: Bookings + Offers + PostSale (`GetBaggageOptions`) |
+    | `addBaggage` | Orquestador: saga "Agregar maletas" |
+    | `searchDateChange` | Composición: Bookings + Offers (`FindAlternatives`) + PostSale (`CreateDateChangeOffers`) |
+    | `confirmDateChange` | Orquestador: saga "Cambiar fecha" |
+    | `getCancellationQuote` | Composición: Bookings + PostSale (`CreateCancellationQuote`) |
+    | `cancelBooking` | Orquestador: saga "Cancelar" (`reasonCode`; con `SAGA_COMPENSATION` o `FLIGHT_CANCELLED`, sin cotización) |
+
+    **Pagos:** en el canal Booking el `payment.paymentReference` se **valida** (Booking ya cobró); en el canal web se **captura** en
+    la Payment API (D28). En `cancelBooking` el reembolso se **calcula** (`CALCULATED`) para Booking y se **ejecuta** (`SETTLED`)
+    para la web.
+
+        ### Seguridad (D22, D29, D41)
+        Verifica el token con la JWKS de MS.G.Identity (el gateway ya lo verificó; aquí se verifica otra vez, defensa en
+        profundidad) y los scopes de cada operación:
+        - **Token de partner** (`token_use = partner`, Booking): las operaciones del contrato. Solo con este token se lee `X-User-Id`;
+          el dueño es `partner:<clientId>:<X-User-Id>`.
+        - **Token de usuario** (`token_use = user`, la web): equivale al `BearerAuth` del contrato. El dueño es su `sub`; `X-User-Id`
+          se ignora.
+        - **Token de servicio** (`token_use = service`, del ESB o de otro MS): se **rechaza** (`401`); solo lo aceptan el ESB y los MS.G.
+        El dueño **nunca** sale del cuerpo. Un recurso de otro dueño responde `404`.
+
+        ### Qué hace en cada petición (como hoy `EcoAirlines.API`)
+        1. Valida el DTO exacto al contrato (`required`, `enum`, `pattern`, `additionalProperties`…) → `400 VALIDATION_FAILED`.
+        2. Aplica el límite de peticiones → `429`.
+        3. Llama al **ESB** (enrutador, orquestador o composición) con **su propio** token de servicio (cliente interno del MS en
+           Identity, scope `ecoairlines:esb`, D44: lo acepta el ESB y lo rechazan los MS.G), `X-Owner-Id` / `X-Actor-Id`,
+           `X-Correlation-Id` (sin cambiarlo), un `X-Request-Id` nuevo y la `Idempotency-Key` recibida (el ESB la resuelve, D6).
+        4. Arma la respuesta pública: quita los campos internos (`ownerId`, `channel`, `fares`…), agrega `_links` (HATEOAS) y
+           `Location` con la ruta `/api/v2/vuelos/...`, y traduce los errores a `ProblemDetails` v2.
+        5. Devuelve `X-Correlation-Id` en **toda** respuesta, también en los errores.
+servers:
+  - url: http://ms-postventa:8080/api/v2
+    description: Red interna (detrás del gateway, que publica /api/v2/vuelos/* y /api/graphql)
+  - url: http://localhost:5003/api/v2
+    description: Desarrollo local
+security:
+  - PartnerOAuth2: []
+  - BearerAuth: []
+paths:
+  # contrato v2 · GET getBaggageOptions
+  /vuelos/bookings/{bookingId}/baggage-options:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1bookings~1{bookingId}~1baggage-options'
+  # contrato v2 · POST addBaggage
+  /vuelos/bookings/{bookingId}/baggage:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1bookings~1{bookingId}~1baggage'
+  # contrato v2 · POST searchDateChange
+  /vuelos/bookings/{bookingId}/date-change/search:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1bookings~1{bookingId}~1date-change~1search'
+  # contrato v2 · POST confirmDateChange
+  /vuelos/bookings/{bookingId}/date-change:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1bookings~1{bookingId}~1date-change'
+  # contrato v2 · GET getCancellationQuote
+  /vuelos/bookings/{bookingId}/cancellation-quote:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1bookings~1{bookingId}~1cancellation-quote'
+  # contrato v2 · POST cancelBooking
+  /vuelos/bookings/{bookingId}/cancel:
+    $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1bookings~1{bookingId}~1cancel'
+components:
+  securitySchemes:
+    PartnerOAuth2:
+      $ref: './vuelos-openapi-v2.yaml#/components/securitySchemes/PartnerOAuth2'
+    BearerAuth:
+      $ref: './vuelos-openapi-v2.yaml#/components/securitySchemes/BearerAuth'
+    PartnerClientBasic:
+      $ref: './ms-g-identity.openapi.yaml#/components/securitySchemes/PartnerClientBasic'
+    UserJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token de usuario de la web (`token_use = user`), emitido por MS.G.Identity. Lo reenvía el gateway GraphQL.
+
+  parameters:
+    CorrelationId:
+      $ref: './vuelos-openapi-v2.yaml#/components/parameters/CorrelationId'
+
+  responses:
+    Problem400:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem400'
+    Problem401:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem401'
+    Problem403:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem403'
+    Problem404:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem404'
+    Problem409:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem409'
+    Problem422:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem422'
+    Problem429:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem429'
+    Problem503:
+      $ref: './vuelos-openapi-v2.yaml#/components/responses/Problem503'
+
+  schemas:
+    ProblemDetails:
+      $ref: './vuelos-openapi-v2.yaml#/components/schemas/ProblemDetails'
