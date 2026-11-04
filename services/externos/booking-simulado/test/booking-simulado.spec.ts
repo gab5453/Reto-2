@@ -114,6 +114,19 @@ describe('booking-simulado — stock por gRPC (contrato v2 §9, booking-inventor
     expect(summary.total_events_processed).toBe(2);
   });
 
+  it('también por REST, como Booking en Azure (V2.20): success: true o 400 con el motivo', async () => {
+    const rest = (body: object) => request(app.getHttpServer()).post('/api/v2/inventory/stock').set('x-correlation-id', 'corr-stock-rest').send(body);
+    const { timestamp: _timestamp, ...message } = valid;
+    const ok = await rest({ ...message, item_id: 'EA301-BUSINESS', available_units: 7 });
+    expect(ok.status).toBe(200);
+    expect(ok.body).toEqual({ success: true, message: 'Stock actualizado' });
+    const stock = await request(app.getHttpServer()).get('/simulador/stock');
+    expect(stock.body.items).toContainEqual(expect.objectContaining({ itemId: 'EA301-BUSINESS', availableUnits: 7, correlationId: 'corr-stock-rest' }));
+    const bad = await rest({ ...message, item_id: 'EA301' });
+    expect(bad.status).toBe(400);
+    expect(JSON.stringify(bad.body)).toContain('item_id');
+  });
+
   it('/health informa el gRPC arriba', async () => {
     const health = await request(app.getHttpServer()).get('/health');
     expect(health.status).toBe(200);

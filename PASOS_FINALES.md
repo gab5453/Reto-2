@@ -6,6 +6,14 @@
 
 ---
 
+## 0. Decisión (03/11/2026)
+
+**Cada equipo hospeda su sistema por su cuenta; EcoAirlines se queda en Azure**, en la VM actual (opción A o B de la sección 3,
+según las horas que haga falta tenerla encendida). Booking ya está en Azure (`booking-core-api.azurewebsites.net`) y recibe
+nuestro stock por REST con `service_id` `NODE_VUE_EQ5` (D53). Sus webhooks se activan «en unos días» (BKG-15).
+
+---
+
 ## 1. Cuánto consume el sistema (medido el 26/10/2026)
 
 ### 1.1 Corriendo (en reposo, Docker en la laptop)
@@ -113,5 +121,5 @@ de la defensa. Si Booking ofrece un servidor (C), es la mejor opción económica
 | V2.17 Web: GraphQL y tarjeta | ✅ | Hecha el 26/10 (pendiente de auditoría) |
 | V2.18 Web: pantallas nuevas | ✅ | Hecha el 02/11 (pendiente de auditoría) |
 | V2.19 Web: PWA | ✅ | Hecha el 02/11 (pendiente de auditoría) |
-| V2.20 Nube: todo lo demás | 🟡 | VM y observabilidad verificadas el 02/11 (CAMBIOS.md). **Falta:** publicar la web y probar la PWA en un teléfono. Decisión del 02/11: sin definición de hospedaje, el sistema se mantiene en la VM y GitHub Actions queda en pausa (sección 3) |
-| V2.21 Documentación y defensa | ⏳ | Auditorías de Gemini de V2.2 a V2.16 |
+| V2.20 Nube: todo lo demás | ✅ | Hecha el 03/11: VM, observabilidad, stock REST a Booking (D53) y web publicada. GitHub Actions diferido; falta probar la PWA en un teléfono |
+| V2.21 Documentación y defensa | ✅ | Hecha el 03/11 (`ARQUITECTURA.md`, `EVENTOS.md`, `CRITERIOS.md`, `DEFENSA.md`; monolito retirado). Faltan las auditorías de Gemini de V2.2 a V2.21 |

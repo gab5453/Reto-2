@@ -6,7 +6,7 @@ import { currentCorrelation } from '../correlation/correlation.js';
 import { type InvalidParam, ProblemDetailsException } from '../problem-details/problem-details.js';
 
 /**
- * Endurecimiento HTTP de los MS de respuesta: lo mismo que hace hoy `EcoAirlines.API` (`src/security/`), en un solo lugar para
+ * Endurecimiento HTTP de los MS de respuesta: lo mismo que hacía el monolito del Reto 1 (`EcoAirlines.API/src/security/`, retirado en V2.21), en un solo lugar para
  * los cinco servicios (V2.12).
  */
 export interface SecurityConfig {

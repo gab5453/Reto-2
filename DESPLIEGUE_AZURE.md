@@ -14,7 +14,8 @@ Guía de lo que está desplegado en Azure, cuánto cuesta y cómo encenderlo, ap
 | Qué | Dónde | Estado | Costo |
 |-----|-------|--------|-------|
 | **Reto 2** — la ruta de Booking completa (gateway, 5 MS de respuesta, ESB, 9 MS.G, PostgreSQL, RabbitMQ), Payment API y observabilidad | Una VM Linux en **North Central US** | ✅ En uso | ≈US$30,60/mes encendida 24 h · ≈US$6,05/mes apagada |
-| **Reto 1** — API del monolito, dev-auth y web | App Service (plan F1) y Static Web App | ⚪ Publicado pero **sin base de datos** (se borró) | US$0 |
+| **Web del Reto 2** (PWA) | Static Web App `ecoairlines-web` (Free), en el grupo del Reto 1 | ✅ Publicada el 03/11 | US$0 |
+| **Reto 1** — API del monolito y dev-auth (retirados del código en V2.21) | App Service (plan F1) | ⚪ Publicados pero **sin base de datos**; se pueden borrar | US$0 |
 
 **URL pública del Reto 2:** `https://ecoairlines-reto2.northcentralus.cloudapp.azure.com`
 
@@ -304,7 +305,8 @@ node scripts/cloud/generar-env.mjs --domain ecoairlines-reto2.northcentralus.clo
 | `POSTGRES_ADMIN_PASSWORD`, `PG_PASSWORD_*` | Contraseña de PostgreSQL y de cada base (una por servicio) |
 | `RABBITMQ_PASSWORD` | RabbitMQ |
 | `IDENTITY_PRIVATE_KEY` | Clave RSA con la que Identity firma TODOS los tokens |
-| `ADMIN_PASSWORD` | Contraseña de `admin@ecoairlines.test` |
+| `ADMIN_PASSWORD` | Contraseña de `admin@ecoairlines.test`. **Desde el 03/11 es `EcoAdmin2026`** a pedido del responsable (proyecto académico); se aplica en cada arranque de Identity |
+| `SEED_DEMO_USERS` | `true` (03/11): crea en la nube los clientes de prueba demo, maría y luis con sus claves conocidas |
 | `BOOKING_CLIENT_SECRET` | `client_secret` del partner `BOOKING_PROTOTIPO` |
 | `ESB_CLIENT_SECRET`, `MS_*_CLIENT_SECRET` | Tokens de servicio internos (D41, D44) |
 | `WEBHOOKS_ENCRYPTION_KEY` | Cifra los secretos de los webhooks |
@@ -347,12 +349,14 @@ node scripts/cloud/generar-env.mjs --domain ecoairlines-reto2.northcentralus.clo
 | Plan `ASP-rgecoairlines-914d` | **F1** (gratis): 60 min de CPU al día, se duerme sin uso | US$0 |
 | `ecoairlines-api-gv` (API del monolito) | Publicada, pero **sin base de datos**: falla al arrancar o al consultar | US$0 |
 | `ecoairlines-auth-gv` (dev-auth) | Publicada, sin base de datos | US$0 |
-| `ecoairlines-web` (Static Web App Free) | Publicada (`nice-hill-090e19c10.1.azurestaticapps.net`); llama a la API que ya no funciona. Será la web del Reto 2 (V2.20) | US$0 |
+| `ecoairlines-web` (Static Web App Free) | **Es la web del Reto 2 desde el 03/11** (`nice-hill-090e19c10.1.azurestaticapps.net`). **No borrar el grupo `rg-ecoairlines` entero** sin moverla antes | US$0 |
 
 - **Respaldo de su base:** `Integracion de sistemas/respaldos/reto1-ecoairlines-db-gv-2026-10-26.dump` (formato `pg_dump -Fc`,
   PostgreSQL 18; restauración probada: 13 esquemas, 16 tablas con datos). Para restaurarlo en un PostgreSQL:
   `pg_restore --no-owner --no-acl -d <base> reto1-ecoairlines-db-gv-2026-10-26.dump`.
-- Se puede borrar todo el grupo cuando ya no se necesite: `az group delete -n rg-ecoairlines --yes` (irreversible).
+- **No borrar el grupo entero:** contiene la Static Web App de la web del Reto 2. Para retirar solo el monolito (irreversible):
+  `az webapp delete -g rg-ecoairlines -n ecoairlines-api-gv` y `az webapp delete -g rg-ecoairlines -n ecoairlines-auth-gv`; el
+  plan F1 `ASP-rgecoairlines-914d` queda vacío y se borra con `az appservice plan delete -g rg-ecoairlines -n ASP-rgecoairlines-914d`.
 - Lo que se borró el 26/10/2026 (a pedido del responsable): la PostgreSQL `ecoairlines-db-gv` y el grupo `rg-vuelos-prod`
   (Azure SQL serverless, plan F1 y una Static Web App).
 

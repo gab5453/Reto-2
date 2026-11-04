@@ -1,6 +1,6 @@
 /**
  * Importes del contrato (`MoneyAmount`): strings decimales con 2 decimales. Internamente se opera en centavos enteros para
- * evitar errores de redondeo de punto flotante. Copiado del monolito (`EcoAirlines.DataAccess/src/common/money.ts`).
+ * evitar errores de redondeo de punto flotante. Copiado del monolito del Reto 1 (`EcoAirlines.DataAccess/src/common/money.ts`, retirado en V2.21).
  */
 export interface MoneyAmount {
   currency: string;

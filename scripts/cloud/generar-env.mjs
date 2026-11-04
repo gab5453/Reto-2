@@ -27,6 +27,8 @@ const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString().trim(
 
 const values = {
   DOMAIN: domain,
+  // Stock a Booking en Azure por REST (D53); el gRPC queda como alternativa si se vacía la URL.
+  BOOKING_STOCK_URL: 'https://booking-core-api.azurewebsites.net/api/v2/inventory/stock',
   BOOKING_GRPC_ADDRESS: args['booking-grpc'] ?? 'booking.epn.edu.ec:50051',
   BOOKING_BUS_URL: '',
   CORS_ORIGINS: '',

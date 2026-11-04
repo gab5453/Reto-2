@@ -6,6 +6,7 @@ import * as protoLoader from '@grpc/proto-loader';
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { CORRELATION_KEY, newCorrelationId } from '@ecoairlines/shared';
 import { OFFERS_CONFIG, type OffersConfig } from '../config/config.js';
+import { localDate } from '../domain/catalog.js';
 import type { StockSyncRecord } from '../domain/model.js';
 import { OFFERS_STORE, type OffersStore } from '../repositories/offers.store.js';
 
@@ -18,9 +19,17 @@ export function findContractFile(file: string, from = dirname(fileURLToPath(impo
   throw new Error(`No se encontró contract/${file}`);
 }
 
+interface StockMessage {
+  service_id: string;
+  item_id: string;
+  date: string;
+  time_slot: string;
+  available_units: number;
+}
+
 interface StockClient extends grpc.Client {
   PushStockUpdate(
-    message: { service_id: string; item_id: string; date: string; time_slot: string; available_units: number; timestamp: string },
+    message: StockMessage & { timestamp: string },
     metadata: grpc.Metadata,
     options: grpc.CallOptions,
     callback: (error: grpc.ServiceError | null, ack?: { success: boolean; message: string }) => void,
@@ -34,6 +43,8 @@ const MAX_BACKOFF_MS = 60_000;
  * sin cambios). Cada cambio de cupos deja pendiente, en su misma transacción, el valor ABSOLUTO de esa cabina (`stock_sync`);
  * este componente lo envía en segundo plano. Nunca bloquea la operación del cliente: si Booking no responde, reintenta con
  * espera creciente (1 s, 2 s, 4 s… hasta 60 s). Si llegan varios cambios antes de enviar, se manda solo el último.
+ * Desde V2.20 (D53) Booking en Azure lo recibe por REST (`BOOKING_STOCK_URL`): mismo mensaje sin `timestamp`, y vale solo
+ * si responde `success: true`. Sin esa URL se usa el gRPC (el simulador local y las pruebas).
  */
 @Injectable()
 export class StockSyncService implements OnModuleInit, OnModuleDestroy {
@@ -49,11 +60,15 @@ export class StockSyncService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit(): void {
-    const definition = protoLoader.loadSync(findContractFile('booking-inventory.proto'), { keepCase: true, longs: String, defaults: true });
-    const { inventory } = grpc.loadPackageDefinition(definition) as unknown as { inventory: { InventoryStockService: new (address: string, credentials: grpc.ChannelCredentials) => StockClient } };
-    this.client = new inventory.InventoryStockService(this.config.bookingGrpcAddress, grpc.credentials.createInsecure());
+    if (!this.config.bookingStockUrl) this.client = this.grpcClient();
     this.timer = setInterval(() => this.kick(), this.config.stockIntervalMs);
     this.timer.unref();
+  }
+
+  private grpcClient(): StockClient {
+    const definition = protoLoader.loadSync(findContractFile('booking-inventory.proto'), { keepCase: true, longs: String, defaults: true });
+    const { inventory } = grpc.loadPackageDefinition(definition) as unknown as { inventory: { InventoryStockService: new (address: string, credentials: grpc.ChannelCredentials) => StockClient } };
+    return new inventory.InventoryStockService(this.config.bookingGrpcAddress, grpc.credentials.createInsecure());
   }
 
   onModuleDestroy(): void {
@@ -93,22 +108,21 @@ export class StockSyncService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async push(row: StockSyncRecord): Promise<boolean> {
-    const metadata = new grpc.Metadata();
-    metadata.set(CORRELATION_KEY, row.correlationId ?? newCorrelationId());
-    const message = {
+    // Un vuelo que ya salió no se vende: su stock no se envía y queda cerrado (si no, se reintentaría para siempre).
+    if (row.date < localDate(Date.now())) {
+      await this.store.markStockPushed(row.segmentId, row.cabinClass, row.version, new Date().toISOString());
+      return false;
+    }
+    const correlationId = row.correlationId ?? newCorrelationId();
+    const message: StockMessage = {
       service_id: this.config.bookingServiceId,
       item_id: `${row.flightNumber}-${row.cabinClass}`,
       date: row.date,
       time_slot: row.timeSlot,
       available_units: row.units,
-      timestamp: String(Date.now()),
     };
     try {
-      const ack = await new Promise<{ success: boolean; message: string }>((resolve, reject) =>
-        this.client!.PushStockUpdate(message, metadata, { deadline: Date.now() + this.config.bookingDeadlineMs }, (error, response) =>
-          error ? reject(error) : resolve(response ?? { success: false, message: 'sin respuesta' }),
-        ),
-      );
+      const ack = this.config.bookingStockUrl ? await this.sendRest(message, correlationId) : await this.sendGrpc(message, correlationId);
       if (!ack.success) throw new Error(`Booking rechazó el stock: ${ack.message}`);
       await this.store.markStockPushed(row.segmentId, row.cabinClass, row.version, new Date().toISOString());
       return true;
@@ -118,5 +132,28 @@ export class StockSyncService implements OnModuleInit, OnModuleDestroy {
       if (row.attempts === 0) this.logger.warn(`Stock ${message.item_id} ${row.date} no se pudo enviar a Booking (se reintenta): ${error instanceof Error ? error.message : error}`);
       return false;
     }
+  }
+
+  private sendGrpc(message: StockMessage, correlationId: string): Promise<{ success: boolean; message: string }> {
+    const metadata = new grpc.Metadata();
+    metadata.set(CORRELATION_KEY, correlationId);
+    return new Promise((resolve, reject) =>
+      this.client!.PushStockUpdate({ ...message, timestamp: String(Date.now()) }, metadata, { deadline: Date.now() + this.config.bookingDeadlineMs }, (error, response) =>
+        error ? reject(error) : resolve(response ?? { success: false, message: 'sin respuesta' }),
+      ),
+    );
+  }
+
+  /** Booking responde `{ success: true }` o un ProblemDetails (400 `VALIDATION_FAILED` con `detail`). */
+  private async sendRest(message: StockMessage, correlationId: string): Promise<{ success: boolean; message: string }> {
+    const response = await fetch(this.config.bookingStockUrl!, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', [CORRELATION_KEY]: correlationId },
+      body: JSON.stringify(message),
+      signal: AbortSignal.timeout(this.config.bookingDeadlineMs),
+    });
+    const body = (await response.json().catch(() => ({}))) as { success?: unknown; message?: unknown; detail?: unknown };
+    const detail = String(body.detail ?? body.message ?? '').slice(0, 300);
+    return { success: response.ok && body.success === true, message: `HTTP ${response.status}${detail ? ` ${detail}` : ''}` };
   }
 }

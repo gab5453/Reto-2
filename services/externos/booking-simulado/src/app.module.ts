@@ -4,6 +4,7 @@ import { configureService, EcoServiceModule, type HealthCheck } from '@ecoairlin
 import { InventoryGrpcServer } from './grpc/inventory.server.js';
 import { EventsController } from './simulator/events.controller.js';
 import { SimulatorStore } from './simulator/simulator.store.js';
+import { StockController } from './simulator/stock.controller.js';
 import { WebhooksController } from './webhooks/webhooks.controller.js';
 
 export const SERVICE = { name: 'booking-simulado', version: '1.0.0' };
@@ -14,7 +15,7 @@ const grpcHealth: HealthCheck = { name: 'grpc', check: () => grpcServer?.healthC
 
 @Module({
   imports: [EcoServiceModule.forRoot({ ...SERVICE, healthChecks: [grpcHealth] })],
-  controllers: [WebhooksController, EventsController],
+  controllers: [WebhooksController, EventsController, StockController],
   providers: [SimulatorStore, InventoryGrpcServer],
 })
 export class AppModule {}

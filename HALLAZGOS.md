@@ -54,14 +54,15 @@
 | BKG-03 | 🟠 | Contrato v2: `tokenUrl` relativa y entrega de credenciales del partner | **Sí** | |
 | BKG-04 | ✅ | Contrato v2: quién llama a `PUT /promociones/contrato` | Resuelto internamente (D35) | Lo define nuestro admin; Booking consulta |
 | BKG-05 | 🟡 | Contrato v2: ningún endpoint lleva un asiento a `BOARDED` | Informativo | `DEPARTED` → `BOARDED` |
-| BKG-06 | 🟠 | Contrato v2: forma del stock por gRPC (absoluto o delta, hora, TLS) | **Sí** | |
+| BKG-06 | ✅ | Contrato v2: forma del stock por gRPC (absoluto o delta, hora, TLS) | Resuelto (03/11) | Booking lo recibe por REST, valor absoluto (D53) |
 | BKG-07 | ✅ | Contrato v2: qué eventos recibe cada suscriptor | Resuelto internamente (D40) | Solo sus reservas + vuelos; stock por gRPC |
 | BKG-08 | 🟠 | Contrato v2: sobre qué precio se aplica `discountPercentage` | **Sí** | |
 | BKG-09 | ⚪ | Contrato v2: la firma del webhook no lleva marca de tiempo | Informativo | |
 | BKG-10 | ⚪ | Contrato v2: inconsistencias menores de nombres y `additionalProperties` | Informativo | Se implementa tal cual |
 | BKG-11 | 🟡 | Contrato v2: zona horaria de `vuelos_programados_hoy` | Sí | |
 | BKG-12 | ⚪ | Nuestro descuento máximo (50 %) es más estricto que el contrato (0–100) | Informativo | D35 |
-| BKG-13 | 🔴 | `booking.epn.edu.ec` no resuelve en el DNS público: el stock gRPC no puede llegar a Booking desde la nube | **Sí**: pedir su dirección pública | Envíos pendientes y reintentados (D33) |
+| BKG-13 | ✅ | `booking.epn.edu.ec` no resuelve en el DNS público: el stock gRPC no puede llegar a Booking desde la nube | Resuelto (03/11) | Booking publicó `POST https://booking-core-api.azurewebsites.net/api/v2/inventory/stock` (D53) |
+| BKG-15 | 🟡 | Webhooks de Booking (`/api/v2/webhooks/vuelos`) «se activan en unos días» | Esperar el aviso | Ver sección 8 |
 | BKG-14 | 🟠 | Contrato v2: `extraBaggage` al crear la reserva no dice si su precio va incluido en el pago | **Sí** | Se ignora al crear; las maletas se compran con `addBaggage` |
 
 ---
@@ -360,7 +361,12 @@
 - **EcoAirlines (D35):** máximo **50 %**. `GET /promociones/contrato` nunca mostrará más de 50; un `PUT` con más de 50 responde
   `422 PROMOTION_DISCOUNT_OUT_OF_RANGE`. Es una regla de negocio propia, compatible con el contrato.
 
-### BKG-13 🔴 `booking.epn.edu.ec` no existe en el DNS público (V2.14, 26/10)
+### BKG-13 ✅ `booking.epn.edu.ec` no existe en el DNS público (V2.14, 26/10) — resuelto el 03/11 (D53)
+
+> **Resolución (03/11):** Booking publicó el stock por REST en Azure: `POST https://booking-core-api.azurewebsites.net/api/v2/inventory/stock`
+> con `service_id`, `item_id`, `date`, `time_slot` y `available_units`; vale si responde `success: true`. Nuestro `service_id` es
+> `NODE_VUE_EQ5`. Primera respuesta real: `success: true`, «Stock sincronizado exitosamente…», `source: HTTP_REST`. El gRPC queda
+> como alternativa (D53). También resuelve BKG-06: valor absoluto por vuelo y cabina.
 - **Contrato:** §9, el stock se envía por gRPC a `booking.epn.edu.ec:50051`.
 - **Hallazgo:** desde la nube (Azure, North Central US) el nombre **no resuelve** (`Name or service not known`): el servidor de
   Booking no está publicado en Internet o solo existe dentro de la red de la EPN.
@@ -380,3 +386,10 @@
   agregarlas después con `POST /bookings/{id}/baggage`, que sí cobra y valida el monto?
 - **Mientras tanto:** se mantiene el comportamiento (se ignoran al crear). La web ya no las ofrece en el checkout: se compran
   desde «Mis viajes» con su propio pago (`addBaggage`). Los **asientos** elegidos (`assignedSeats`) sí se respetan desde V2.17.
+
+### BKG-15 🟡 Webhooks de Booking todavía no activos (03/11)
+
+- **Qué dijeron:** «Los webhooks (`/api/v2/webhooks/vuelos`) se activan en unos días».
+- **Qué falta saber:** si es la URL donde Booking recibe nuestros eventos (hoy los entrega `ms-g-webhooks` a la URL que Booking registra
+  con `POST /vuelos/webhooks`) o por donde nos envían `payment.*` y `package.cancelled` (BKG-01). Con su URL y su secreto de firma se
+  configura sin cambiar código.

@@ -1,11 +1,7 @@
 {
-  // Solución: el monolito (4 capas, en orden de dependencias) y los paquetes del Reto 2 (packages/ y services/).
+  // Solución del Reto 2: packages/ y services/ (el monolito del Reto 1 se retiró en V2.21).
   "files": [],
   "references": [
-    { "path": "./EcoAirlines.DataAccess" },
-    { "path": "./EcoAirlines.DataManagement" },
-    { "path": "./EcoAirlines.Business" },
-    { "path": "./EcoAirlines.API" },
     { "path": "./packages/shared" },
     { "path": "./services/externos/booking-simulado" },
     { "path": "./services/gestion/ms-g-identity" },

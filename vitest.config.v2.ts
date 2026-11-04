@@ -7,7 +7,6 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 /**
  * Pruebas del Reto 2 (microservicios): librería compartida, servicios y prueba de arquitectura v2.
  * Se ejecutan sobre el código fuente: `@ecoairlines/shared` y `@ecoairlines/shared/x.js` apuntan a `packages/shared/src`.
- * El monolito sigue con `vitest.config.ts` y `vitest.config.e2e.ts`.
  */
 export default defineConfig({
   // Decoradores de NestJS (legacy) con metadatos de tipos, igual que tsconfig.base.json: sin esto los `*.spec.ts`, que

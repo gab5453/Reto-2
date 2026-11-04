@@ -1,503 +1,294 @@
-# ARQUITECTURA — AppVuelos / EcoAirlines
+# ARQUITECTURA — EcoAirlines v2 (microservicios)
 
-Documento técnico de la solución: componentes, capas, flujo de una compra, horario, modelo de datos, eventos, seguridad y despliegue.
-Los diagramas están en **Mermaid**: GitHub (y VS Code con la extensión de Mermaid) los dibujan directamente.
+Documento técnico de la versión 2 (Reto 2): componentes, protocolos, flujos, datos, seguridad, observabilidad y despliegue.
+Estado al **03/11/2026** (fase V2.21). Los diagramas están en **Mermaid** (GitHub y VS Code los dibujan).
 
-**En línea:** web https://nice-hill-090e19c10.1.azurestaticapps.net · API y Swagger
-https://ecoairlines-api-gv-fjfaa7b5geg3hphs.brazilsouth-01.azurewebsites.net/docs
+- **Por qué** se tomó cada decisión: `PLAN/PLAN.md` §7 (D1–D53). **Qué** se hizo en cada fase: `CAMBIOS.md`.
+- Eventos: `EVENTOS.md`. Nube: `DESPLIEGUE_AZURE.md`. Dudas con Booking: `HALLAZGOS.md` (serie BKG).
+- La versión 1 (monolito en 4 capas) se retiró en V2.21; su documentación está en `historico/reto1/` y su código en el commit `7cdd384`.
 
-| Documento relacionado | Contenido |
-|-----------------------|-----------|
-| [`contract/vuelos-openapi.yaml`](contract/vuelos-openapi.yaml) | Contrato de la API (fuente de verdad) |
-| [`contract/ecoairlines-extensions.yaml`](contract/ecoairlines-extensions.yaml) | Endpoints propios fuera del contrato |
-| [`EVENTOS.md`](EVENTOS.md) | Catálogo y diseño de eventos (SOA/EDA) |
-| [`EcoAirlines.API/README.md`](EcoAirlines.API/README.md) | Detalle de configuración, seguridad y pruebas |
-| [`PRUEBASSW.md`](PRUEBASSW.md) | Guía de pruebas en Swagger |
-| [`DESPLIEGUE_AZURE.md`](DESPLIEGUE_AZURE.md) | Despliegue en Azure paso a paso |
+**En línea:**
 
----
+| Qué | URL |
+|-----|-----|
+| Web (PWA) | https://nice-hill-090e19c10.1.azurestaticapps.net |
+| API del contrato v2 (Booking) | https://ecoairlines-reto2.northcentralus.cloudapp.azure.com/api/v2/vuelos/... |
+| Swagger del contrato v2 | https://ecoairlines-reto2.northcentralus.cloudapp.azure.com/api/docs/ |
+| Grafana (con contraseña) | https://ecoairlines-reto2.northcentralus.cloudapp.azure.com/grafana/ |
 
-## 1. Componentes
-
-```mermaid
-flowchart LR
-  subgraph Clientes
-    U[Cliente / Administrador<br/>navegador]
-    BH[Booking central del grupo<br/>u otro sistema B2B]
-  end
-
-  subgraph Web["ecoairlines-web (React + Vite)"]
-    UI[Marketplace y panel admin]
-  end
-
-  AUTH["dev-auth<br/>(emite JWT; en producción:<br/>proveedor OAuth2 real)"]
-
-  subgraph API["API EcoAirlines (NestJS, 4 capas)"]
-    direction TB
-    L1["EcoAirlines.API<br/>controllers · JWT/scopes · ProblemDetails<br/>idempotencia · rate limit · Swagger"]
-    L2["EcoAirlines.Business<br/>servicios · reglas · DTOs<br/>bus de eventos"]
-    L3["EcoAirlines.DataManagement<br/>repositorios · gateways"]
-    L4["EcoAirlines.DataAccess<br/>entidades · contextos de datos<br/>sistemas externos simulados"]
-    L1 --> L2 --> L3 --> L4
-  end
-
-  subgraph Externos["Sistemas externos (hoy simulados)"]
-    GDS[(GDS<br/>vuelos · cupos · asientos)]
-    PAY[(Payment API<br/>referencias de pago)]
-  end
-
-  DB[("PostgreSQL<br/>un esquema por dominio")]
-  SUB[Suscriptores de webhooks]
-
-  U --> UI
-  UI -- "login" --> AUTH
-  UI -- "HTTPS + JWT" --> L1
-  BH -- "HTTPS + JWT (contrato)" --> L1
-  L1 -. "verifica firma del JWT" .-> AUTH
-  L4 --> GDS
-  L4 --> PAY
-  L4 --> DB
-  L3 -- "POST firmado (HMAC)" --> SUB
-```
-
-| Componente | Tecnología | Responsabilidad |
-|------------|------------|-----------------|
-| `ecoairlines-web` | React 19, Vite 8, TypeScript | Marketplace (búsqueda, compra, postventa, check-in) y panel de administración |
-| `dev-auth` | Node (driver `pg`) | Simula el servidor OAuth2 del contrato: registro, login y JWT con scopes según el rol; cuentas en PostgreSQL (`auth.users`). Su documento OpenAPI (`dev-auth/openapi.yaml`) aparece en el selector de Swagger de la API para registrarse e iniciar sesión desde ahí |
-| API EcoAirlines | NestJS 12, Node 24, TypeScript | Implementa las 22 operaciones del contrato y las extensiones propias |
-| GDS simulado | `MockGdsService` | Horario publicado, búsqueda, precios, cupos, asientos, estado de vuelo |
-| Payment API simulada | `MockPaymentApiService` | Verifica referencias de pago (aprobado, pendiente o rechazado). La API nunca ve tarjetas |
-| Datos | PostgreSQL (Azure Database for PostgreSQL Flexible Server) | Un esquema por dominio; sin `DATABASE_URL`, en memoria (desarrollo y pruebas). Ver sección 5 |
-| Webhooks | `HttpWebhookDispatcherGateway` | Entrega los eventos a los sistemas suscritos (sección 6) |
+> La VM se apaga a las 23:00 de Ecuador para cuidar el crédito: si la API no responde, ver `DESPLIEGUE_AZURE.md` §5.
 
 ---
 
-## 2. Capas de la API
-
-Cada capa es un *workspace* npm (como un proyecto `.csproj` en una solución .NET) y **solo usa las capas inferiores**:
+## 1. Vista general
 
 ```mermaid
 flowchart TB
-  A["EcoAirlines.API — HTTP"] --> B["EcoAirlines.Business — negocio"]
-  B --> C["EcoAirlines.DataManagement — acceso a datos (interfaces)"]
-  C --> D["EcoAirlines.DataAccess — entidades y sistemas externos"]
+  subgraph Clientes
+    W["Web PWA (React)\nsolo GraphQL"]
+    B["Booking Prototipo\nREST v2 + token de partner"]
+  end
+  subgraph Entrada["1. Entrada"]
+    GW["Gateway\nREST /api/v2/vuelos · GraphQL /api/graphql"]
+  end
+  subgraph Respuesta["2. Microservicios de respuesta"]
+    MV[MS.Vuelos] & MR[MS.Reservas] & MP[MS.Postventa] & MC[MS.Clientes] & MA[MS.Admin]
+  end
+  subgraph Negocio["3. ESB"]
+    ESB["Enrutador · Orquestador (sagas)\nComposición · Entrada de eventos"]
+  end
+  subgraph Gestion["4. Microservicios de gestión (dueños de sus datos)"]
+    ID[Identity] & OF["Offers\ngRPC"] & PS["PostSale\nSOAP"] & BK[Bookings] & SC[Schedule] & FS[FlightStatus] & CI[CheckIn] & CU[Customers] & WH[Webhooks]
+  end
+  PG[("PostgreSQL\nuna base por servicio")]
+  MQ[("RabbitMQ\nCloudEvents")]
+  PAY["Payment API simulada\n(tarjeta, canal web)"]
+
+  W --> GW
+  B --> GW
+  W -- "tarjeta (pk_test)" --> PAY
+  GW --> MV & MR & MP & MC & MA
+  MV & MR & MP & MC & MA --> ESB
+  ESB --> ID & OF & PS & BK & SC & FS & CI & CU & WH
+  ESB -- "captura (sk_test)" --> PAY
+  Gestion --- PG
+  ESB --- MQ
+  OF --- MQ
+  WH --- MQ
+  OF -- "stock (REST, D53)" --> B
+  WH -- "webhooks firmados" --> B
+  B -- "payment.* · package.cancelled" --> ESB
 ```
 
-| Capa | Carpetas | Ejemplo |
-|------|----------|---------|
-| API | `controllers/<dominio>`, `auth`, `middleware`, `interceptors`, `security`, `docs`, `observability` | `BookingsController` recibe `POST /bookings`, valida el DTO y decide `201` o `202` |
-| Business | `services/<dominio>`, `rules`, `dto`, `exceptions`, `common/events` | `BookingsService.create`: valida el hold, los pasajeros y el pago, y asigna asientos |
-| DataManagement | `interfaces/<dominio>`, `repositories/<dominio>`, `gateways/<dominio>` | `BookingRepository` (interfaz) y su implementación sobre la tabla del contexto `bookings` (PostgreSQL o memoria) |
-| DataAccess | `entities/<dominio>`, `context`, `external/gds`, `external/payment`, `seed` | `BookingRecord`, `BookingsDataContext`, `MockGdsService`, `timetable.ts` |
-
-### Dominios
-
-| Dominio | Del contrato | Responsabilidad |
-|---------|:------------:|-----------------|
-| search | ✅ | Búsqueda y mapa de asientos |
-| offers | ✅ | Holds: cupo y precio congelados por 15 min |
-| bookings | ✅ | Reservas, emisión de boletos, listado; fachada pública para los demás |
-| post-sale | ✅ | Maletas, cambio de fecha, cancelación |
-| check-in | ✅ | Check-in y pases de abordar |
-| flight-status | ✅ | Estado operativo del vuelo |
-| webhooks | ✅ | Suscripciones y entrega de eventos |
-| customers | Extensión | Perfil del cliente |
-| admin | Extensión | Panel: indicadores, ocupación, flota, estado de vuelos, **CRUD de rutas programadas**, eventos |
-
-**Reglas que verifica `EcoAirlines.API/test/architecture.spec.ts`:**
-- Ninguna capa importa una superior.
-- Un dominio no toca los repositorios, gateways, entidades ni contextos de otro: solo su API pública (`BookingsFacade`, `HoldService`,
-  `FlightStatusService`).
-- Dependencias permitidas: `admin → bookings`, `admin → flight-status`, `bookings → offers`, `check-in → bookings`,
-  `post-sale → bookings`.
-- El código compartido (`common/`, como el bus de eventos) no depende de ningún dominio.
+**Reglas que verifica `tests/arquitectura-v2/arquitectura.spec.ts`:**
+- Un MS.G **nunca** llama a otro MS.G: solo el ESB los coordina.
+- Los MS de respuesta solo llaman al ESB; el gateway solo a los MS de respuesta.
+- Solo **Offers** (stock), **Webhooks** (eventos salientes) y el **ESB** (eventos entrantes) hablan con Booking. Ninguna
+  operación de un cliente espera a Booking: si no responde, se reintenta después.
 
 ---
 
-## 3. Flujo de una compra
+## 2. Componentes
+
+Puertos locales (`infra/docker-compose.yml`, todos en `127.0.0.1`); dentro de la red de Docker cada servicio escucha en `8080`.
+
+### 2.1 Entrada
+
+| Componente | Protocolo | Puerto local | Qué hace |
+|------------|-----------|--------------|----------|
+| **Gateway** (`services/gateway`) | REST + GraphQL | 8088 | Las **30 operaciones del contrato v2** en `/api/v2/vuelos/*` (la única puerta de Booking), `POST /api/v2/oauth2/token`, Swagger en `/api/docs`, y **GraphQL** en `/api/graphql` (la única puerta de la web, con suscripciones). Verifica el token con la JWKS de Identity y crea el `X-Correlation-Id` si no llega |
+
+### 2.2 Microservicios de respuesta (`services/respuesta`)
+
+| Servicio | Puerto | Operaciones del contrato v2 | Propias (solo por GraphQL) |
+|----------|--------|-----------------------------|----------------------------|
+| **MS.Vuelos** | 5001 | `search`, `seatmap`, estado de vuelo (`GET`, `PATCH`), operaciones, health, eventos, promociones | — |
+| **MS.Reservas** | 5002 | holds, reservas, boletos, asientos, check-in, pases de abordar | asistencia médica |
+| **MS.Postventa** | 5003 | maletas, cambio de fecha, cotización y cancelación | — |
+| **MS.Clientes** | 5004 | webhooks (suscripciones) | registro, login, perfil |
+| **MS.Admin** | 5005 | — | usuarios, partners, precios y promociones, rutas, flota, asistencia, telemetría, indicadores |
+
+Verifican token y scopes, validan la entrada **exacta** al contrato, responden `ProblemDetails` v2, aplican límite de
+peticiones y llaman al ESB con **su propio** token de servicio (D44). **El dueño sale del token**: `sub` (web) o
+`partner:<client_id>:<X-User-Id>` (Booking), nunca del cuerpo.
+
+### 2.3 ESB (`services/esb`, puerto 4000)
+
+| Pieza | Qué hace |
+|-------|----------|
+| **Enrutador** | Una petición → un MS.G, sin coordinación (buscar, consultar reserva, perfil…) |
+| **Orquestador** | **11 sagas** con compensación y estado en `saga_log`: crear reserva, emitir boletos, pago fallido, cambiar asientos, check-in, cancelar (y combo cancelado), cambiar fecha, agregar maletas, cambiar estado de vuelo, guardar precios y descuento máximo, publicar horario |
+| **Composición** | Lecturas de varios MS.G en paralelo: health del nodo (desde caché, < 1 s), operaciones, indicadores, asistencia por vuelo, telemetría |
+| **Entrada de eventos** | `POST /integraciones/booking/eventos`: CloudEvents de Booking firmados (HMAC), sin duplicados (`inbound_events`) |
+| **Transversal** | Idempotencia (`Idempotency-Key`, 24 h), validador de referencias de pago de Booking, adaptador de la Payment API, traducción de errores gRPC/SOAP a `ProblemDetails` |
+
+Cada saga respeta el **timeout de 5 s de Booking**: si no termina a tiempo, responde `202` con el estado pendiente y termina en
+segundo plano (mensaje diferido en RabbitMQ).
+
+### 2.4 Microservicios de gestión (`services/gestion`)
+
+| Servicio | Protocolo | Puerto | Base | Responsabilidad |
+|----------|-----------|--------|------|-----------------|
+| **Identity** | REST | 4001 | `identity` | Usuarios y rol (CLIENTE, ADMIN), login, JWT RS256 + JWKS, **partners** y `client_credentials`, tokens de servicio |
+| **Customers** | REST | 4002 | `customers` | Perfil y asistencia predeterminada |
+| **Webhooks** | REST | 4003 | `webhooks` | Suscripciones, entrega CloudEvents firmada con reintentos, historial y feed con cursor |
+| **Schedule** | REST | 4004 | `schedule` | Rutas, flota, horario, precios por clase, acuerdo de promociones (≤ 50 %) |
+| **FlightStatus** | REST | 4005 | `flight_status` | Estado operativo, transiciones válidas, puerta, demora, historial |
+| **Bookings** | REST | 4006 | `bookings` | Reservas (8 estados), pasajeros, boletos y cupones, PNR, asistencia, referencias de pago únicas, reembolsos |
+| **CheckIn** | REST | 4007 | `check_in` | Check-in (exige boletos emitidos) y pases de abordar (QR, grupo, puerta) |
+| **PostSale** | **SOAP 1.1 (SOA)** | 4008 | `post_sale` | Cotizaciones de cancelación y cambio de fecha, límite de maletas. WSDL en `?wsdl` |
+| **Offers** | **gRPC** | 4009 (health) · 50061 | `offers` | Búsqueda, mapa de asientos con estado, holds (TTL 5–30 min), inventario con cambio atómico, precios; **envía el stock a Booking** |
+
+### 2.5 Externos e infraestructura
+
+| Componente | Puerto | Qué es |
+|------------|--------|--------|
+| **Payment API simulada** (`services/externos/payment-api`) | 4010 | Pasarela con tarjeta para la web: tokenizar → autorizar (navegador) → capturar / anular / reembolsar (ESB) |
+| **Booking simulado** (`services/externos/booking-simulado`) | 4090 · 50051 | Solo para pruebas locales: recibe stock (REST y gRPC) y webhooks, y emite `payment.*` y `package.cancelled` |
+| PostgreSQL 17 | 5432 | Un servidor, **una base y un usuario por servicio** |
+| RabbitMQ | 5672 · 15672 | Bus interno de eventos (CloudEvents) |
+| OTel Collector, Prometheus, Alertmanager, Tempo, Loki, Grafana | 4317/4318, 9090, 9093, 3200, 3100, 3001 | Observabilidad (§6) |
+
+---
+
+## 3. Integración de tecnologías (requisito del Reto 2)
+
+| Tecnología | Dónde | Contrato |
+|------------|-------|----------|
+| **REST + OpenAPI 3** | Contrato v2 de Booking (gateway), MS.G internos, MS de respuesta, ESB, Payment API | `contract/vuelos-openapi-v2.yaml` (del grupo, sin cambios) y `contract/*.openapi.yaml` |
+| **gRPC + Protocol Buffers** | ESB → MS.G.Offers | `contract/ms-g-offers.proto` (`ecoairlines.offers.v1`) |
+| **SOA: SOAP + WSDL + XSD** | ESB → MS.G.PostSale, con `CorrelationId` en `<soap:Header>` | `contract/ms-g-post-sale.wsdl` + `.xsd` |
+| **GraphQL** (con suscripciones) | Web → Gateway | `contract/gateway.graphql` |
+| **Mensajería AMQP + CloudEvents 1.0** | Bus interno, webhooks a Booking, eventos de Booking | `contract/events.asyncapi.yaml` |
+| **OAuth2 `client_credentials` + JWT RS256 / JWKS** | Booking y servicios internos | `contract/ms-g-identity.openapi.yaml` |
+| **PWA** (manifest + service worker) | Web instalable con pases sin conexión | `ecoairlines-web/vite.config.ts` |
+| **OpenTelemetry** | Todos los servicios | `infra/otel/collector.yaml` |
+
+Todo el código es **TypeScript** (Node 24, NestJS 12, React 19). Los contratos se escribieron **antes** del código (V2.1).
+
+---
+
+## 4. Flujos principales
+
+### 4.1 Compra de Booking (canal B2B: Booking cobra)
 
 ```mermaid
 sequenceDiagram
   autonumber
-  actor C as Cliente
-  participant W as ecoairlines-web
-  participant A as dev-auth
-  participant API as API (controllers)
-  participant B as Business (servicios)
-  participant G as GDS
+  participant B as Booking
+  participant G as Gateway
+  participant R as MS.Reservas
+  participant E as ESB
+  participant O as Offers (gRPC)
+  participant K as Bookings
+  B->>G: POST /api/v2/oauth2/token (client_credentials)
+  B->>G: POST /vuelos/offers/hold + X-Correlation-Id
+  G->>R: (token verificado)
+  R->>E: enrutar
+  E->>O: CreateHold
+  O-->>B: holdId, precio congelado (y stock a Booking en segundo plano)
+  B->>G: POST /vuelos/bookings (paymentReference cobrada por Booking)
+  G->>R: 
+  R->>E: saga "Crear reserva"
+  E->>O: ValidateHold (descuento ≤ acuerdo)
+  E->>K: validar pasajeros · claim de la referencia (única)
+  E->>O: ConsumeHold (asientos BOOKED)
+  E->>K: crear reserva
+  E->>O: TransitionBookingSeats (TICKETED)
+  E->>K: emitir boletos
+  E-->>B: 201 CONFIRMED (o 202 TICKET_ISSUING si no alcanza en 5 s)
+  E--)B: webhook booking.confirmed / booking.ticket_issued (firmado)
+```
+
+Si un paso falla, la saga **compensa** en orden inverso: libera asientos, libera la referencia y publica `booking.failed`.
+Un `Idempotency-Key` repetido devuelve la misma respuesta (`Idempotent-Replayed: true`).
+
+### 4.2 Compra en la web (canal directo: cobra la Payment API)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant W as Web
   participant P as Payment API
-  participant E as Bus de eventos
-  participant S as Suscriptor (webhook)
-
-  C->>W: Buscar UIO → BOG
-  W->>API: POST /search (X-Device-Fingerprint)
-  API->>B: CatalogService
-  B->>G: itinerarios, precios y cupos
-  API-->>W: 200 ofertas
-  C->>W: Elegir tarifa
-  W->>A: POST /login
-  A-->>W: JWT (scopes según el rol)
-  W->>API: POST /offers/hold + JWT + Idempotency-Key
-  B->>G: retener cupos
-  API-->>W: 201 holdId (vence en 15 min)
-  C->>W: Pasajeros, asientos, maletas y referencia de pago
-  W->>API: POST /bookings + JWT + Idempotency-Key
-  B->>B: validar hold, pasajeros (edad, documento único), maletas
-  B->>P: verificar paymentReference y monto
-  B->>G: asignar asientos y consumir el hold
-  B->>E: booking.confirmed, booking.ticket_issued
-  API-->>W: 201 reserva CONFIRMED con boletos
-  E-)S: POST firmado (después de responder)
+  participant G as Gateway (GraphQL)
+  participant E as ESB
+  W->>P: POST /payment-methods (tarjeta, pk_test) → token
+  W->>P: POST /payments (autorizar) → paymentReference
+  W->>G: mutation createBooking(paymentReference)
+  G->>E: (vía MS.Reservas) saga "Crear reserva"
+  E->>P: POST /payments/{ref}/capture (sk_test, monto exacto)
+  E-->>W: CONFIRMED
 ```
 
-**Si el pago queda pendiente** (`pay_async_…`), `POST /bookings` responde **202 `PENDING_PAYMENT`** y publica
-`booking.ticket_issuing`. Un proceso diferido confirma la reserva y publica `booking.confirmed` y `booking.ticket_issued`.
+La tarjeta **nunca** llega a nuestros servicios: solo la `paymentReference`. Si la saga falla antes de capturar, el ESB
+**anula** la autorización; si falla después, **reembolsa**.
 
-**Garantías del flujo:**
-- **El dueño sale del JWT:** el `sub` del token es el dueño del hold y de la reserva. El body nunca lo decide.
-- **Idempotencia:** la misma `Idempotency-Key` devuelve la misma respuesta sin duplicar la reserva ni el cobro.
-- **Orden de los pasos:** nada se consume ni se asigna si una validación previa falla.
-- **Errores:** todos salen en formato `ProblemDetails` con el `code` del contrato.
+### 4.3 Cancelación de un vuelo (operaciones)
+
+`PATCH /vuelos/flights/{n}/status` con `CANCELLED` → FlightStatus valida la transición → Offers **cierra la venta** (stock 0, que
+llega a Booking) → cada reserva se cancela con `FLIGHT_CANCELLED` (reembolso del 100 %, calculado para Booking y ejecutado para
+la web) → `flight.status_changed` a los suscriptores.
 
 ---
 
-## 4. Horario de vuelos y rutas programadas
+## 5. Datos
 
-- **Rutas programadas.** Cada una es una línea de ida y vuelta con sus días y su tipo de avión. Al arrancar hay **90 rutas de la red
-  base**: todos los aeropuertos conectados con todos, con 2 vuelos diarios por sentido. El administrador puede **crear, editar y dar
-  de baja** rutas desde el panel (`/admin/routes`).
-- **`buildTimetable(routes)`** (`DataAccess/seed/timetable.ts`):
-  - convierte las rutas en el horario semanal, vuelo por vuelo;
-  - asigna aviones dedicados con base en el origen;
-  - valida que ningún avión esté en dos lugares a la vez y que todos vuelvan a su base al cerrar la semana.
-- **Publicación.** El horario se publica en el GDS, que vende **91 días** (13 semanas exactas) desde hoy. Cada día entra uno nuevo.
-- **Rutas con pasajeros.** No se editan ni se dan de baja (`409`). Para esos vuelos se usa el estado operativo (`CANCELLED`, `DELAYED`).
-- **Flota** (`/admin/aircraft`):
-  - el administrador registra aviones (tipo y base; la matrícula se asigna sola), cambia su base o los retira (solo si no operan
-    rutas);
-  - al crear o editar una ruta puede **elegir los aviones**: deben ser del tipo de la ruta, tener base en el origen y alcanzar para
-    los días elegidos;
-  - si no elige, se conservan los que ya tenía y se agregan aviones nuevos a la flota si faltan.
-- **Tipos de avión.** Son datos maestros (mapa de asientos, alcance, tiempo en tierra): se consultan en `/admin/aircraft-types`, no se
-  editan.
+- **Una base de datos por servicio** en el mismo PostgreSQL, cada una con su propio usuario (`infra/postgres/`). Nadie lee la base
+  de otro: los datos de otro servicio se piden por su API.
+- Documentos JSONB por agregado; sin `DATABASE_URL` cada servicio funciona en memoria (pruebas).
+- **Outbox** en el ESB y en Offers: el evento se guarda en la misma transacción que el cambio y un relé lo publica.
+- Modelo lógico: `PLAN/modelo-conceptual-v4.png`. Tablas por base: `PLAN/PLAN.md` §4.6.
+
+---
+
+## 6. Observabilidad
 
 ```mermaid
 flowchart LR
-  ADM[Administrador] -- "POST/PUT/DELETE /admin/routes" --> RS[AdminRoutesService]
-  RS -- "1" --> VAL["Validar: aeropuertos, alcance del avión,<br/>vuelos duplicados, rutas con pasajeros (409)"]
-  RS -- "2 · publica el horario completo" --> GW[FlightOperationsGateway] --> GDS[("GDS: buildTimetable<br/>(422 si un avión quedaría en dos lugares)")]
-  RS -- "3 · guarda la ruta" --> REPO[(scheduled_routes)]
-  RS -- "4 · flight.schedule_changed" --> BUS[Bus de eventos]
+  S["Los 18 servicios\n(OpenTelemetry SDK)"] -- OTLP --> C[OTel Collector]
+  C --> PR[Prometheus] --> AM[Alertmanager]
+  C --> T[Tempo]
+  C --> L[Loki]
+  PR & T & L --> GF[Grafana]
+  PR & AM & L --> ADM["Panel de administración\n(telemetría, vía ESB)"]
 ```
+
+- **Un proceso = un `X-Correlation-Id`** que nunca cambia: viaja por HTTP, gRPC (metadata), SOAP (`<soap:Header>`), RabbitMQ
+  (`correlation_id` y `correlationid` del CloudEvent) y en el stock y los webhooks a Booking. Cada salto tiene su `X-Request-Id`.
+- Una compra de Booking se ve como **una sola traza** que cruza gateway → MS.Reservas → ESB → Offers (gRPC) → Bookings.
+- **Alertas** (`infra/observability/prometheus/alerts.yml`): servicio caído, collector sin datos, latencia y errores altos,
+  nodo `DOWN` o degradado, cola creciendo, mensajes en la cola de fallidos, stock sin enviar, webhooks agotados.
+- Los logs son JSON con `correlation_id`, `request_id` y `trace_id`, y **nunca** contienen tokens, tarjetas ni datos de salud.
 
 ---
 
-## 5. Modelo de datos
+## 7. Seguridad
 
-**Cómo se guarda hoy (V1.M):** cada **contexto de datos** (`DataAccess/src/context`, equivalente a un `DbContext`) es una base de
-datos del diseño, y su dominio es el único que la usa. Con `DATABASE_URL`, cada contexto es un **esquema de PostgreSQL**:
-- cada **agregado** es una fila con su documento **JSONB** (`id`, `data`, `updated_at`);
-- las tablas se crean solas al arrancar y se cargan en memoria;
-- cada cambio se escribe en la base, en orden;
-- sin la variable, todo queda en memoria (desarrollo y pruebas).
+| Token | Quién lo usa | Contenido |
+|-------|--------------|-----------|
+| **Usuario** | Web | `sub`, `role` (CLIENTE o ADMIN) y scopes del rol |
+| **Partner** | Booking (`client_credentials`) | `token_use = partner`, scopes del partner (sin `flights:admin`). Solo con este token se lee `X-User-Id` |
+| **Servicio** | ESB y MS de respuesta | `token_use = service`; los MS.G solo aceptan el del ESB |
 
-El diagrama muestra el **modelo lógico**: las entidades y relaciones que contienen esos documentos. Es también el destino si más
-adelante se normalizan las tablas.
-
-- **Dentro de un contexto:** relaciones normales con claves foráneas.
-- **Entre contextos:** solo referencias por id (líneas punteadas). No hay claves foráneas entre bases distintas, para poder separar
-  cada dominio como microservicio.
-
-```mermaid
-erDiagram
-  %% bookings
-  BOOKING {
-    uuid booking_id PK
-    string owner_id "sub del JWT"
-    string pnr UK
-    string status "CONFIRMED, PENDING_PAYMENT, CANCELLED..."
-    decimal grand_total
-    string currency
-    string hold_id "ref. offers.HOLD"
-    timestamp created_at
-    timestamp updated_at
-  }
-  PASSENGER {
-    string booking_id FK
-    string passenger_id "p1, a1..."
-    string passenger_type "ADULT, YOUTH, CHILD, INFANT"
-    string associated_adult_id
-    string first_name
-    string last_name
-    string document_type
-    string document_number
-    string nationality
-    date birth_date
-    string email
-    string phone
-  }
-  SEAT_ASSIGNMENT {
-    string booking_id FK
-    string passenger_id FK
-    string segment_id "EA104-20261201"
-    string seat_number
-  }
-  EXTRA_BAGGAGE {
-    string booking_id FK
-    string passenger_id FK
-    string itinerary_id
-    int quantity
-  }
-  PURCHASED_FARE {
-    string booking_id FK
-    string itinerary_id
-    string cabin_class
-    string fare_brand
-    decimal price
-  }
-  TICKET {
-    uuid ticket_id PK
-    string booking_id FK
-    string passenger_id FK
-    string e_ticket_number
-    string status "ISSUED, PENDING, VOIDED, REFUNDED..."
-    timestamp issued_at
-  }
-  TICKET_COUPON {
-    uuid ticket_id FK
-    string segment_id
-    string status
-    string coupon_number
-  }
-  BOOKING_CHANGE {
-    string booking_id FK
-    timestamp changed_at
-    string description
-  }
-  BOOKING ||--|{ PASSENGER : tiene
-  BOOKING ||--|{ PURCHASED_FARE : compra
-  BOOKING ||--|{ TICKET : emite
-  BOOKING ||--o{ BOOKING_CHANGE : historial
-  PASSENGER ||--o{ SEAT_ASSIGNMENT : ocupa
-  PASSENGER ||--o{ EXTRA_BAGGAGE : lleva
-  PASSENGER ||--|| TICKET : recibe
-  TICKET ||--|{ TICKET_COUPON : cubre
-
-  %% offers
-  HOLD {
-    uuid hold_id PK
-    string owner_id
-    string offer_id
-    string status "HELD, RELEASED, EXPIRED, CONSUMED"
-    decimal locked_price
-    int ttl_minutes
-    timestamp expires_at
-  }
-  HOLD_SELECTION {
-    uuid hold_id FK
-    string itinerary_id
-    string cabin_class
-    string fare_brand
-    decimal price
-  }
-  HOLD ||--|{ HOLD_SELECTION : retiene
-
-  %% post-sale
-  QUOTE {
-    uuid quote_id PK
-    string booking_id "ref. bookings.BOOKING"
-    string kind "CANCELLATION o DATE_CHANGE"
-    json payload
-    timestamp expires_at
-  }
-
-  %% check-in
-  CHECK_IN {
-    string booking_id "ref. bookings.BOOKING"
-    string segment_id
-    string passenger_id
-    string seat_number "null para infantes"
-  }
-
-  %% customers
-  CUSTOMER_PROFILE {
-    string owner_id PK "sub del JWT"
-    string first_name
-    string last_name
-    string document_type
-    string document_number
-    date birth_date
-    string email
-    string phone
-    timestamp updated_at
-  }
-
-  %% flight-status
-  FLIGHT_STATUS_OVERRIDE {
-    string flight_number PK
-    date date PK
-    string status
-    timestamp actual_departure_at
-    timestamp actual_arrival_at
-    string updated_by
-  }
-
-  %% webhooks
-  WEBHOOK_SUBSCRIPTION {
-    uuid id PK
-    string owner_id
-    string url
-    string secret
-  }
-  WEBHOOK_EVENT_TYPE {
-    uuid subscription_id FK
-    string event_type
-  }
-  WEBHOOK_SUBSCRIPTION ||--|{ WEBHOOK_EVENT_TYPE : escucha
-
-  %% admin (schedule)
-  SCHEDULED_ROUTE {
-    string route_id PK "EA300-EA301"
-    string origin
-    string destination
-    string outbound_flight_number UK
-    string outbound_departure_local
-    string inbound_flight_number UK
-    string inbound_departure_local
-    string weekdays "MON,WED,FRI"
-    string aircraft_type
-    string source "NETWORK o ADMIN"
-    timestamp updated_at
-    string updated_by
-  }
-  AIRCRAFT {
-    string registration PK "HC-J27"
-    string aircraft_type "A220-300, A320neo, 787-9"
-    string base "aeropuerto donde empieza y termina su semana"
-    string source "NETWORK o ADMIN"
-    timestamp updated_at
-    string updated_by
-  }
-  ROUTE_AIRCRAFT {
-    string route_id FK
-    string registration FK
-    int position "orden en que cubre los días"
-  }
-  SCHEDULED_ROUTE ||--|{ ROUTE_AIRCRAFT : "operada por"
-  AIRCRAFT ||--o{ ROUTE_AIRCRAFT : "opera"
-
-  %% idempotency
-  IDEMPOTENCY_KEY {
-    string key PK "owner + operación + Idempotency-Key"
-    string fingerprint "hash del body"
-    string status "IN_PROGRESS, COMPLETED"
-    int status_code
-    json body
-    timestamp expires_at "24 h"
-  }
-
-  BOOKING }o..|| HOLD : "se crea desde"
-  QUOTE }o..|| BOOKING : "cotiza"
-  CHECK_IN }o..|| BOOKING : "registra"
-```
-
-| Base de datos (esquema) | Contexto | Dominio dueño | Entidades |
-|----------------------|-----------------|---------------|--------|
-| `bookings` | `BookingsDataContext` | bookings | BOOKING, PASSENGER, SEAT_ASSIGNMENT, EXTRA_BAGGAGE, PURCHASED_FARE, TICKET, TICKET_COUPON, BOOKING_CHANGE |
-| `offers` | `OffersDataContext` | offers | HOLD, HOLD_SELECTION |
-| `post-sale` | `PostSaleDataContext` | post-sale | QUOTE |
-| `check-in` | `CheckInDataContext` | check-in | CHECK_IN |
-| `customers` | `CustomersDataContext` | customers | CUSTOMER_PROFILE |
-| `flight-status` | `FlightStatusDataContext` | flight-status | FLIGHT_STATUS_OVERRIDE |
-| `webhooks` | `WebhooksDataContext` | webhooks | WEBHOOK_SUBSCRIPTION, WEBHOOK_EVENT_TYPE |
-| `schedule` | `AdminDataContext` | admin | SCHEDULED_ROUTE, AIRCRAFT, ROUTE_AIRCRAFT |
-| `idempotency` | `IdempotencyDataContext` | transversal | IDEMPOTENCY_KEY |
-
-**Datos que no son nuestros:** el inventario (cupos y asientos) vive en el **GDS** y los pagos en la **Payment API**. Son sistemas
-externos: la API los consulta mediante gateways y no los copia en sus tablas.
-
-**Tablas físicas en PostgreSQL** (cada una con `id text PRIMARY KEY`, `data jsonb`, `updated_at`):
-
-| Esquema | Tablas | Contenido de cada fila |
-|---------|--------|------------------------|
-| `bookings` | `bookings` | Reserva completa: pasajeros, asientos, maletas, boletos, historial, tarifas |
-| `offers` | `holds` | Hold con sus selecciones y precio bloqueado |
-| `post_sale` | `cancellation_quotes`, `date_change_offers` | Cotización u oferta con su vencimiento |
-| `check_in` | `check_ins` | Asiento por segmento y pasajero de una reserva |
-| `customers` | `profiles` | Perfil del cliente (por `sub`) |
-| `flight_status` | `overrides` | Estado fijado por un administrador (vuelo + fecha) |
-| `webhooks` | `subscriptions` | Suscripción con sus eventos y secreto |
-| `idempotency` | `claims` | Respuesta guardada de una `Idempotency-Key` (24 h) |
-| `schedule` | `routes`, `aircraft` | Ruta programada con sus aviones; avión de la flota |
-| `gds` | `inventory`, `seats`, `meta` | Sistema externo simulado: cupos por segmento y cabina, asientos asignados |
-| `payment` | `used_references` | Sistema externo simulado: referencias de pago ya usadas |
-| `auth` | `users` | dev-auth: cuentas con contraseña derivada (scrypt) |
-
-**Por qué documentos JSONB:**
-- Los agregados del contrato (una reserva con pasajeros, boletos y asientos) se leen y escriben siempre completos.
-- Las relaciones entre dominios son solo referencias por id.
-- Los repositorios no cambiaron.
-
-**Límite y cómo crecer:** la memoria es la copia de trabajo, así que la API corre como **una instancia**. Para escalar a varias, los
-repositorios pasarían a consultar PostgreSQL directamente (o con TypeORM, como la plantilla), sin tocar servicios ni controllers.
+Todos son RS256, firmados por Identity y verificados con su JWKS. Además: recurso ajeno → `404`; contraseñas y secretos con
+`scrypt`; secretos de webhooks cifrados; CORS solo para la web publicada; límite de peticiones; introspección de GraphQL
+apagada en producción; el dato de **asistencia médica** no sale en webhooks, logs ni trazas.
 
 ---
 
-## 6. Eventos (SOA/EDA)
+## 8. Despliegue
 
 ```mermaid
 flowchart LR
-  subgraph Productores
-    BK[bookings]
-    PS[post-sale]
-    CI[check-in]
-    AD[admin]
+  U[Navegador] -- HTTPS --> SWA["Azure Static Web App (Free)\nweb PWA"]
+  U -- "HTTPS (GraphQL, tarjeta)" --> CAD
+  BK[Booking en Azure] -- "HTTPS (REST v2, eventos)" --> CAD
+  subgraph VM["VM Azure B2pls_v2 (ARM, 4 GiB) · Docker Compose"]
+    CAD["Caddy\nLet's Encrypt"] --> GWV[gateway] & ESBV["ESB (/integraciones)"] & PAYV[payment-api] & GRF[grafana]
+    GWV --> REST["MS de respuesta → ESB → MS.G"]
+    REST --- DB[(PostgreSQL)] & Q[(RabbitMQ)]
   end
-  BUS{{DomainEventBus<br/>bus interno}}
-  BK & PS & CI & AD -- publish --> BUS
-  BUS -- subscribe --> WH[WebhookDeliveryService]
-  WH -- "POST + X-EcoAirlines-Signature" --> EXT[Booking central · notificaciones · contabilidad]
-  BUS -. "historial" .-> OBS["/admin/events (panel)"]
+  REST -- "stock REST (NODE_VUE_EQ5)" --> BK
 ```
 
-El catálogo completo de eventos, el formato, la firma, los reintentos y el camino hacia un broker (RabbitMQ o Kafka) están en
-[`EVENTOS.md`](EVENTOS.md).
+- **Local:** `npm run infra:up` levanta los 27 contenedores con el mismo `infra/docker-compose.yml`.
+- **Nube:** el mismo Compose más `infra/cloud/docker-compose.cloud.yml` (Caddy, producción, reinicio automático) en **una VM**
+  de Azure (D48: Container Apps costaba más que el crédito). La web va aparte en una Static Web App gratuita.
+- Solo Caddy (80/443) es público; el ESB, los MS, PostgreSQL y RabbitMQ no salen de la VM. SSH solo por 2222 desde una IP.
+- Costo: ≈US$0,034/h encendida + ≈US$6/mes de disco e IP. Guía completa: `DESPLIEGUE_AZURE.md`.
 
 ---
 
-## 7. Seguridad y operación (resumen)
+## 9. Estructura del repositorio
 
-| Tema | Implementación |
-|------|----------------|
-| Autenticación | JWT verificado: firma, `exp`, `iss`, `aud`; rechaza `alg: none`. En producción, un proveedor OAuth2 real (`AUTH_JWKS_URL`) |
-| Autorización | Scopes del contrato (`flights:*`) y propios (`ecoairlines:profile`, `ecoairlines:admin`). Recurso ajeno → `404` |
-| Entrada | DTOs con las reglas del contrato, `additionalProperties: false`, body ≤ 100 kb, saneamiento de claves peligrosas |
-| Abuso | Rate limit por IP (`429` con `Retry-After`) |
-| Cabeceras | helmet, CORS con lista blanca, HSTS en producción |
-| Trazabilidad | `X-Request-Id` en cada respuesta, log de acceso sin datos sensibles, observabilidad en `/admin/observability` |
-| Webhooks | URL anti-SSRF en producción (también al enviar), firma HMAC-SHA256 con el `secret` |
-| Configuración | Se valida completa al arrancar; en producción, sin la configuración segura, la API no inicia |
-
----
-
-## 8. Despliegue (Azure)
-
-```mermaid
-flowchart LR
-  DEV[Push a main] --> GHA{{GitHub Actions}}
-  GHA -- "web cambió: build Node 24 + VITE_*" --> SWA["Static Web Apps<br/>ecoairlines-web"]
-  GHA -- "API cambió: tipos, lint, unitarias, e2e,<br/>paquete de las 4 capas" --> API["App Service B1<br/>ecoairlines-api-gv"]
-  GHA -- "dev-auth cambió" --> AUTH["App Service B1<br/>ecoairlines-auth-gv"]
-  API --> PG[("PostgreSQL Flexible Server<br/>ecoairlines-db-gv · base ecoairlines")]
-  AUTH --> PG
 ```
-
-| Pieza | Servicio | Configuración clave |
-|-------|----------|---------------------|
-| Web | Static Web Apps (Free) | `VITE_API_URL` y `VITE_AUTH_URL` al compilar; `staticwebapp.config.json` (fallback a `index.html`) |
-| API | App Service Linux, Node 24, B1, Always On | `NODE_ENV=production`, secreto JWT propio, `DATABASE_URL`, `CORS_ORIGINS`, `TRUST_PROXY=1`, `SWAGGER_ENABLED`, `PUBLIC_API_URL`, `DEV_AUTH_URL`; inicio `node EcoAirlines.API/dist/main.js` |
-| dev-auth | App Service (mismo plan) | El mismo secreto, emisor y audiencia que la API; `DATABASE_URL`, `CORS_ORIGINS` (web y Swagger), `ADMIN_PASSWORD`; inicio `node server.mjs` |
-| Base de datos | PostgreSQL Flexible Server (Burstable B1ms) | Acceso desde servicios de Azure; las tablas se crean solas al arrancar |
-
-Los secretos viven solo en la configuración de Azure y en los secretos del repositorio (perfiles de publicación). Paso a paso en
-[`DESPLIEGUE_AZURE.md`](DESPLIEGUE_AZURE.md).
+contract/            contratos (API-first): v2 del grupo (sin cambios), uno por microservicio, proto, WSDL, GraphQL, AsyncAPI
+packages/shared/     librería común: ProblemDetails, tokens/JWKS, correlation ID, CloudEvents, RabbitMQ, OpenTelemetry, tipos del contrato
+services/            gateway · respuesta/ (5) · esb · gestion/ (9) · externos/ (payment-api, booking-simulado)
+ecoairlines-web/     web React (solo GraphQL) + PWA
+infra/               docker-compose, Dockerfile común, PostgreSQL, observabilidad, nube (Caddy, cloud-init)
+tests/               arquitectura-v2 (reglas), conformidad-v2 (las 30 operaciones del contrato contra una URL)
+scripts/cloud/       desplegar en la VM, generar secretos, publicar el horario
+PLAN/                plan, decisiones e imágenes de arquitectura y modelo conceptual (v4)
+historico/reto1/     documentación de la versión 1 (monolito)
+```

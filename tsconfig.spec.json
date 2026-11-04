@@ -1,5 +1,5 @@
 {
-  // Verificación de tipos de las pruebas (unitarias, e2e y de arquitectura). No emite archivos.
+  // Verificación de tipos de las pruebas del Reto 2 (servicios, arquitectura y conformidad). No emite archivos.
   // Requiere la solución compilada: `npm run typecheck` ejecuta antes `tsc -b`.
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
@@ -8,22 +8,13 @@
     "declarationMap": false
   },
   "include": [
-    "EcoAirlines.*/src/**/*.spec.ts",
-    "EcoAirlines.API/test/**/*.ts",
     "tests/**/*.ts",
     "packages/*/src/**/*.spec.ts",
     "services/**/src/**/*.spec.ts",
     "services/**/test/**/*.ts",
-    "vitest.config.v2.ts",
-    "vitest.config.ts",
-    "vitest.config.e2e.ts",
-    "vitest.shared.ts"
+    "vitest.config.v2.ts"
   ],
   "references": [
-    { "path": "./EcoAirlines.DataAccess" },
-    { "path": "./EcoAirlines.DataManagement" },
-    { "path": "./EcoAirlines.Business" },
-    { "path": "./EcoAirlines.API" },
     { "path": "./packages/shared" },
     { "path": "./services/externos/booking-simulado" },
     { "path": "./services/gestion/ms-g-identity" },

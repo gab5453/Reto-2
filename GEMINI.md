@@ -89,12 +89,13 @@ La auditoría debe comprobar comportamiento, contrato y arquitectura.
 
 Cuando corresponda ejecutar:
 
-* npm run build
-* npm test
-* npm run test:e2e
+* npm run typecheck
 * npm run lint
+* npm test   (pruebas del Reto 2; el monolito y sus e2e se retiraron en V2.21)
+* npm run test:conformidad-v2   (con CONFORMANCE_BASE_URL apuntando al gateway)
 
-Además revisar diferencias entre el contrato OpenAPI y la implementación.
+Además revisar diferencias entre los contratos de `contract/` (sobre todo `vuelos-openapi-v2.yaml`) y la implementación.
+Estado frente a los requisitos: `CRITERIOS.md`.
 
 ## Formato del informe
 

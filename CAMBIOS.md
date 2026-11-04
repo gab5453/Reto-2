@@ -2319,7 +2319,7 @@ seguridad.
     `npm run dev`). No se tocaron.
 - **Pendiente:** auditoría de Gemini y aprobación de D52. Probar la instalación en un teléfono real requiere HTTPS: queda para V2.20.
 
-### V2.20 — Nube: todo lo demás — 🟡 EN CURSO (02/11): falta publicar la web
+### V2.20 — Nube: todo lo demás — ✅ HECHA (03/11), pendiente de auditoría; GitHub Actions diferido
 
 Sin decisión de hospedaje escrita, se usó lo que ya existe y es portable (el mismo `docker compose` sirve en cualquier servidor): la
 VM de D48 y la Static Web App Free. No se creó ningún recurso. Costo de la sesión: ≈46 min de VM (≈US$0,03); quedó desasignada.
@@ -2353,8 +2353,76 @@ de una prueba con Booking, cuyo timeout es de 5 s.
 cambió, en amd64 y arm64, hacia GHCR. El workflow de la web pasa a las URLs del gateway y la Payment API. Solo se simuló la elección de
 servicios (esb → 1; packages/shared → 18; documentación → 0). `actionlint` no corrió: Docker Hub agotó el tiempo.
 
+**03/11 — Stock a Booking por REST (D53) y hospedaje en Azure.**
+- **Decisión del responsable:** cada equipo hospeda lo suyo; nos quedamos en Azure (la VM de D48). Booking publicó en Azure
+  `POST https://booking-core-api.azurewebsites.net/api/v2/inventory/stock`; nuestro `service_id` es **`NODE_VUE_EQ5`** (el responsable
+  escribió `NODE_VUE__EQ5`; se tomó como error de tipeo del formato `NODE_VUE_EQ1` y es configurable con `BOOKING_SERVICE_ID`).
+- **Offers** envía por REST cuando existe `BOOKING_STOCK_URL` (los 5 campos de Booking, `X-Correlation-Id`, vale solo con
+  `success: true`, mismos reintentos); el gRPC de D33 queda como alternativa. El stock de vuelos que ya salieron no se envía y queda
+  cerrado. El simulador recibe lo mismo por REST, y en local es el camino por defecto. Resuelve BKG-06 y BKG-13; queda BKG-15 (los
+  webhooks de Booking, «en unos días»).
+- **Pruebas:** `ms-g-offers/test/stock-rest.spec.ts` (6) y el REST del simulador; `test:v2` 638 pasan, 41 omitidas. Hubo 2 fallos
+  intermitentes por carga (identity, web-graphql) que pasaron al repetir.
+- **Verificación con Booking real:** un envío a mano con los datos del primer pendiente respondió `success: true`, «Stock sincronizado
+  exitosamente… EA100-BUSINESS: 12 unidades», `source: HTTP_REST`. Tras desplegar, los **736 pendientes desde el 26/10 quedaron
+  cerrados en menos de 1 h, sin errores**: 672 enviados y 64 de vuelos pasados cerrados sin enviar.
+- **El despliegue volvió a fallar** por la misma causa del 02/11, que solo se había corregido en el gateway: 4 MS de respuesta
+  tardaron en sanar, Compose abortó y **el gateway quedó sin arrancar (API pública caída unos minutos)**. Se levantó a mano.
+  Corrección de raíz: los 19 servicios con healthcheck tienen `start_period: 5m` en la nube. Además, este despliegue recompiló
+  todo porque el 02/11 se borró la caché de compilación para liberar disco.
+
+**03/11 — Web publicada** por el responsable en la Static Web App Free (`https://nice-hill-090e19c10.1.azurestaticapps.net`, reemplaza la
+del Reto 1) con `swa deploy`, que el clasificador de permisos no dejó ejecutar a Claude. `recorrido219.mjs` **20/20 en la URL
+pública con CORS activo**: manifest, service worker, compra con tarjeta, check-in, pase con QR en modo avión, «Salir» borra; rutas
+profundas (`/mis-viajes`) 200 y cabeceras de seguridad presentes.
+
 **Pendiente:**
-1. **Publicar la web** en la Static Web App: el build está listo, pero el sistema de permisos rechazó el despliegue a producción y lo
+1. ~~Publicar la web~~ (hecho el 03/11). en la Static Web App: el build está listo, pero el sistema de permisos rechazó el despliegue a producción y lo
    decide el responsable. Reemplaza la web del Reto 1, que ya no funciona.
 2. Subir el commit al repositorio nuevo `Reto-2`, que pidió el responsable (GitHub no admite espacios en el nombre).
 3. Probar la instalación de la PWA en un teléfono real y repetir el recorrido en la URL pública, con CORS activo.
+
+### V2.21 — Documentación, defensa y cierre — ✅ HECHA (03/11), pendiente de la auditoría final de Gemini
+
+**Cierre de V2.20 (decisión del responsable, 03/11):** se da por cerrada con **GitHub Actions diferido**. El workflow por servicio
+(`imagenes-v2.yml`) queda escrito y en pausa; mientras tanto se compila en la VM. Si se activa con el repositorio privado, los
+runners ARM de GitHub no son gratis (la VM es ARM).
+
+**Documentación nueva de la versión 2** (la de la versión 1 se movió a `historico/reto1/`: ARQUITECTURA, EVENTOS, CRITERIOS,
+PRUEBASSW, AUDITORIA y el README anterior):
+- `ARQUITECTURA.md`: vista general, componentes con puertos y bases, tecnologías y contratos, flujos (compra de Booking, compra web,
+  cancelación de vuelo), datos, observabilidad, seguridad, despliegue y estructura. Diagramas Mermaid.
+- `EVENTOS.md`: CloudEvents, exchanges y colas reales de RabbitMQ, catálogo, webhooks a Booking (firma y reintentos 1 min → 6 h),
+  eventos entrantes (4 capas contra duplicados) y stock REST (D53).
+- `CRITERIOS.md`: cada requisito del ingeniero, del contrato v2 y de las mejoras propias, con evidencia y estado (✅/🟡). Lo 🟡:
+  webhooks y eventos de Booking en real, entrega de credenciales, PWA en teléfono, GitHub Actions y auditorías.
+- `DEFENSA.md`: checklist (encender la VM 1 h antes, apagarla al final), demostración de 7 pasos con comandos, preguntas probables y
+  limitaciones.
+- `README.md` reescrito para la versión 2. `CLAUDE.md`, `GEMINI.md` (verificación sin el monolito) y `DESPLIEGUE_AZURE.md`
+  actualizados. **Corregido un consejo peligroso** de `DESPLIEGUE_AZURE.md` §10: borrar el grupo `rg-ecoairlines` borraría también
+  la web del Reto 2; ahora indica borrar solo las dos apps del monolito.
+- Los datos se verificaron contra el código: puertos del Compose, exchanges y colas, tipos de evento, reintentos, rutas del
+  simulador. Se corrigió en el camino la versión de PostgreSQL (17) y una instrucción obsoleta: en local el horario se publica con
+  `scripts/cloud/publicar-horario.mjs` dentro del ESB (`scripts/dev/publicar-horario.mjs` es anterior a V2.10).
+
+**Retiro del monolito y `dev-auth`** (con `git rm`: todo sigue en el historial, commit `7cdd384`):
+- Borrados `EcoAirlines.API`, `.Business`, `.DataManagement`, `.DataAccess`, `dev-auth`, los workflows `deploy-api.yml` y
+  `deploy-auth.yml`, y `vitest.config.ts`, `vitest.config.e2e.ts` y `vitest.shared.ts`.
+- `package.json` (v2.0.0): sin los workspaces ni los scripts del monolito; `npm test` corre las pruebas del Reto 2. `tsconfig.json`,
+  `tsconfig.spec.json`, `.dockerignore` y `package-lock.json` sin referencias (4 entradas `extraneous` quitadas a mano; `npm ci
+  --dry-run` y `npm ls` limpios). Comentarios del código que decían «como hoy `EcoAirlines.API`» pasados a pasado.
+- **No se tocaron** los contratos de `contract/` (algunos lo mencionan como historia) **ni los recursos de Azure** del Reto 1: las
+  dos App Service F1 siguen publicadas (gratis, sin base). Borrarlas es irreversible y lo decide el responsable.
+
+**Verificación:** `npm run typecheck` y `npm run lint` limpios; `npm test` 637 pasan, 41 omitidas y 1 intermitente de tiempo
+(`ms-vuelos`, health < 1 s) que pasa sola (18/18).
+
+**Pendiente:** auditoría final de Gemini (V2.2–V2.21); PWA en un teléfono real; webhooks y eventos de Booking (BKG-01, BKG-15);
+entrega de credenciales.
+
+**03/11 — Usuarios de prueba en la nube (a pedido del responsable).** El responsable no podía entrar como administrador: en la
+nube Identity corre en producción, no crea los clientes de prueba y el administrador tenía una contraseña aleatoria (V2.14). Por ser
+un proyecto académico, pidió las claves conocidas. Sin cambiar código: `docker-compose.cloud.yml` pasa `SEED_DEMO_USERS` a Identity
+(por defecto `false`) e `infra/cloud/.env` fija `ADMIN_PASSWORD=EcoAdmin2026` y `SEED_DEMO_USERS=true`. Verificado por la API pública:
+los 4 inician sesión (`ADMIN` y 3 `CUSTOMER`) y el administrador lista los usuarios. **Riesgo aceptado por el responsable:** cualquiera
+que lea el README puede entrar como administrador en la nube (crear partners, cambiar precios, cancelar vuelos).

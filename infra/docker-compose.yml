@@ -257,7 +257,9 @@ services:
       GRPC_PORT: "50061"
       DATABASE_URL: postgres://offers_svc:${PG_PASSWORD_OFFERS:-dev-offers}@postgres:5432/offers
       IDENTITY_JWKS_URL: http://ms-g-identity:8080/.well-known/jwks.json
-      # Stock a Booking (D33). En local, el simulador; en la nube, grpc://booking.epn.edu.ec:50051 (V2.14).
+      # Stock a Booking (D33, D53): por REST, como Booking en Azure. En local, el simulador; en la nube, BOOKING_STOCK_URL de
+      # cloud/.env. BOOKING_GRPC_ADDRESS solo se usa si se deja vacía la URL.
+      BOOKING_STOCK_URL: ${BOOKING_STOCK_URL:-http://booking-simulado:4090/api/v2/inventory/stock}
       BOOKING_GRPC_ADDRESS: ${BOOKING_GRPC_ADDRESS:-booking-simulado:50051}
       # Outbox (V2.11): hold.created y hold.expired al bus interno (de ahí, Webhooks los entrega a Booking).
       BUS_URL: amqp://${RABBITMQ_USER:-ecoairlines}:${RABBITMQ_PASSWORD:-dev-rabbitmq-solo-local}@rabbitmq:5672

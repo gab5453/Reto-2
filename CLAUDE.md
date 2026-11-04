@@ -2,12 +2,12 @@
 
 ## Objetivo
 
-Migrar el monolito modular del Reto 1 (API NestJS en 4 capas) a una **arquitectura de microservicios**, por fases y sin romper lo
-que ya funciona, **integrarlo con Booking Prototipo según el contrato de Vuelos v2** (prioridad), e incorporar las mejoras de
+Migrar el monolito modular del Reto 1 (API NestJS en 4 capas; **retirado en V2.21**, código en el commit `7cdd384` y documentos en
+`historico/reto1/`) a una **arquitectura de microservicios**, por fases y sin romper lo que ya funciona, **integrarlo con Booking Prototipo según el contrato de Vuelos v2** (prioridad), e incorporar las mejoras de
 administración, asistencia médica, pagos con tarjeta, observabilidad y PWA.
 
 **El plan aprobado y el registro de decisiones están en `PLAN/PLAN.md`.** Antes de cualquier tarea:
-1. Leer `PLAN/PLAN.md` (sobre todo la sección 6, fases, y la sección 7, decisiones D1–D40).
+1. Leer `PLAN/PLAN.md` (sobre todo la sección 6, fases, y la sección 7, decisiones D1–D53). Visión general: `ARQUITECTURA.md`.
 2. Ubicar la fase en curso y trabajar **solo** en ella.
 3. Si una tarea contradice una decisión registrada, señalarlo y pedir confirmación antes de cambiarla.
 

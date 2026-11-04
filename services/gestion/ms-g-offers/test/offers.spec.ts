@@ -163,7 +163,7 @@ describe('acceso y trazabilidad (D41, contrato v2 §6)', () => {
 
 describe('publicación del horario (saga "Publicar horario")', () => {
   it('crea los vuelos con sus cupos por cabina y envía el stock inicial a Booking', async () => {
-    expect(lastStock('EA100')).toMatchObject({ service_id: 'NODE_VUE_ECOAIRLINES', item_id: 'EA100-ECONOMY', date: DAY, time_slot: '07:00', available_units: 162 });
+    expect(lastStock('EA100')).toMatchObject({ service_id: 'NODE_VUE_EQ5', item_id: 'EA100-ECONOMY', date: DAY, time_slot: '07:00', available_units: 162 });
     expect(lastStock('EA100', 'BUSINESS')).toMatchObject({ available_units: 12 });
   });
 

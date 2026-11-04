@@ -4,6 +4,12 @@
 # cloud/.env lo genera scripts/cloud/generar-env.mjs (secretos propios; nunca se sube al repositorio).
 #
 # Lo único público es Caddy (80 y 443). Los demás puertos del compose base quedan en 127.0.0.1 de la VM (no salen de ella).
+# Tras compilar, la VM (burstable, 4 GiB) queda sin CPU y con swap: los servicios tardaron hasta ~3 min en sanar y Compose
+# abortaba el despliegue (el 02/11 el gateway; el 03/11 cuatro MS de respuesta, y el gateway quedó sin arrancar). Durante este
+# margen los fallos del healthcheck no cuentan; sigue quedando "healthy" en cuanto responde.
+x-arranque-lento: &arranque-lento
+  start_period: 5m
+
 services:
   caddy:
     image: caddy:2.11.6-alpine
@@ -30,23 +36,29 @@ services:
   # En la nube todo en producción: Identity exige su clave RSA y secretos propios (sin los de desarrollo ni usuarios demo).
   ms-g-identity:
     restart: unless-stopped
+    healthcheck: *arranque-lento
     environment:
       NODE_ENV: production
+      # Clientes de prueba (demo, maría, luis) con claves conocidas. Solo si cloud/.env lo pide: es un proyecto académico (03/11).
+      SEED_DEMO_USERS: ${SEED_DEMO_USERS:-false}
 
   ms-g-offers:
     restart: unless-stopped
+    healthcheck: *arranque-lento
     environment:
-      # Stock a Booking por gRPC (D33): booking.epn.edu.ec:50051 (BKG-06). Si no responde, se reintenta en segundo plano.
-      BOOKING_GRPC_ADDRESS: ${BOOKING_GRPC_ADDRESS:?falta BOOKING_GRPC_ADDRESS en cloud/.env}
+      # Stock a Booking en Azure por REST (D53, V2.20), con service_id NODE_VUE_EQ5. Si no responde, se reintenta en segundo plano.
+      BOOKING_STOCK_URL: ${BOOKING_STOCK_URL:?falta BOOKING_STOCK_URL en cloud/.env}
 
   ms-g-webhooks:
     restart: unless-stopped
+    healthcheck: *arranque-lento
     environment:
       # Solo destinos https públicos (sin la excepción local para booking-simulado).
       WEBHOOKS_ALLOW_PRIVATE_URLS: "false"
 
   esb:
     restart: unless-stopped
+    healthcheck: *arranque-lento
     environment:
       # Bus de Booking (BKG-01): vacío = no se consume (sus eventos llegan por el webhook firmado de Caddy).
       BOOKING_BUS_URL: ${BOOKING_BUS_URL:-}
@@ -55,6 +67,7 @@ services:
   # para el límite de intentos por IP).
   payment-api:
     restart: unless-stopped
+    healthcheck: *arranque-lento
     environment:
       NODE_ENV: production
       TRUST_PROXY: "1"
@@ -62,9 +75,7 @@ services:
 
   gateway:
     restart: unless-stopped
-    # Tras compilar, la VM (burstable, 4 GiB) queda sin CPU y con swap: el gateway tardó ~3 min en sanar y Compose abortaba antes de Caddy.
-    healthcheck:
-      start_period: 5m
+    healthcheck: *arranque-lento
     environment:
       # Detrás de Caddy (un salto de confianza): la IP del cliente llega en X-Forwarded-For.
       TRUST_PROXY: "1"
@@ -85,20 +96,20 @@ services:
   tempo: { restart: unless-stopped }
 
   # Reinicio automático también para el resto de la ruta de Booking (la VM puede reiniciarse).
-  postgres: { restart: unless-stopped }
-  rabbitmq: { restart: unless-stopped }
+  postgres: { restart: unless-stopped, healthcheck: *arranque-lento }
+  rabbitmq: { restart: unless-stopped, healthcheck: *arranque-lento }
   otel-collector: { restart: unless-stopped }
-  ms-g-schedule: { restart: unless-stopped }
-  ms-g-bookings: { restart: unless-stopped }
-  ms-g-check-in: { restart: unless-stopped }
-  ms-g-post-sale: { restart: unless-stopped }
-  ms-g-flight-status: { restart: unless-stopped }
-  ms-g-customers: { restart: unless-stopped }
-  ms-vuelos: { restart: unless-stopped }
-  ms-reservas: { restart: unless-stopped }
-  ms-postventa: { restart: unless-stopped }
-  ms-clientes: { restart: unless-stopped }
-  ms-admin: { restart: unless-stopped }
+  ms-g-schedule: { restart: unless-stopped, healthcheck: *arranque-lento }
+  ms-g-bookings: { restart: unless-stopped, healthcheck: *arranque-lento }
+  ms-g-check-in: { restart: unless-stopped, healthcheck: *arranque-lento }
+  ms-g-post-sale: { restart: unless-stopped, healthcheck: *arranque-lento }
+  ms-g-flight-status: { restart: unless-stopped, healthcheck: *arranque-lento }
+  ms-g-customers: { restart: unless-stopped, healthcheck: *arranque-lento }
+  ms-vuelos: { restart: unless-stopped, healthcheck: *arranque-lento }
+  ms-reservas: { restart: unless-stopped, healthcheck: *arranque-lento }
+  ms-postventa: { restart: unless-stopped, healthcheck: *arranque-lento }
+  ms-clientes: { restart: unless-stopped, healthcheck: *arranque-lento }
+  ms-admin: { restart: unless-stopped, healthcheck: *arranque-lento }
 
 volumes:
   caddy-data:

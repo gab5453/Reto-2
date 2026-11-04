@@ -6,7 +6,7 @@
 > (serie **BKG**). No se ha modificado código.
 > Flujo del proyecto (`CAMBIOS.md`): **propuesta → aprobación → implementación por fases → verificación → auditoría**.
 > El plan se ejecuta **una fase a la vez**, con la aprobación del responsable al final de cada una. **Prioridad: todo lo que se
-> vincula con Booking** (sección 6). Fase en curso: **V2.20** 🟡: sistema y observabilidad desplegados en la VM y verificados; falta publicar la web (GitHub Actions en pausa; el sistema se mantiene en la VM). V2.14 espera a Booking (BKG-01, BKG-06, BKG-13). Dónde se hospeda todo a largo plazo sigue sin decisión escrita (`PASOS_FINALES.md`).
+> vincula con Booking** (sección 6). Estado (03/11): **V2.2–V2.21 hechas**, pendientes de la auditoría de Gemini. V2.20 cerrada con **GitHub Actions diferido** (en pausa por decisión del responsable) y la PWA por probar en un teléfono real. **Hospedaje decidido: Azure.** El monolito y `dev-auth` se retiraron en V2.21. Pendiente de Booking: sus webhooks y eventos (BKG-01, BKG-15) y la entrega de credenciales (V2.14).
 
 | Archivo de esta carpeta | Contenido |
 |-------------------------|-----------|
@@ -685,8 +685,8 @@ desde el contrato, y es la meta de todas las fases hasta V2.14.
 | V2.17 | Web: migración completa a GraphQL y pago con tarjeta | V2.13, V2.15 | ✅ Hecha (26/10, D51) — pendiente de auditoría y aprobación |
 | V2.18 | Web: pantallas nuevas (usuarios, partners, precios y promociones, operaciones, asistencia, telemetría) | V2.17 | ✅ Hecha (02/11) — pendiente de auditoría y aprobación |
 | V2.19 | Web progresiva (PWA) | V2.17 | ✅ Hecha (02/11, D52) — pendiente de auditoría y aprobación |
-| V2.20 | Nube: todo lo demás desplegado | V2.19 | 🟡 En curso (02/11): VM y observabilidad verificadas; falta publicar la web. GitHub Actions en pausa: se mantiene la VM |
-| V2.21 | Documentación, defensa y retiro del monolito | V2.20 | |
+| V2.20 | Nube: todo lo demás desplegado | V2.19 | ✅ Hecha (03/11, D53) — **GitHub Actions diferido** (en pausa); falta la PWA en un teléfono real |
+| V2.21 | Documentación, defensa y retiro del monolito | V2.20 | ✅ Hecha (03/11) — pendiente de la auditoría final de Gemini |
 
 ### V2.0 — Decisiones y preparación ✅
 1. ✅ Decisiones D1 a D25 cerradas (20/10) y D26 a D40 (25/10), registradas en la sección 7.
@@ -845,12 +845,12 @@ Los contratos se escriben **antes** que el código. **No se borra ni modifica** 
 2. Caché sin conexión de pases y «Mis viajes»; nada sensible en caché.
 - **Verificación:** auditoría PWA de Lighthouse (11.7.1: la categoría PWA se retiró en la 12); con el modo avión, el pase ya visto se abre.
 
-### V2.20 — Nube: todo lo demás — 🟡 En curso (02/11)
+### V2.20 — Nube: todo lo demás — ✅ Hecha (03/11); GitHub Actions diferido
 1. Web, Payment API y observabilidad (Application Insights / Azure Monitor). Escala a cero solo en lo que Booking no usa.
 2. GitHub Actions por servicio.
 - **Verificación:** recorrido completo en las URLs públicas, con trazas y alertas visibles en la nube.
 
-### V2.21 — Documentación, defensa y cierre
+### V2.21 — Documentación, defensa y cierre — ✅ Hecha (03/11); falta la auditoría de Gemini
 1. `ARQUITECTURA.md` v2, `EVENTOS.md` (CloudEvents), diagramas, `CRITERIOS.md` y guía de defensa.
 2. Retirar el monolito y `dev-auth`.
 - **Verificación:** auditoría final de Gemini.
@@ -915,6 +915,7 @@ de Vuelos v2. D41: aprobada el 25/10. Cambiar una decisión requiere registrarlo
 | D49 | **Payment API simulada en la nube** | **Aprobada (26/10, V2.15).** `services/externos/payment-api` corre en la **misma VM** de D48 (≈70 MB, sin recursos nuevos de Azure: **US$0**) y se publica por Caddy en `https://ecoairlines-reto2.northcentralus.cloudapp.azure.com/payment-api/`, porque el navegador la llama directo con la clave pública (D7). Claves propias `pk_test_…` (navegador) y `sk_test_…` (ESB), generadas en `infra/cloud/.env` | Aprovechar lo que ya está pagado: la compra web completa se puede probar en la nube sin gastar crédito. Es un sistema externo (como Stripe): no usa los tokens de Identity ni pasa por el gateway |
 | D50 | **Observabilidad en la nube** (precisa D20) | **Aprobada (26/10, V2.16).** La misma pila en local y en la nube, dentro de la VM de D48: OpenTelemetry Collector → **Prometheus** + **Alertmanager** (métricas y alertas), **Tempo** (trazas), **Loki** (logs por OTLP) y **Grafana** (tableros versionados en `infra/observability/`). Grafana público en `/grafana/` con usuario y contraseña (sin acceso anónimo). Retención de 7 días. **US$0** (~0,7 GiB más de memoria en la VM) | Application Insights es gratis hasta 5 GB/mes, pero MS.Admin necesitaría una app de Entra ID con secretos para consultarlo y en local habría otra pila. D20 («todo en la nube») se cumple igual: la pila corre en Azure |
 | D51 | **Cliente GraphQL de la web** | **Aprobada (26/10, V2.17).** Un cliente propio con `fetch` (`ecoairlines-web/src/api/client.ts`, sin Apollo Client ni generación de tipos): convierte el ProblemDetails de `errors[].extensions` al mismo `ApiError` de las pantallas. Cada operación escribe su documento a mano y `tests/arquitectura-v2/web-graphql.spec.ts` los valida TODOS contra `contract/gateway.graphql` y comprueba que la web solo llame al GraphQL y a la Payment API | La web no necesita caché normalizada (cada pantalla pide lo suyo) y así no suma dependencias pesadas; la prueba contra el esquema da la misma seguridad que los tipos generados sin las ~30 dependencias de graphql-codegen |
+| D53 | **Stock a Booking por REST** (precisa D33) | **Aprobada (03/11, V2.20).** Booking publicó en Azure `POST https://booking-core-api.azurewebsites.net/api/v2/inventory/stock` con `service_id` `NODE_VUE_EQ5` (fijo, asignado al equipo 5). Offers lo usa cuando existe `BOOKING_STOCK_URL`; el gRPC de D33 queda como alternativa. Mismo mensaje sin `timestamp`, valor absoluto, mismos reintentos; vale solo con `success: true`. El stock de vuelos que ya salieron no se envía | El gRPC nunca fue alcanzable (BKG-13) y Booking definió este canal para todos los equipos. El servicio de identidad de nodo (`nodo_id` del health) sigue siendo `NODE_VUE_ECOAIRLINES`: no lo pidieron |
 | D52 | **Pases y viajes sin conexión** | **Aprobada (02/11, V2.19).** El service worker guarda SOLO la aplicación (sin `runtimeCaching`). Los pases y «Mis viajes» se guardan aparte, en `localStorage` (`src/lib/offline-trips.ts`), con lo mínimo para abordar: nombre, vuelo, ruta, hora, asiento, grupo, puerta y código de barras. Nunca token, documento, contacto, salud ni pago. Por usuario; «Salir» lo borra; vencer la sesión no; los vuelos pasados se purgan un día después de salir. Las versiones nuevas se instalan si el cliente lo pide | GraphQL va por POST y, sin conexión, no hay sesión (el token vive solo en memoria): la caché del service worker no puede servir un pase. El plan pide abrirlo en modo avión, así que algo debe quedar en el dispositivo: un dato personal mínimo y con vencimiento, a cambio de poder abordar sin señal. Actualizar recarga la página y cerraría la sesión, quizá en plena compra |
 
 **Costos en la nube:** se estimarán antes de V2.14. D39 sube el costo mínimo (réplicas siempre encendidas); se puede apagar todo

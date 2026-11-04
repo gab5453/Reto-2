@@ -16,7 +16,7 @@ import { ContractValidator, Projector } from './validation.js';
 
 /**
  * Plantilla de los 5 MS de respuesta (V2.12, PLAN.md §4.3). Cada servicio declara su contrato y un handler por operación; esta
- * plantilla hace lo común, en este orden, igual que hoy `EcoAirlines.API`:
+ * plantilla hace lo común, en este orden, igual que el monolito del Reto 1 (`EcoAirlines.API`, retirado en V2.21):
  * 1. busca la operación en el contrato (método y ruta; si no existe → 404, otro método → 405);
  * 2. verifica el token y los scopes de la operación (`principal.ts`) → 401/403;
  * 3. aplica el límite de peticiones → 429 con `Retry-After`;

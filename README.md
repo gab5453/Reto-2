@@ -1,145 +1,100 @@
-# AppVuelos — EcoAirlines
+# EcoAirlines v2 — Microservicios (Reto 2)
 
-Plataforma web para una aerolínea ficticia con identidad ecológica, construida a partir de un **contrato REST (OpenAPI 3.0)**.
-Proyecto académico de *Integración de Sistemas* (Reto 1), desarrollado con prácticas profesionales: contrato como fuente de verdad,
-arquitectura en capas, seguridad, persistencia en PostgreSQL, eventos, pruebas automatizadas, despliegue continuo en Azure y
-trazabilidad de cada decisión.
+Aerolínea ficticia con identidad ecológica, integrada con **Booking Prototipo** mediante el **contrato de Vuelos v2** del grupo.
+Proyecto académico de *Integración de Sistemas*: 18 servicios en TypeScript que integran **REST, gRPC, SOAP, GraphQL y mensajería
+con CloudEvents**, con sagas, observabilidad de punta a punta y una web progresiva (PWA), desplegados en Azure.
 
-> EcoAirlines es ficticia: vuelos, precios y cifras ambientales son ilustrativos.
+> EcoAirlines es ficticia: vuelos, precios y cifras ambientales son ilustrativos. La versión 1 (monolito en 4 capas, Reto 1) se
+> retiró en V2.21: su documentación está en [`historico/reto1/`](historico/reto1) y su código en el commit `7cdd384`.
 
 ## En línea (Azure)
 
 | | URL |
 |---|-----|
-| **Web** (marketplace y panel de administración) | https://nice-hill-090e19c10.1.azurestaticapps.net |
-| **API · Swagger** | https://ecoairlines-api-gv-fjfaa7b5geg3hphs.brazilsouth-01.azurewebsites.net/docs |
+| **Web** (PWA: compra, «Mis viajes», check-in, administración) | https://nice-hill-090e19c10.1.azurestaticapps.net |
+| **API del contrato v2** (la usa Booking) | https://ecoairlines-reto2.northcentralus.cloudapp.azure.com/api/v2/vuelos/health |
+| **Swagger** del contrato v2 | https://ecoairlines-reto2.northcentralus.cloudapp.azure.com/api/docs/ |
+| **Grafana** (con usuario y contraseña) | https://ecoairlines-reto2.northcentralus.cloudapp.azure.com/grafana/ |
 
-**Clientes de prueba:** `demo@ecoairlines.test` / `EcoDemo2026`, `maria@ecoairlines.test` / `EcoMaria2026` y `luis@ecoairlines.test` /
-`EcoLuis2026`. La clave del administrador (`admin@ecoairlines.test`) se entrega aparte.
+La VM se apaga a las 23:00 de Ecuador para cuidar el crédito: encenderla según [`DESPLIEGUE_AZURE.md`](DESPLIEGUE_AZURE.md) §5.
+Tarjeta de prueba: `4242 4242 4242 4242` (botón «Usar tarjeta de prueba» en el pago).
 
-**Swagger:**
-1. En el selector de documentos, elegir **"dev-auth"** y hacer `POST /login` para obtener el token.
-2. Pegar el token en **Authorize**.
+**Usuarios de prueba** (en local y en la nube; es un proyecto académico):
 
-Casos de prueba en [`PRUEBASSW.md`](PRUEBASSW.md).
+| Rol | Correo | Contraseña |
+|-----|--------|------------|
+| Administrador (panel en `/admin`) | `admin@ecoairlines.test` | `EcoAdmin2026` |
+| Cliente | `demo@ecoairlines.test` | `EcoDemo2026` |
+| Cliente | `maria@ecoairlines.test` | `EcoMaria2026` |
+| Cliente | `luis@ecoairlines.test` | `EcoLuis2026` |
 
-**Servicios:** Static Web Apps (web), App Service (API y dev-auth), PostgreSQL Flexible Server y GitHub Actions. Cada push a `main`
-despliega solo lo que cambió. Paso a paso en [`DESPLIEGUE_AZURE.md`](DESPLIEGUE_AZURE.md).
-
-## Qué incluye
-
-| Área | Funcionalidad |
-|------|---------------|
-| **API del contrato** | Las 22 operaciones de `contract/vuelos-openapi.yaml`: búsqueda, mapa de asientos, holds, reservas y emisión, postventa (maletas, cambio de fecha, cancelación), check-in y pases, estado de vuelo, webhooks |
-| **Marketplace** | Búsqueda (ida, ida y vuelta, multidestino), tarifas, reserva con asientos y equipaje del grupo en un panel, validación de pasajeros (edad, cédula, documento único), pago por referencia, "Mis viajes", postventa y check-in con QR |
-| **Administración** | Indicadores, ocupación por fecha/origen/ruta, estado operativo de vuelos, pasajeros por vuelo, **CRUD de rutas programadas** y **de la flota**, horario de cada avión, eventos y observabilidad |
-| **Horario** | 90 rutas de ida y vuelta (todos con todos, 180 vuelos diarios), 91 días a la venta, horario semanal fijo por avión, validado para que ningún avión esté en dos lugares a la vez |
-| **Eventos (SOA/EDA)** | Bus interno con 9 eventos del contrato y webhooks firmados con HMAC-SHA256, con reintentos ([`EVENTOS.md`](EVENTOS.md)) |
-| **Datos** | PostgreSQL, con un esquema por dominio; en memoria si no hay base (desarrollo y pruebas) |
-| **Seguridad** | JWT con scopes, propiedad de recursos por usuario, idempotencia, rate limit, CORS por lista blanca, ProblemDetails |
-
-## Estructura
-
-La API está organizada en **4 capas**, como una solución .NET con 4 proyectos (`.sln` + `.csproj`). Aquí cada capa es un
-workspace npm con su `package.json` y su `tsconfig.json`, y cada una solo usa las capas inferiores:
+## Arquitectura en una imagen
 
 ```
-EcoAirlines.API  →  EcoAirlines.Business  →  EcoAirlines.DataManagement  →  EcoAirlines.DataAccess
+Web (GraphQL) ─┐                     ┌─ MS.Vuelos ─┐                ┌─ Identity · Customers · Webhooks · Schedule
+               ├─▶ Gateway ─────────▶├─ MS.Reservas ├─▶ ESB ─────────▶├─ FlightStatus · Bookings · CheckIn  (REST)
+Booking (REST) ┘   /api/v2/vuelos    ├─ MS.Postventa│   sagas        ├─ Offers  (gRPC)  ──stock──▶ Booking
+                   /api/graphql      ├─ MS.Clientes │   composición  └─ PostSale (SOAP)
+                                     └─ MS.Admin ───┘   eventos ◀── Booking          PostgreSQL · RabbitMQ · OpenTelemetry
 ```
 
-| Carpeta / archivo | Contenido |
-|-------------------|-----------|
-| [`EcoAirlines.API/`](EcoAirlines.API) | **API REST** (NestJS + TypeScript): controllers, autenticación, seguridad, ProblemDetails, idempotencia, observabilidad y Swagger en `/docs` |
-| [`EcoAirlines.Business/`](EcoAirlines.Business) | **Lógica de negocio**: services, DTOs del contrato, reglas, excepciones y bus de eventos |
-| [`EcoAirlines.DataManagement/`](EcoAirlines.DataManagement) | **Patrón repositorio**: interfaces, repositorios y gateways hacia el GDS, la Payment API y los webhooks |
-| [`EcoAirlines.DataAccess/`](EcoAirlines.DataAccess) | **Datos**: entidades, un contexto de datos por dominio (un esquema de PostgreSQL cada uno), GDS y Payment API simulados, horario |
-| [`contract/`](contract) | Contrato [`vuelos-openapi.yaml`](contract/vuelos-openapi.yaml): fuente de verdad, no se modifica. Anexo [`ecoairlines-extensions.yaml`](contract/ecoairlines-extensions.yaml): endpoints propios (perfil, cambio de asiento, administración, rutas, flota, eventos y observabilidad) |
-| [`ecoairlines-web/`](ecoairlines-web) | **Sitio web** (React + TypeScript + Vite), verde y blanco |
-| [`dev-auth/`](dev-auth) | Servidor de **autenticación**: registro, login y JWT con scopes según el rol; cuentas en PostgreSQL. Simula al proveedor OAuth2 del contrato |
-| [`.github/workflows/`](.github/workflows) | Despliegue continuo a Azure: web, API (con pruebas) y dev-auth |
-| [`ARQUITECTURA.md`](ARQUITECTURA.md) | **Arquitectura**: componentes, capas, flujo de compra, horario, modelo de datos y eventos (diagramas Mermaid) |
-| [`EVENTOS.md`](EVENTOS.md) | **Eventos (SOA/EDA)**: catálogo, bus interno, webhooks firmados y evolución hacia un broker |
-| [`DESPLIEGUE_AZURE.md`](DESPLIEGUE_AZURE.md) | Despliegue en Azure paso a paso, URLs públicas y problemas frecuentes |
-| [`PRUEBASSW.md`](PRUEBASSW.md) | Guía de pruebas manuales en Swagger, incluidos los errores 400–429 |
-| [`CRITERIOS.md`](CRITERIOS.md) | Estado frente a la rúbrica de evaluación y descripción de cada parte para la defensa |
-| [`CAMBIOS.md`](CAMBIOS.md) | Bitácora por versiones: qué se pidió, cómo se hizo y cómo se verificó |
-| [`HALLAZGOS.md`](HALLAZGOS.md) | Hallazgos verificados: entorno, nube, plantilla del booking, extensiones y contrato |
-| [`AUDITORIA.md`](AUDITORIA.md) | Auditoría técnica de Gemini sobre la primera versión (histórica, con el estado de cada hallazgo) |
-| [`CLAUDE.md`](CLAUDE.md) / [`GEMINI.md`](GEMINI.md) | Reglas del programador (Claude) y del auditor (Gemini) |
-
-## Requisitos (local)
-
-- **Node.js 24** (LTS; recomendado ≥ 24.15) y npm.
-- Puertos libres: **3000** (API), **4000** (dev-auth) y **5173** (frontend).
-- Opcional: **Docker**, para usar PostgreSQL en local. Sin base de datos, todo funciona en memoria.
+Detalle y diagramas: [`ARQUITECTURA.md`](ARQUITECTURA.md). Eventos: [`EVENTOS.md`](EVENTOS.md).
 
 ## Puesta en marcha (local)
 
-En tres terminales:
+Requisitos: **Node.js 24**, npm y **Docker Desktop** (conviene limitar su memoria con `.wslconfig`, ver `PASOS_FINALES.md` §1).
 
 ```bash
-# 1) API — http://localhost:3000  (Swagger: http://localhost:3000/docs). Desde la raíz del repositorio:
-npm install
-npm run start:dev
+npm ci                     # dependencias de todos los servicios (workspaces)
+npm run infra:up           # 27 contenedores: servicios, PostgreSQL, RabbitMQ, observabilidad y Booking simulado
+# Una vez, en una base nueva: publica el horario con la saga del ESB (el mismo script de la nube)
+docker compose -f infra/docker-compose.yml exec -T -e ADMIN_PASSWORD=EcoAdmin2026 esb node --input-type=module < scripts/cloud/publicar-horario.mjs
 
-# 2) Autenticación — http://localhost:4000
-cd dev-auth
-npm install
-npm start
-
-# 3) Frontend — http://localhost:5173
-cd ecoairlines-web
-npm install
-npm run dev
+cd ecoairlines-web && npm ci && npm run dev   # web en http://localhost:5173
 ```
 
-Abrir **http://localhost:5173** (con `localhost`, no `127.0.0.1`).
-- **Usuarios de prueba:** los clientes de arriba y el administrador `admin@ecoairlines.test` / `EcoAdmin2026` (en local; en la nube se
-  cambia con `ADMIN_PASSWORD`).
-- **Panel de administración y observabilidad:** en `/admin`.
+| Local | URL |
+|-------|-----|
+| Gateway (REST v2, GraphQL, Swagger) | http://localhost:8088/api/v2/vuelos/health · `/api/graphql` · `/api/docs/` |
+| Grafana | http://localhost:3001 (usuario `admin`, contraseña de desarrollo en `infra/docker-compose.yml`) |
+| RabbitMQ | http://localhost:15672 |
+| Booking simulado | http://localhost:4090/simulador/stock · `/simulador/webhooks` |
 
-**Con PostgreSQL en local** (opcional): los datos sobreviven a los reinicios.
+Los usuarios de prueba de arriba también existen en local (`services/gestion/ms-g-identity/src/services/seed.ts`).
 
-```bash
-docker run -d --name ecoairlines-pg -e POSTGRES_PASSWORD=clave -e POSTGRES_DB=ecoairlines -p 5432:5432 postgres:16-alpine
-# y antes de iniciar la API y dev-auth:
-export DATABASE_URL=postgres://postgres:clave@localhost:5432/ecoairlines   # PowerShell: $env:DATABASE_URL="..."
-```
-
-Las tablas se crean solas al arrancar.
-
-**Swagger en local:** generar un token con `npm run token` (en la raíz) o con el documento **"dev-auth"** del selector, y pegarlo en
-*Authorize* → `DevBearer`.
+Para ahorrar memoria, la observabilidad y el simulador se pueden detener (`docker compose stop otel-collector prometheus …`): ver
+`PASOS_FINALES.md` §1.3.
 
 ## Calidad
 
 ```bash
-npm run typecheck && npm run lint && npm test && npm run test:e2e && npm run build   # API (raíz)
-cd ecoairlines-web && npm run lint && npm run build                                   # frontend
+npm run typecheck && npm run lint && npm test     # tipos, lint y 679 pruebas (41 necesitan PostgreSQL/RabbitMQ reales)
+npm run test:conformidad-v2                        # las 30 operaciones del contrato v2 contra CONFORMANCE_BASE_URL
+cd ecoairlines-web && npm run lint && npm run build
 ```
 
-- **Pruebas:** 174 unitarias y 138 e2e.
-- **Conformidad con el contrato:** las e2e validan **cada respuesta real de la API contra los schemas del contrato** y exigen cubrir
-  todas las combinaciones operación + status documentadas.
-- **Arquitectura:** una prueba verifica el sentido de las dependencias entre capas y que ningún dominio acceda a los datos de otro.
-- **Persistencia:** con `TEST_DATABASE_URL`, una prueba reinicia la API contra PostgreSQL y comprueba que los datos siguen ahí.
-- GitHub Actions corre todo esto antes de cada despliegue de la API.
+- **Arquitectura:** `tests/arquitectura-v2` falla si un MS.G llama a otro, si algo distinto de Offers, Webhooks o el ESB habla
+  con Booking, o si la web usa algo distinto de GraphQL y la Payment API.
+- **Contratos primero:** todo contrato está en [`contract/`](contract); los del grupo (`vuelos-openapi-v2.yaml`,
+  `booking-inventory.proto`) no se modifican.
 
-Detalle en [`EcoAirlines.API/README.md`](EcoAirlines.API/README.md).
+## Documentos
 
-## Seguridad (resumen)
-
-- **JWT verificado:** firma, expiración, emisor, audiencia y algoritmos permitidos, con scopes OAuth2 del contrato.
-- **Recursos por usuario:** cada uno ve solo lo suyo; un recurso ajeno responde 404.
-- **Protección HTTP:** cabeceras seguras, CORS por lista blanca, límite de peticiones (`429`), validación y saneamiento de entradas,
-  idempotencia y errores uniformes en formato ProblemDetails.
-- **Webhooks:** firmados con HMAC y con protección anti-SSRF.
-- **Secretos:** los que aparecen en el código son **solo de desarrollo**. La API y dev-auth se niegan a arrancar con ellos en la nube,
-  y los secretos reales viven en la configuración de Azure.
+| Documento | Contenido |
+|-----------|-----------|
+| [`ARQUITECTURA.md`](ARQUITECTURA.md) | Componentes, tecnologías, flujos, datos, seguridad, observabilidad y despliegue |
+| [`EVENTOS.md`](EVENTOS.md) | CloudEvents, bus RabbitMQ, webhooks a Booking, eventos entrantes y stock |
+| [`CRITERIOS.md`](CRITERIOS.md) | Cada requisito (ingeniero, contrato v2, mejoras propias) con su evidencia y estado |
+| [`DEFENSA.md`](DEFENSA.md) | Guía de la defensa: checklist, demostración paso a paso y preguntas probables |
+| [`DESPLIEGUE_AZURE.md`](DESPLIEGUE_AZURE.md) | La nube: costos, encender y apagar, desplegar, secretos, problemas frecuentes |
+| [`PASOS_FINALES.md`](PASOS_FINALES.md) | Recursos que consume el sistema, hospedaje (decidido: Azure) y pendientes |
+| [`PLAN/PLAN.md`](PLAN/PLAN.md) | Plan por fases y **registro de decisiones D1–D53** |
+| [`CAMBIOS.md`](CAMBIOS.md) | Bitácora de cada fase: qué se pidió, cómo se hizo y cómo se verificó |
+| [`HALLAZGOS.md`](HALLAZGOS.md) | Hallazgos y preguntas para Booking (serie BKG) |
+| [`CLAUDE.md`](CLAUDE.md) / [`GEMINI.md`](GEMINI.md) | Reglas del programador (Claude) y del auditor (Gemini) |
 
 ## Flujo de trabajo
 
-1. Cada cambio se propone y se aprueba antes de implementarse, y se registra en `CAMBIOS.md` con su verificación.
-2. El contrato **no se modifica**: las inconsistencias se registran en `HALLAZGOS.md`.
-3. Gemini audita el resultado (`AUDITORIA.md`) y el responsable del proyecto supervisa el funcionamiento antes de cada commit.
-4. Un push a `main` despliega en Azure: la API solo si pasan los tipos, el lint y las pruebas.
+1. Cada fase se propone, se aprueba, se implementa y se verifica (pruebas, navegador y nube), y se registra en `CAMBIOS.md`.
+2. Los contratos del grupo **no se modifican**: las dudas van a `HALLAZGOS.md` (serie BKG).
+3. Gemini audita cada fase; el responsable aprueba antes de cada commit.

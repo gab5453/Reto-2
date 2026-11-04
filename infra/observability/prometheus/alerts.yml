@@ -71,7 +71,7 @@ groups:
         for: 10m
         labels: { severity: warning }
         annotations:
-          summary: '{{ $value }} cambios de stock sin enviar a Booking desde hace más de 10 minutos (BKG-13).'
+          summary: '{{ $value }} cambios de stock sin enviar a Booking desde hace más de 10 minutos (Booking caído o rechaza el stock: ver lastError en Offers).'
       - alert: WebhooksAgotados
         expr: increase(ecoairlines_webhooks_deliveries_total{outcome="EXHAUSTED"}[1h]) > 0
         labels: { severity: warning }

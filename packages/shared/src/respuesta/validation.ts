@@ -4,7 +4,7 @@ import type { InvalidParam } from '../problem-details/problem-details.js';
 import type { ContractFiles, Json, Operation, Parameter, SchemaRef } from './contract.js';
 
 /**
- * Validación de la entrada EXACTA al contrato (V2.12, como hoy `EcoAirlines.API`): `required`, `enum`, `pattern`, formatos,
+ * Validación de la entrada EXACTA al contrato (V2.12, como el monolito del Reto 1, retirado en V2.21): `required`, `enum`, `pattern`, formatos,
  * `minItems`, `additionalProperties: false`… con Ajv sobre los mismos schemas del contrato (no una copia en DTOs). Los valores
  * `default` del contrato se aplican (p. ej. `passengers.adults = 1`, `ttlMinutes = 15`).
  *
