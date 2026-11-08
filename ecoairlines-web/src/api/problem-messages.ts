@@ -6,7 +6,7 @@ const MESSAGES: Record<string, string> = {
   AMOUNT_MISMATCH: 'El monto del pago no coincide con el de la operación.',
   BOOKING_NOT_CONFIRMED: 'Esta acción requiere una reserva confirmada.',
   BAGGAGE_LIMIT_EXCEEDED: 'Superaste el máximo de maletas extra permitidas.',
-  CUTOFF_PASSED: 'El check-in ya cerró para este vuelo (cierra 60 minutos antes de la salida).',
+  CUTOFF_PASSED: 'Ya hiciste check-in: tu reserva ya no se puede modificar.',
   FARE_NOT_CHANGEABLE: 'Tu tarifa no permite cambios de fecha.',
   FLIGHT_ALREADY_DEPARTED: 'Ese vuelo ya salió.',
   CHANGE_OFFER_EXPIRED: 'La opción de cambio expiró. Vuelve a buscar alternativas.',

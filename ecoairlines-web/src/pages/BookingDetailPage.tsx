@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useLocation, useParams } from 'react-router-dom';
-import { getBooking } from '../api/operations';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { getBoardingPasses, getBooking } from '../api/operations';
 import type { BookingDetail, PassengerItem } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { ItinerarySummary } from '../components/ItinerarySummary';
 import { ProblemAlert } from '../components/ProblemAlert';
-import { PASSENGER_LABELS, STATUS_LABELS, formatDateTime, formatMoney } from '../lib/format';
+import { PASSENGER_LABELS, REFUND_STATUS_LABELS, STATUS_LABELS, couponStatus, formatDateTime, formatMoney } from '../lib/format';
 import { AssistancePanel } from './booking/AssistancePanel';
 import { BaggagePanel } from './booking/BaggagePanel';
 import { CancelPanel } from './booking/CancelPanel';
@@ -28,12 +28,19 @@ export function BookingDetailPage() {
   const { bookingId = '' } = useParams();
   const { token } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const justBooked = (location.state as { justBooked?: number } | null)?.justBooked;
   const [booking, setBooking] = useState<BookingDetail | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [panel, setPanel] = useState<Panel>(
     (location.state as { panel?: Panel } | null)?.panel ?? 'CHECK_IN',
   );
+
+  // D55: con check-in hecho (hay pases de abordar) la reserva ya no se modifica. El ESB y Bookings lo hacen cumplir; aquí solo
+  // se ocultan las pestañas. Se vuelve a consultar después de cada cambio (`passesRound`).
+  const [passesRound, setPassesRound] = useState(0);
+  const [passes, setPasses] = useState<{ key: string; checkedIn: boolean } | null>(null);
+  const passesKey = `${bookingId}|${passesRound}`;
 
   const refresh = useCallback(async () => {
     if (!token) return;
@@ -44,6 +51,30 @@ export function BookingDetailPage() {
       setError(caught);
     }
   }, [token, bookingId]);
+
+  /**
+   * Tras cancelar, cambiar o hacer check-in, el aviso «¡Reserva confirmada!» de la compra ya no corresponde: se borra del
+   * historial del navegador (si no, vuelve a salir al recargar o al volver atrás).
+   */
+  const changed = useCallback(async () => {
+    if (justBooked) navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
+    setPassesRound((round) => round + 1);
+    await refresh();
+  }, [justBooked, navigate, location.pathname, location.search, refresh]);
+
+  const bookingStatus = booking?.status;
+  useEffect(() => {
+    if (!token || bookingStatus !== 'CONFIRMED') return;
+    let active = true;
+    getBoardingPasses(token, bookingId).then(
+      ({ boardingPasses }) => active && setPasses({ key: passesKey, checkedIn: boardingPasses.length > 0 }),
+      // Sin check-in (404 / BOARDING_PASS_NOT_AVAILABLE) o sin respuesta: se muestran las pestañas; el backend igual lo valida.
+      () => active && setPasses({ key: passesKey, checkedIn: false }),
+    );
+    return () => {
+      active = false;
+    };
+  }, [token, bookingId, bookingStatus, passesKey]);
 
   useEffect(() => {
     if (!token) return;
@@ -74,10 +105,14 @@ export function BookingDetailPage() {
   if (!booking) return <p className="container section muted">Cargando reserva…</p>;
 
   const confirmed = booking.status === 'CONFIRMED';
+  const refunds = booking.refunds ?? [];
+  const checkedIn = passes?.key === passesKey && passes.checkedIn;
+  const panels = checkedIn ? PANELS.filter((item) => item.id === 'CHECK_IN') : PANELS;
+  const activePanel = panels.some((item) => item.id === panel) ? panel : 'CHECK_IN';
 
   return (
     <div className="container section booking-detail">
-      {justBooked === 201 && (
+      {justBooked === 201 && confirmed && (
         <div className="alert alert-success" role="status">
           <p className="alert-title">¡Reserva confirmada! Tus boletos ya fueron emitidos.</p>
           <p>Te esperamos a bordo. Las emisiones de tu vuelo quedan compensadas. 🌱</p>
@@ -104,6 +139,19 @@ export function BookingDetailPage() {
           <p className="booking-total">{formatMoney(booking.grandTotal)}</p>
         </div>
       </header>
+
+      {booking.status === 'CANCELLED' && refunds.length > 0 && (
+        <section className="card" aria-labelledby="refund-title">
+          <h2 id="refund-title">Reembolso</h2>
+          {refunds.map((refund) => (
+            <dl key={refund.refundId} className="price-list">
+              <div><dt>Te devolvemos</dt><dd><strong>{formatMoney(refund.amount, refund.currency)}</strong></dd></div>
+              <div><dt>Penalidad retenida</dt><dd>{formatMoney(refund.penaltyAmount, refund.currency)}</dd></div>
+              <div><dt>Estado</dt><dd>{REFUND_STATUS_LABELS[refund.status] ?? refund.status}</dd></div>
+            </dl>
+          ))}
+        </section>
+      )}
 
       <section className="card" aria-labelledby="itin-title">
         <h2 id="itin-title">Itinerario</h2>
@@ -154,6 +202,11 @@ export function BookingDetailPage() {
             </tbody>
           </table>
         </div>
+        {confirmed && !checkedIn && (
+          <p className="muted small">
+            Si no elegiste asiento, te asignamos uno al confirmar. Puedes cambiarlo en «Cambiar asientos» hasta hacer el check-in.
+          </p>
+        )}
       </section>
 
       {(booking.tickets?.length ?? 0) > 0 && (
@@ -183,7 +236,8 @@ export function BookingDetailPage() {
                         <div key={segment.segmentId}>
                           {segment.flightNumber ?? segment.segmentId}
                           {segment.departureIataCode && ` ${segment.departureIataCode} → ${segment.arrivalIataCode}`}
-                          {segment.seatNumber && ` · asiento ${segment.seatNumber}`} · {STATUS_LABELS[segment.status] ?? segment.status}
+                          {segment.seatNumber && ` · asiento ${segment.seatNumber}`} ·{' '}
+                          {STATUS_LABELS[couponStatus(ticket.status, segment.status)] ?? segment.status}
                         </div>
                       ))}
                     </td>
@@ -197,29 +251,35 @@ export function BookingDetailPage() {
 
       {confirmed && (
         <section className="card" aria-label="Gestionar reserva">
+          {checkedIn && (
+            <div className="alert alert-info" role="status">
+              <p className="alert-title">Ya hiciste check-in: tu reserva ya no se puede modificar.</p>
+              <p>No se pueden cambiar asientos, maletas, asistencia ni la fecha, ni cancelar. Aquí tienes tus pases de abordar.</p>
+            </div>
+          )}
           <div className="tabs" role="tablist" aria-label="Gestionar reserva">
-            {PANELS.map((item) => (
+            {panels.map((item) => (
               <button
                 key={item.id}
                 type="button"
                 role="tab"
                 id={`panel-tab-${item.id}`}
-                aria-selected={panel === item.id}
+                aria-selected={activePanel === item.id}
                 aria-controls={`panel-${item.id}`}
-                className={`tab ${panel === item.id ? 'is-active' : ''}`}
+                className={`tab ${activePanel === item.id ? 'is-active' : ''}`}
                 onClick={() => setPanel(item.id)}
               >
                 {item.label}
               </button>
             ))}
           </div>
-          <div id={`panel-${panel}`} role="tabpanel" aria-labelledby={`panel-tab-${panel}`} className="tab-panel">
-            {panel === 'CHECK_IN' && <CheckInPanel booking={booking} onChanged={refresh} />}
-            {panel === 'SEAT' && <SeatChangePanel booking={booking} onChanged={refresh} />}
-            {panel === 'BAGGAGE' && <BaggagePanel booking={booking} onChanged={refresh} />}
-            {panel === 'ASSISTANCE' && <AssistancePanel booking={booking} />}
-            {panel === 'DATE_CHANGE' && <DateChangePanel booking={booking} onChanged={refresh} />}
-            {panel === 'CANCEL' && <CancelPanel booking={booking} onChanged={refresh} />}
+          <div id={`panel-${activePanel}`} role="tabpanel" aria-labelledby={`panel-tab-${activePanel}`} className="tab-panel">
+            {activePanel === 'CHECK_IN' && <CheckInPanel booking={booking} onChanged={changed} />}
+            {activePanel === 'SEAT' && <SeatChangePanel booking={booking} onChanged={changed} />}
+            {activePanel === 'BAGGAGE' && <BaggagePanel booking={booking} onChanged={changed} />}
+            {activePanel === 'ASSISTANCE' && <AssistancePanel booking={booking} />}
+            {activePanel === 'DATE_CHANGE' && <DateChangePanel booking={booking} onChanged={changed} />}
+            {activePanel === 'CANCEL' && <CancelPanel booking={booking} onChanged={changed} />}
           </div>
         </section>
       )}

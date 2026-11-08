@@ -2197,3 +2197,9 @@ a.session-name {
 .text-danger {
   color: var(--danger);
 }
+
+/* PLAN_Correccion C-3: la vuelta que sale días después de la ida. */
+.text-warning {
+  color: var(--warn);
+  font-weight: 600;
+}

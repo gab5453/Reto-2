@@ -570,13 +570,13 @@ describe('Cancelar (no se deshace: después de PostSale se reintenta)', () => {
     const response = await cancel();
     expect(response.status).toBe(200);
     expectContract('POST', '/sagas/bookings/{bookingId}/cancel', response);
-    expect(log).toEqual(['bookings GET booking', 'bookings GET fares', 'post-sale ConsumeCancellationQuote', 'offers ReleaseBookingInventory', 'bookings POST cancellation']);
+    expect(log).toEqual(['bookings GET booking', 'check-in GET current', 'bookings GET fares', 'post-sale ConsumeCancellationQuote', 'offers ReleaseBookingInventory', 'bookings POST cancellation']);
     expect(JSON.parse(msg.calls('bookings', 'POST', /cancellation$/)[0]!.body).refund).toMatchObject({ amount: '19.50', penaltyAmount: '100.00', status: 'CALCULATED', originalPaymentReference: REF });
     expect(types()).toEqual(['booking.cancelled']);
   });
 
   it('un fallo ANTES de PostSale no cambia nada (no hay qué compensar)', async () => {
-    for (const key of ['bookings GET booking', 'bookings GET fares', 'post-sale ConsumeCancellationQuote']) {
+    for (const key of ['bookings GET booking', 'check-in GET current', 'bookings GET fares', 'post-sale ConsumeCancellationQuote']) {
       log.length = 0;
       failure = { key, status: 409, code: 'QUOTE_EXPIRED' };
       expect((await cancel()).body.code).toBe('QUOTE_EXPIRED');
@@ -626,6 +626,16 @@ describe('Cancelar (no se deshace: después de PostSale se reintenta)', () => {
     booking = view(B, { status: 'CANCELLED' });
     expect((await cancel()).body.code).toBe('ALREADY_CANCELLED');
   });
+
+  it('★ D55: con check-in hecho el cliente no cancela (409 CUTOFF_PASSED, sin consumir la cotización); el vuelo cancelado y la compensación de Booking sí', async () => {
+    msg.on('check-in', 'GET', `/check-ins/${B}`, () => ({ status: 200, body: { bookingId: B, items: [{ passengerId: 'PAX-1', segmentId: SEG, status: 'CHECKED_IN' }] } }));
+    const response = await cancel();
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe('CUTOFF_PASSED');
+    expect(log).not.toContain('post-sale ConsumeCancellationQuote');
+    expect(msg.calls('bookings', 'POST', /cancellation$/)).toHaveLength(0);
+    expect((await cancel({ reasonCode: 'FLIGHT_CANCELLED' })).status).toBe(200);
+  });
 });
 
 describe('Cambiar fecha', () => {
@@ -634,6 +644,7 @@ describe('Cambiar fecha', () => {
   const confirm = () => as(http().post(`/sagas/bookings/${B}/date-change`)).send({ changeOfferId: OFFER, payment: { paymentReference: 'PAY-BKP-20261024-000222', amount: money('10.00') } });
   const steps: Step[] = [
     { key: 'bookings GET booking' },
+    { key: 'check-in GET current' },
     { key: 'bookings GET fares' },
     { key: 'post-sale ConsumeDateChangeOffer', undo: ['post-sale ReleaseDateChangeOffer'] },
     { key: 'bookings POST claim', undo: ['bookings DELETE claim'] },
@@ -664,11 +675,21 @@ describe('Cambiar fecha', () => {
     await search();
     await failEachStep(steps, confirm);
   });
+
+  it('★ D55: con check-in hecho no se cambia la fecha (409 CUTOFF_PASSED) y no se consume la oferta ni se cobra', async () => {
+    await search();
+    log.length = 0;
+    msg.on('check-in', 'GET', `/check-ins/${B}`, () => ({ status: 200, body: { bookingId: B, items: [{ passengerId: 'PAX-1', segmentId: SEG, status: 'CHECKED_IN' }] } }));
+    const response = await confirm();
+    expect(response.body.code).toBe('CUTOFF_PASSED');
+    expect(log).toEqual(['bookings GET booking']);
+  });
 });
 
 describe('Agregar maletas', () => {
   const steps: Step[] = [
     { key: 'bookings GET booking' },
+    { key: 'check-in GET current' },
     { key: 'bookings GET fares' },
     { key: 'post-sale ValidateBaggagePurchase' },
     { key: 'bookings POST claim', undo: ['bookings DELETE claim'] },
@@ -683,6 +704,13 @@ describe('Agregar maletas', () => {
     expect(postSale.calls[0]!.args).toMatchObject({ line: { passengerId: 'PAX-1', itineraryId: ITI, unitPrice: { total: '35.00' } } });
     expect(types()).toEqual(['booking.baggage_added']);
     await failEachStep(steps, add);
+  });
+
+  it('★ D55: con check-in hecho no se agregan maletas (409 CUTOFF_PASSED) y no se cobra', async () => {
+    msg.on('check-in', 'GET', `/check-ins/${B}`, () => ({ status: 200, body: { bookingId: B, items: [{ passengerId: 'PAX-1', segmentId: SEG, status: 'CHECKED_IN' }] } }));
+    const response = await add();
+    expect(response.body.code).toBe('CUTOFF_PASSED');
+    expect(log).toEqual(['bookings GET booking']);
   });
 
   it('consultas de postventa: opciones de maletas y cotización de cancelación', async () => {

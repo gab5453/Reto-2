@@ -27,7 +27,7 @@ export function SeatSelectionPanel({
   segments,
   passengers,
   seats,
-  note = 'Los asientos son opcionales: si no eliges, te asignamos uno en el check-in sin costo.',
+  note = 'Elegir asiento es opcional y sin costo: si no eliges, te asignamos uno al confirmar. Puedes cambiarlo hasta hacer el check-in.',
   onChange,
 }: {
   offerId: string;

@@ -415,8 +415,7 @@ interface RoundTripPlan {
  * su última vuelta lo deje listo antes de su primera ida de la semana siguiente. `groups.length` = aviones necesarios.
  */
 function planRoundTrips(outbound: RouteSlot, inbound: RouteSlot, weekdays: readonly Weekday[]): RoundTripPlan {
-  let returnDelay = 0;
-  while (departureUtc(inbound, returnDelay) < readyUtc(outbound, 0)) returnDelay++;
+  const returnDelay = returnDelayOf(outbound, inbound);
   let cycle = 1;
   while (departureUtc(outbound, cycle) < readyUtc(inbound, returnDelay)) cycle++;
 
@@ -435,6 +434,30 @@ function planRoundTrips(outbound: RouteSlot, inbound: RouteSlot, weekdays: reado
     groups.push(days);
   }
   return { returnDelay, groups };
+}
+
+/** Días entre la ida y la vuelta: la vuelta sale el primer día en que el avión ya aterrizó y cumplió su tiempo en tierra. */
+function returnDelayOf(outbound: RouteSlot, inbound: RouteSlot): number {
+  let returnDelay = 0;
+  while (departureUtc(inbound, returnDelay) < readyUtc(outbound, 0)) returnDelay++;
+  return returnDelay;
+}
+
+/**
+ * Cómo vuelve el avión de una ruta (PLAN_Correccion C-3): cuántos días después de la ida sale la vuelta, los minutos que pasa
+ * en tierra en el destino (de la llegada de la ida a la salida de la vuelta) y el mínimo que exige su tipo. Es el mismo cálculo
+ * que usa el horario (`planRoundTrips`).
+ */
+export function routeReturn(route: Pick<RouteDefinition, 'origin' | 'destination' | 'outbound' | 'inbound' | 'aircraftType'>) {
+  const outbound: RouteSlot = { ...route.outbound, origin: route.origin, destination: route.destination, aircraft: route.aircraftType };
+  const inbound: RouteSlot = { ...route.inbound, origin: route.destination, destination: route.origin, aircraft: route.aircraftType };
+  const returnDelayDays = returnDelayOf(outbound, inbound);
+  const arrival = departureUtc(outbound, 0) + flightDurationMinutes(route.origin, route.destination) * 60_000;
+  return {
+    returnDelayDays,
+    groundMinutes: Math.round((departureUtc(inbound, returnDelayDays) - arrival) / 60_000),
+    turnaroundMinutes: TURNAROUND_MINUTES[route.aircraftType],
+  };
 }
 
 /** Programa los vuelos del plan: cada grupo de días con un avión de `pool` (en orden) o con uno nuevo si no hay pool. */

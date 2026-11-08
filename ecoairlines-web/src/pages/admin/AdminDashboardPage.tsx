@@ -94,7 +94,7 @@ export function AdminDashboardPage() {
         <Stat label="Por la web" value={stats.bookingsByChannel.web} to="/admin/reservas?canal=WEB" />
         <Stat label="Por Booking" value={stats.bookingsByChannel.booking} to="/admin/reservas?canal=BOOKING" />
         <Stat label="Pasajeros" value={stats.totalPassengers} />
-        <Stat label="Ingresos" value={formatMoney(stats.revenue)} />
+        <Stat label="Ingresos netos" value={formatMoney(stats.revenue)} hint="Cobrado − reembolsos (incluye penalidades retenidas)" />
         <Stat label="Vuelos hoy" value={stats.flightsToday} />
         <Stat label="Clientes / administradores" value={`${stats.customers} / ${stats.admins}`} to="/admin/usuarios" />
         {month ? (

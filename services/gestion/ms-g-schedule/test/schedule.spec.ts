@@ -372,3 +372,25 @@ describe('acuerdo de promociones (D35)', () => {
     expectContract('put', '/promotion-agreements/{partnerId}', response);
   });
 });
+
+describe('regreso de cada ruta (PLAN_Correccion C-3)', () => {
+  it('★ C-3: la ruta dice qué días sale la vuelta y cuánto tiempo pasa el avión en tierra (UIO ⇄ MAD, 787-9)', async () => {
+    // Llega el jueves 12:25 a Madrid; a las 13:00 del jueves el 787-9 no cumple sus 90 min en tierra → la vuelta sale el viernes.
+    const madrid = await esb('post', '/routes').send(routeBody({ destination: 'MAD', outboundDepartureLocal: '19:00', inboundDepartureLocal: '13:00', weekdays: ['WED'], aircraftType: 'Boeing 787-9' }));
+    expect(madrid.status).toBe(201);
+    expectContract('post', '/routes', madrid);
+    expect(madrid.body.outbound).toMatchObject({ arrivalLocal: '12:25', arrivalDayOffset: 1, weekdays: ['WED'] });
+    expect(madrid.body.inbound.weekdays).toEqual(['FRI']);
+    expect(madrid.body).toMatchObject({ returnDelayDays: 2, groundMinutes: 1475, turnaroundMinutes: 90 });
+    // Con tiempo de sobra, la vuelta sale el mismo día (UIO → GYE, A220: 35 min en tierra como mínimo).
+    const sameDay = await esb('post', '/routes').send(routeBody({ outboundDepartureLocal: '04:20', inboundDepartureLocal: '06:20' }));
+    expect(sameDay.status).toBe(201);
+    expect(sameDay.body).toMatchObject({ returnDelayDays: 0, turnaroundMinutes: 35 });
+    expect(sameDay.body.inbound.weekdays).toEqual(['MON', 'WED', 'FRI']);
+    expect(sameDay.body.groundMinutes).toBeGreaterThanOrEqual(35);
+    const listed = (await esb('get', '/routes')).body.find((route: { routeId: string }) => route.routeId === madrid.body.routeId);
+    expect(listed).toMatchObject({ returnDelayDays: 2, groundMinutes: 1475 });
+    await esb('delete', `/routes/${madrid.body.routeId}?soldSeats=0`);
+    await esb('delete', `/routes/${sameDay.body.routeId}?soldSeats=0`);
+  });
+});

@@ -199,6 +199,16 @@ export interface BookingDetail {
   passengers?: PassengerItem[];
   tickets?: Ticket[];
   changes?: { changedAt?: string; description?: string }[];
+  /** Solo en el detalle (`getBooking`): los reembolsos de la reserva cancelada. */
+  refunds?: BookingRefund[];
+}
+
+export interface BookingRefund {
+  refundId: string;
+  amount: string;
+  penaltyAmount: string;
+  currency: string;
+  status: 'CALCULATED' | 'SETTLED' | 'NOT_REFUNDABLE';
 }
 
 export interface BookingListResponse {

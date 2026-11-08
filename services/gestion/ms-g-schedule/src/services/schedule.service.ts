@@ -31,6 +31,7 @@ import {
   flightDurationMinutes,
   flightsOperatingOn,
   type RouteDefinition,
+  routeReturn,
   type Timetable,
   TimetableError,
   weekdayOf,
@@ -316,12 +317,20 @@ function datedFlights(timetable: Timetable, routeOf: Map<string, string>, date: 
 }
 
 function toRouteDto(route: RouteRecord) {
+  const back = routeReturn(route);
   return {
     routeId: route.routeId,
     origin: route.origin,
     destination: route.destination,
-    outbound: routeLeg(route.outbound.flightNumber, route.origin, route.destination, route.outbound.departureLocal),
-    inbound: routeLeg(route.inbound.flightNumber, route.destination, route.origin, route.inbound.departureLocal),
+    outbound: { ...routeLeg(route.outbound.flightNumber, route.origin, route.destination, route.outbound.departureLocal), weekdays: route.weekdays.map((weekday) => WEEKDAY_CODES[weekday]!) },
+    // La vuelta puede salir días después de la ida (si el avión no alcanza a cumplir su tiempo en tierra el mismo día).
+    inbound: {
+      ...routeLeg(route.inbound.flightNumber, route.destination, route.origin, route.inbound.departureLocal),
+      weekdays: route.weekdays.map((weekday) => WEEKDAY_CODES[(weekday + back.returnDelayDays) % 7]!),
+    },
+    returnDelayDays: back.returnDelayDays,
+    groundMinutes: back.groundMinutes,
+    turnaroundMinutes: back.turnaroundMinutes,
     weekdays: route.weekdays.map((weekday) => WEEKDAY_CODES[weekday]!),
     aircraftType: route.aircraftType,
     aircraft: [...route.aircraft],

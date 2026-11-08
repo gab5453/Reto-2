@@ -33,26 +33,60 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+/** Clave de la sesión en `sessionStorage` (D54): una por pestaña. */
+const STORAGE_KEY = 'ecoairlines.session';
+
+/** La sesión guardada en esta pestaña, si sigue vigente. Si venció o no se puede leer, se descarta. */
+function restoreSession(): Session | null {
+  try {
+    const raw = window.sessionStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw) as Partial<Session>;
+    if (typeof saved.token === 'string' && typeof saved.expiresAt === 'number' && saved.expiresAt > Date.now() && saved.user?.email) {
+      return saved as Session;
+    }
+    window.sessionStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Sin almacenamiento (modo privado estricto) o dato corrupto: se empieza sin sesión.
+  }
+  return null;
+}
+
+function storeSession(session: Session | null) {
+  try {
+    if (session) window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(session));
+    else window.sessionStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Si no se puede guardar, la sesión sigue en memoria: solo se pierde al recargar.
+  }
+}
+
 /**
- * El token vive SOLO en memoria (no en localStorage/sessionStorage): un script inyectado no puede
- * leerlo del almacenamiento y desaparece al cerrar o recargar la pestaña. La sesión se cierra sola
- * al vencer el JWT. El login va por GraphQL (`login`/`register` → MS.Clientes → MS.G.Identity), como todo lo demás.
+ * La sesión vive en memoria y en `sessionStorage` (D54, precisa D52): sobrevive a recargar la página o abrir una URL en la
+ * misma pestaña, y se borra al cerrar la pestaña, al vencer el JWT (1 h) o con «Salir». Nunca en `localStorage`. Riesgo
+ * aceptado: un script inyectado podría leer el token (igual podría usar la sesión abierta). El login va por GraphQL
+ * (`login`/`register` → MS.Clientes → MS.G.Identity), como todo lo demás.
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSessionState] = useState<Session | null>(restoreSession);
+
+  const setSession = useCallback((next: Session | null) => {
+    storeSession(next);
+    setSessionState(next);
+  }, []);
 
   /** «Salir» es decisión del cliente: también borra lo guardado para usar sin conexión. */
   const logout = useCallback(() => {
     setSession(null);
     clearOfflineData();
-  }, []);
+  }, [setSession]);
 
   useEffect(() => {
     if (!session) return;
     // Vencer la sesión no borra los pases guardados: el cliente puede necesitarlos en el aeropuerto.
     const timer = window.setTimeout(() => setSession(null), Math.max(0, session.expiresAt - Date.now()));
     return () => window.clearTimeout(timer);
-  }, [session]);
+  }, [session, setSession]);
 
   const authenticate = useCallback(async (request: () => Promise<AuthPayload>): Promise<SessionUser> => {
     let payload: AuthPayload;
@@ -64,7 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const user: SessionUser = { name: payload.user.fullName, email: payload.user.email, role: payload.user.role, scopes: payload.user.scopes };
     setSession({ token: payload.accessToken, user, expiresAt: Date.now() + payload.expiresIn * 1000 });
     return user;
-  }, []);
+  }, [setSession]);
 
   const value = useMemo<AuthContextValue>(
     () => ({

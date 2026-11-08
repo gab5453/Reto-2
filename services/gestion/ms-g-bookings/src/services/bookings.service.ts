@@ -37,6 +37,17 @@ import { BOOKINGS_STORE, type BookingsStore, type BookingsTx, decodeCursor, enco
 const problem = (status: number, code: string, title: string, extra: { detail?: string; invalidParams?: { name: string; reason: string }[] } = {}) =>
   new ProblemDetailsException({ status, code, title, ...extra });
 const notFound = () => problem(404, 'NOT_FOUND', 'Reserva no encontrada.');
+/** Motivo de cancelación en palabras para el historial (error 6 del PLAN_Correccion). */
+const CANCEL_REASONS: Record<string, string> = {
+  CUSTOMER_REQUEST: 'a pedido del cliente',
+  FLIGHT_CANCELLED: 'por cancelación del vuelo',
+  SAGA_COMPENSATION: 'por Booking (paquete cancelado)',
+  OTHER: 'por otro motivo',
+};
+/** Cancelaciones que no pide el cliente: siguen permitidas después del check-in (D55). */
+const SYSTEM_CANCELLATIONS = ['FLIGHT_CANCELLED', 'SAGA_COMPENSATION'];
+/** Estados que no se cobraron: no cuentan en Ingresos ni en Reportes (D-C3). */
+const UNCHARGED_STATUSES = ['FAILED', 'PENDING', 'PENDING_PAYMENT'];
 const PARTNER_REFERENCE = /^PAY-[A-Z0-9-]{6,60}$/;
 const DIRECT_REFERENCE = /^[A-Za-z0-9_-]{6,80}$/;
 
@@ -367,6 +378,7 @@ export class BookingsService {
   async applyBaggage(bookingId: string, input: { passengerId: string; itineraryId: string; quantity: number; amountCharged: MoneyAmount; paymentReference: string }, caller: Caller) {
     return this.store.transaction(async (tx) => {
       const booking = this.confirmed(await this.owned(tx, bookingId, caller));
+      this.assertNotCheckedIn(booking);
       const passenger = booking.passengers.find((candidate) => candidate.passengerId === input.passengerId);
       if (!passenger || passenger.passengerType === 'INFANT') throw problem(400, 'VALIDATION_FAILED', 'Pasajero inválido para maletas.', { invalidParams: [{ name: 'passengerId', reason: 'no existe o es infante' }] });
       if (!unflown(booking, this.now()).some((itinerary) => itinerary.itineraryId === input.itineraryId)) {
@@ -395,6 +407,7 @@ export class BookingsService {
   ) {
     return this.store.transaction(async (tx) => {
       const booking = this.confirmed(await this.owned(tx, bookingId, caller));
+      this.assertNotCheckedIn(booking);
       const replaced = booking.itineraries.filter((itinerary) => input.replacedItineraryIds.includes(itinerary.itineraryId));
       if (replaced.length !== input.replacedItineraryIds.length) throw problem(400, 'VALIDATION_FAILED', 'Un itinerario a cambiar no es de la reserva.', { invalidParams: [{ name: 'replacedItineraryIds', reason: 'desconocido' }] });
       if (replaced.some((itinerary) => !unflown(booking, this.now()).includes(itinerary))) throw problem(409, 'FLIGHT_ALREADY_DEPARTED', 'Un itinerario a cambiar ya salió.');
@@ -440,6 +453,7 @@ export class BookingsService {
       if (!['CONFIRMED', 'TICKET_ISSUING', 'CANCELLATION_PENDING', 'CHANGE_PENDING'].includes(booking.status)) {
         throw problem(409, 'BOOKING_NOT_CANCELLABLE', `Una reserva ${booking.status} no se puede cancelar.`);
       }
+      if (!SYSTEM_CANCELLATIONS.includes(input.reasonCode)) this.assertNotCheckedIn(booking);
       const now = new Date(this.now()).toISOString();
       const voided = booking.tickets.filter((ticket) => ticket.status === 'ISSUED').map((ticket) => ticket.ticketId);
       const refund: Refund = { ...input.refund, originalPaymentReference: input.refund.originalPaymentReference ?? booking.payment.paymentReference };
@@ -465,7 +479,7 @@ export class BookingsService {
         tickets: booking.tickets.map((ticket) => (ticket.status === 'ISSUED' || ticket.status === 'PENDING' ? { ...ticket, status: 'VOIDED' as const } : ticket)),
         refunds: [...booking.refunds, refund],
         cancellation,
-        changes: [...booking.changes, { changedAt: now, description: `Reserva cancelada (${input.reasonCode}).` }],
+        changes: [...booking.changes, { changedAt: now, description: cancellationText(input.reasonCode, input.reason) }],
         updatedAt: now,
       };
       await tx.saveBooking(updated);
@@ -510,30 +524,62 @@ export class BookingsService {
     });
   }
 
+  /**
+   * Indicadores del panel. **Ingresos = cobrado − reembolsado** de toda reserva que se cobró (D-C3, la misma regla que el reporte
+   * de ventas): una cancelada aporta la penalidad que se retuvo y una no reembolsable aporta todo. Los impuestos de los ingresos
+   * son los de las reservas que siguen vigentes (al cancelar, los impuestos se devuelven siempre); el resto es tarifa.
+   */
   async summary(from?: string, to?: string) {
-    const bookings = await this.store.transaction((tx) => tx.bookingsCreatedBetween(from, to));
+    const { bookings, rows } = await this.store.transaction(async (tx) => {
+      const all = await tx.bookingsCreatedBetween(from, to);
+      return { bookings: all, rows: await this.chargedRows(tx, all) };
+    });
     const sold = bookings.filter((booking) => booking.status === 'CONFIRMED' || booking.status === 'CHANGE_PENDING');
     const byStatus: Record<string, number> = {};
     for (const booking of bookings) byStatus[booking.status] = (byStatus[booking.status] ?? 0) + 1;
     const byRoute = new Map<string, { origin: string; destination: string; bookings: number; cents: number }>();
-    for (const booking of sold) {
-      const first = booking.itineraries[0]!;
+    for (const row of rows) {
+      const first = row.booking.itineraries[0]!;
       const key = `${first.segments[0]!.departure.iataCode}-${first.segments.at(-1)!.arrival.iataCode}`;
       const entry = byRoute.get(key) ?? { origin: key.slice(0, 3), destination: key.slice(4), bookings: 0, cents: 0 };
       entry.bookings++;
-      entry.cents += toCents(booking.grandTotal.total);
+      entry.cents += row.charged - row.refunded;
       byRoute.set(key, entry);
     }
+    const net = rows.reduce((sum, row) => sum + row.charged - row.refunded, 0);
+    const taxes = rows.filter((row) => row.booking.status !== 'CANCELLED').reduce((sum, row) => sum + toCents(row.booking.grandTotal.taxes), 0);
     const refunds = bookings.flatMap((booking) => booking.refunds).filter((refund) => refund.status === 'CALCULATED');
     return {
       totalBookings: bookings.length,
       byStatus,
       byChannel: { WEB: bookings.filter((b) => b.channel === 'WEB').length, BOOKING: bookings.filter((b) => b.channel === 'BOOKING').length },
       totalPassengers: sold.reduce((sum, booking) => sum + booking.passengers.length, 0),
-      revenue: moneyFromCents(sold.reduce((sum, booking) => sum + toCents(booking.grandTotal.baseFare), 0), sold.reduce((sum, booking) => sum + toCents(booking.grandTotal.taxes), 0)),
+      revenue: moneyFromCents(net - Math.min(taxes, net), Math.min(taxes, net)),
       refundsCalculated: moneyFromCents(refunds.reduce((sum, refund) => sum + toCents(refund.amount), 0), 0),
       byRoute: [...byRoute.values()].map((route) => ({ origin: route.origin, destination: route.destination, bookings: route.bookings, revenue: (route.cents / 100).toFixed(2) })),
     };
+  }
+
+  /**
+   * Lo cobrado y lo reembolsado de cada reserva que se cobró (no FAILED ni pendiente de pago). Lo cobrado es la suma de sus
+   * referencias de pago registradas (reserva, asientos, maletas, cambio de fecha); sin referencias, su total.
+   */
+  private async chargedRows(tx: BookingsTx, bookings: BookingRecord[]) {
+    const result = [];
+    for (const booking of bookings.filter((candidate) => !UNCHARGED_STATUSES.includes(candidate.status))) {
+      const payments = await tx.paymentsOf(booking.bookingId);
+      const charged = payments.length ? payments.reduce((sum, payment) => sum + toCents(payment.amount.total), 0) : toCents(booking.grandTotal.total);
+      const refunded = booking.refunds.reduce((sum, refund) => sum + toCents(refund.amount), 0);
+      const penalty = booking.refunds.reduce((sum, refund) => sum + toCents(refund.penaltyAmount), 0);
+      const pending = booking.refunds.filter((refund) => refund.status === 'CALCULATED').reduce((sum, refund) => sum + toCents(refund.amount), 0);
+      result.push({ booking, charged, refunded, penalty, pending });
+    }
+    return result;
+  }
+
+  /** D55: después del check-in de cualquier pasajero, la reserva no se modifica (ni se cancela a pedido del cliente). */
+  private assertNotCheckedIn(booking: BookingRecord) {
+    if (booking.checkedIn.length) throw problem(409, 'CUTOFF_PASSED', 'Ya hiciste check-in: la reserva no se puede modificar.');
   }
 
   /**
@@ -549,17 +595,9 @@ export class BookingsService {
     const rows = await this.store.transaction(async (tx) => {
       const candidates = (await tx.bookingsCreatedBetween(shift(from, -1), shift(to, 1))).filter((booking) => {
         const day = localDay(booking.createdAt);
-        return day >= from && day <= to && !['FAILED', 'PENDING', 'PENDING_PAYMENT'].includes(booking.status);
+        return day >= from && day <= to;
       });
-      const result = [];
-      for (const booking of candidates) {
-        const payments = await tx.paymentsOf(booking.bookingId);
-        const charged = payments.length ? payments.reduce((sum, payment) => sum + toCents(payment.amount.total), 0) : toCents(booking.grandTotal.total);
-        const refunded = booking.refunds.reduce((sum, refund) => sum + toCents(refund.amount), 0);
-        const penalty = booking.refunds.reduce((sum, refund) => sum + toCents(refund.penaltyAmount), 0);
-        const pending = booking.refunds.filter((refund) => refund.status === 'CALCULATED').reduce((sum, refund) => sum + toCents(refund.amount), 0);
-        result.push({ booking, charged, refunded, penalty, pending });
-      }
+      const result = await this.chargedRows(tx, candidates);
       return result.sort((a, b) => a.booking.createdAt.localeCompare(b.booking.createdAt));
     });
     const money = formatCents;
@@ -786,3 +824,9 @@ function toAssistance(record: AssistanceRecord) {
   return { passengerId: record.passengerId, type: record.type, needsCompanion: record.needsCompanion, ...(record.notes ? { notes: record.notes } : {}), status: record.status, updatedAt: record.updatedAt };
 }
 
+/** «Reserva cancelada a pedido del cliente: «cambio de planes».»: el motivo escrito queda en el historial (nunca en los logs). */
+function cancellationText(reasonCode: string, reason?: string): string {
+  const why = CANCEL_REASONS[reasonCode] ?? 'por otro motivo';
+  const text = reason?.trim();
+  return text ? `Reserva cancelada ${why}: «${text}».` : `Reserva cancelada ${why}.`;
+}

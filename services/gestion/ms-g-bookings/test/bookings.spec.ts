@@ -459,6 +459,56 @@ describe('reporte de ventas y liquidación con Booking (panel O-3)', () => {
   });
 });
 
+describe('correcciones de la prueba de usuario (PLAN_Correccion C-2)', () => {
+  const refund = (id: string) => ({ refundId: id, amount: '94.50', penaltyAmount: '25.00', currency: 'USD', percentage: 79, status: 'SETTLED' });
+
+  it('★ error 6: el historial guarda el motivo que escribió el cliente, en español', async () => {
+    const { bookingId } = await book({ passengers: [passenger('PAX-1', { documentNumber: cedula('171003430') })] });
+    await esb('post', `/bookings/${bookingId}/tickets`);
+    const cancelled = await esb('post', `/bookings/${bookingId}/cancellation`).send({ reasonCode: 'CUSTOMER_REQUEST', reason: 'Cambio de planes', refund: refund('REF-C2-1'), seatsReleased: 1 });
+    expect(cancelled.status).toBe(200);
+    const view = await esb('get', `/bookings/${bookingId}`, owner());
+    expect(view.body.changes.at(-1).description).toBe('Reserva cancelada a pedido del cliente: «Cambio de planes».');
+  });
+
+  it('★ error 8 (D-C3): los ingresos suman lo cobrado − lo reembolsado: una cancelada aporta la penalidad retenida', async () => {
+    const before = await esb('get', '/indicators', { 'X-Actor-Id': ADMIN });
+    const { bookingId } = await book({ passengers: [passenger('PAX-1', { documentNumber: cedula('171003431') })] });
+    await esb('post', `/bookings/${bookingId}/tickets`);
+    const active = await esb('get', '/indicators', { 'X-Actor-Id': ADMIN });
+    expectContract('get', '/indicators', active);
+    const cents = (value: string) => Math.round(Number(value) * 100);
+    expect(cents(active.body.revenue.total) - cents(before.body.revenue.total)).toBe(11950);
+    await esb('post', `/bookings/${bookingId}/cancellation`).send({ reasonCode: 'CUSTOMER_REQUEST', refund: refund('REF-C2-2'), seatsReleased: 1 });
+    const after = await esb('get', '/indicators', { 'X-Actor-Id': ADMIN });
+    // 119,50 cobrados − 94,50 devueltos = 25,00 que se quedan (antes desaparecía todo al cancelar).
+    expect(cents(after.body.revenue.total) - cents(before.body.revenue.total)).toBe(2500);
+    expect(cents(after.body.revenue.baseFare) + cents(after.body.revenue.taxes)).toBe(cents(after.body.revenue.total));
+  });
+
+  it('★ D55: después del check-in no se agregan maletas, no se cambia la fecha ni se cancela a pedido del cliente; el vuelo cancelado sí', async () => {
+    const { bookingId } = await book({ passengers: [passenger('PAX-1', { documentNumber: cedula('171003432') })] });
+    await esb('post', `/bookings/${bookingId}/tickets`);
+    const segmentId = UIO_GYE.segments[0]!.segmentId;
+    await esb('put', `/bookings/${bookingId}/seats`).send({ reason: 'CHECK_IN_AUTO', seats: [{ passengerId: 'PAX-1', segmentId, seatNumber: '15C' }] });
+
+    const baggage = await esb('post', `/bookings/${bookingId}/baggage`).send({ passengerId: 'PAX-1', itineraryId: UIO_GYE.itineraryId, quantity: 1, amountCharged: { currency: 'USD', total: '35.00' }, paymentReference: 'pi_maletas_c2_0001' });
+    expect(baggage.status).toBe(409);
+    expect(baggage.body.code).toBe('CUTOFF_PASSED');
+    const next = itinerary('EA100', 'UIO', 'GYE', day(4));
+    const dateChange = await esb('post', `/bookings/${bookingId}/date-change`).send({
+      changeOfferId: 'CHG-C2', replacedItineraryIds: [UIO_GYE.itineraryId], newItineraries: [next], newFares: [fareOf(next, '130.00')], priceDifference: { currency: 'USD', total: '0.00' }, paymentReference: null,
+    });
+    expect(dateChange.body.code).toBe('CUTOFF_PASSED');
+    const byCustomer = await esb('post', `/bookings/${bookingId}/cancellation`).send({ reasonCode: 'CUSTOMER_REQUEST', refund: refund('REF-C2-3'), seatsReleased: 1 });
+    expect(byCustomer.body.code).toBe('CUTOFF_PASSED');
+    const byFlight = await esb('post', `/bookings/${bookingId}/cancellation`).send({ reasonCode: 'FLIGHT_CANCELLED', refund: refund('REF-C2-4'), seatsReleased: 1 });
+    expect(byFlight.status).toBe(200);
+    const view = await esb('get', `/bookings/${bookingId}`, owner());
+    expect(view.body.changes.at(-1).description).toBe('Reserva cancelada por cancelación del vuelo.');
+  });
+});
+
 describe('la asistencia (dato de salud) no aparece en los logs', () => {
   it('con el log de peticiones y el logger JSON encendidos, ni el tipo ni las notas llegan a stdout/stderr', async () => {
     process.env['HTTP_REQUEST_LOG'] = 'true';

@@ -121,7 +121,11 @@ export const listBookings = (
 };
 
 export const getBooking = (token: string, bookingId: string) =>
-  graphql<{ booking: BookingDetail }>(`query Reserva($id: UUID!) { booking(bookingId: $id) { ${BOOKING} } }`, { id: bookingId }, { token }).then(
+  graphql<{ booking: BookingDetail }>(
+    `query Reserva($id: UUID!) { booking(bookingId: $id) { ${BOOKING} refunds { refundId amount penaltyAmount currency status } } }`,
+    { id: bookingId },
+    { token },
+  ).then(
     (data) => data.booking,
   );
 

@@ -99,8 +99,22 @@ export const ASSISTANCE_LABELS: Record<string, string> = {
   MEDA: 'Caso médico',
 };
 
+/**
+ * Estado de un tramo del boleto para mostrar. El cupón del contrato solo conoce PENDING, ISSUED y FAILED: si el boleto se
+ * anuló o se reembolsó, el tramo también (no se puede volar con él).
+ */
+export const couponStatus = (ticketStatus: string, segmentStatus: string) =>
+  ticketStatus === 'VOIDED' || ticketStatus === 'REFUNDED' ? ticketStatus : segmentStatus;
+
+/** Estado del reembolso en palabras del cliente. */
+export const REFUND_STATUS_LABELS: Record<string, string> = {
+  SETTLED: 'Acreditado a tu tarjeta',
+  CALCULATED: 'Lo acredita Booking, donde compraste',
+  NOT_REFUNDABLE: 'Tarifa no reembolsable',
+};
+
 export const FARE_DESCRIPTIONS: Record<string, string> = {
-  SEMILLA: 'Lo esencial: artículo personal. Sin cambios ni reembolso.',
+  SEMILLA: 'Lo esencial: artículo personal. Sin cambios; si cancelas, solo se devuelven los impuestos.',
   BROTE: 'Equipaje de mano + 1 maleta. Cambios con cargo.',
   BOSQUE: 'Equipaje de mano + 2 maletas. Cambios sin cargo y reembolsable.',
   DOSEL: 'Cabina Business, 2 maletas, flexibilidad total.',

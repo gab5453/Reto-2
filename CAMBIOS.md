@@ -2562,3 +2562,96 @@ servicios). Los recorridos de O-1/O-2 y O-3 siguen todo OK.
 
 **Con esto el PLAN_Observabilidad queda completo (O-1 a O-4).** Pendiente: publicar la web (el responsable, con `swa deploy`), la
 auditoría y el commit.
+
+### PLAN_Correccion · C-1 — Web: sesión al recargar, reserva cancelada y textos — ✅ HECHA (08/11), pendiente de auditoría
+
+Primera fase de `PLAN/PLAN_Correccion.md`: los errores de la prueba de usuario que se arreglan solo en la web. Decisiones del
+responsable: D-C1 (sesión), D-C2 (asiento opcional al reservar, cambiable hasta el check-in) y D-C3 (ingresos netos, va en C-2).
+
+- **Sesión (error 1, D54):** el token se guarda también en `sessionStorage` (`AuthContext.tsx`). Recargar o abrir una URL en la
+  misma pestaña mantiene la sesión; cerrar la pestaña, vencer el JWT o «Salir» la borran. Nunca en `localStorage`.
+- **Banner (error 3):** «¡Reserva confirmada!» solo sale si la reserva está `CONFIRMED`. Tras cancelar, cambiar o hacer check-in se
+  borra el estado `justBooked` del historial del navegador.
+- **Tramo anulado (error 4):** si el boleto está anulado o reembolsado, sus tramos dicen «Anulado» o «Reembolsado» (`couponStatus`).
+  El estado del cupón es del contrato del grupo (`PENDING, ISSUED, FAILED`) y no se modificó. El detalle del administrador no
+  mostraba el estado de los tramos: no tenía el problema.
+- **Reembolso visible (error 5):** el detalle pide `refunds` (ya existía en GraphQL para el cliente) y una reserva cancelada muestra
+  la tarjeta «Reembolso»: lo devuelto, la penalidad retenida y el estado en palabras.
+- **Asiento (error 7, D-C2):** el comportamiento se queda (asignación automática al confirmar). Se corrigió el texto del pago: «si no
+  eliges, te asignamos uno al confirmar. Puedes cambiarlo hasta hacer el check-in». El detalle lo recuerda.
+- **Semilla:** «Sin cambios; si cancelas, solo se devuelven los impuestos» (era «Sin cambios ni reembolso», y sí se devuelven los
+  impuestos).
+
+**Verificación:** typecheck y lint limpios; `web-graphql.spec.ts` valida la consulta nueva contra el esquema; suite completa **652
+pasan**, 41 omitidas. **Recorrido en Edge `recorrido_c1` contra la nube: todo OK** (14 comprobaciones):
+- F5 y URL directa mantienen la sesión; el token está en `sessionStorage` y no en `localStorage`; una pestaña nueva pide ingresar;
+  «Salir» la borra.
+- `FFT8J6` (cancelada), aunque se llegue con el estado del pago: sin banner; tramo «EA302 · asiento 4A · Anulado»; reembolso
+  $31,80, penalidad $132,00, «Acreditado a tu tarjeta».
+- `X3J2U7` (confirmada): el banner sí sale; el texto del asiento; sin tarjeta de reembolso.
+
+No cambia el backend: para verlo en la nube basta con publicar la web. **Siguiente: C-2** (motivo en el historial, ingresos netos y
+bloqueo después del check-in).
+
+### PLAN_Correccion · C-2 — Motivo en el historial, ingresos netos y bloqueo después del check-in — ✅ HECHA (08/11), pendiente de auditoría
+
+- **Motivo de cancelación (error 6):** MS.G.Bookings guarda en el historial el motivo que escribió el cliente y el código en español:
+  «Reserva cancelada a pedido del cliente: «Cambio de planes».» (antes: «Reserva cancelada (CUSTOMER_REQUEST).»). Otros códigos:
+  «por cancelación del vuelo», «por Booking (paquete cancelado)», «por otro motivo». El motivo no va a los logs.
+- **Ingresos netos (error 8, D-C3):** `summary()` de Bookings usa la misma regla que el reporte de ventas (función común
+  `chargedRows`): ingresos = cobrado − reembolsado de toda reserva cobrada (no FAILED ni pendiente de pago). Una cancelada aporta la
+  penalidad retenida. Los impuestos de los ingresos son los de las reservas vigentes. «Ingresos por ruta» usa la misma regla. La
+  tarjeta del panel pasa a «Ingresos netos» con la explicación.
+- **Después del check-in nada se modifica (D55):**
+  - ESB: `assertNotCheckedIn` consulta MS.G.CheckIn en el primer paso de las sagas de cancelar (salvo `FLIGHT_CANCELLED` y
+    `SAGA_COMPENSATION`), cambiar fecha y agregar maletas, antes de consumir la cotización o cobrar → `409 CUTOFF_PASSED`.
+  - Bookings repite la regla en `applyCancellation`, `applyDateChange` y `applyBaggage`. El asiento y la asistencia ya estaban
+    bloqueados.
+  - Web: con pases de abordar, el detalle deja solo «Check-in y pases» y avisa «Ya hiciste check-in: tu reserva ya no se puede
+    modificar». El mensaje de `CUTOFF_PASSED` decía «El check-in ya cerró…», que no correspondía a ningún uso del código: corregido.
+  - Se bloquea toda la reserva (no por tramo), como se dejó escrito en el plan.
+- `PLAN.md`: **D55** registrada y **AR-02** precisado (el check-in asigna asiento solo a quien no lo tiene).
+
+**Verificación:** pruebas nuevas en Bookings (motivo; ingresos +119,50 al vender y +25,00 tras cancelar con 94,50 devueltos;
+D55 con maletas, fecha y cancelación bloqueadas y la cancelación por vuelo permitida) y en el ESB (D55 en las tres sagas, sin
+consumir la cotización ni cobrar; el paso nuevo entra en los «fallo en cada paso»); suite completa **658 pasan**, 41 omitidas;
+typecheck y lint limpios. Desplegado en la VM. **Contra la nube** (`compra_c2.mjs`, dos compras con la cuenta demo por la API, como
+la web):
+- `VSFDHF`: check-in → cancelar responde `CUTOFF_PASSED` y la reserva sigue `CONFIRMED`.
+- `M6DDSN`: cancelada con el motivo «Cambio de planes» → el historial lo muestra.
+- Ingresos del panel **$4.966,00** = neto del reporte de ventas del año ($6.094,70 − $1.128,70).
+- **Recorrido en Edge `recorrido_c2`: todo OK** (con check-in solo queda la pestaña de pases; sin check-in, las 6; el motivo en el
+  historial; «Ingresos netos» en el panel). `recorrido_c1` sigue todo OK.
+
+**Nota de operación:** el primer intento de compra, justo después del despliegue, falló con `PROVIDER_UNAVAILABLE` (la VM aún
+saturada). No quedó reserva; la autorización del pago vence sola a los 30 minutos. El segundo intento, minutos después, funcionó.
+
+Para verlo en la web hay que publicarla. **Siguiente: C-3** (día de la vuelta y tiempo en tierra en Rutas).
+
+### PLAN_Correccion · C-3 — Rutas: día de la vuelta y tiempo en tierra — ✅ HECHA (08/11), pendiente de auditoría
+
+El «error» de la ruta a Madrid no era de validación: el EA304 llega el jueves 12:25 y el EA305 sale el **viernes** 13:00 (24 h 35 min
+en tierra), porque a las 13:00 del jueves el 787-9 no cumple sus 90 minutos. La lista solo mostraba «Mié» y las horas, y eso se leía
+como 35 minutos.
+
+- **MS.G.Schedule 1.2.0** (contrato propio, aditivo): cada ruta trae `inbound.weekdays` (y `outbound.weekdays`), `returnDelayDays`,
+  `groundMinutes` y `turnaroundMinutes`. Se calculan con `routeReturn`, la misma cuenta que usa el horario: `returnDelayOf` se
+  extrajo de `planRoundTrips`, así que no hay dos cálculos que puedan diferir.
+- **Gateway:** `RouteLeg.weekdays` y `ScheduledRoute.returnDelayDays/groundMinutes/turnaroundMinutes` (opcionales).
+- **Web (Rutas programadas):**
+  - la vuelta dice «2 días después · en tierra en MAD: 24 h 35 min» (resaltado cuando no es el mismo día);
+  - la columna de días separa «Ida: Mié» y «Vuelta: Vie»;
+  - el formulario explica los mínimos en tierra (A220 35, A320neo 45, 787-9 90 min);
+  - el mensaje al guardar dice cuándo sale la vuelta y cuánto tiempo queda el avión en tierra.
+  - **Cambio respecto al plan:** el aviso sale al guardar y no antes. La web no conoce los husos horarios y calcularlo ahí duplicaría
+    las reglas del horario.
+
+**Verificación:** prueba de Schedule (UIO ⇄ MAD, 787-9, mié 19:00 / 13:00 → vuelta el viernes, 2 días, 1.475 min en tierra, mínimo
+90; una ruta del mismo día → 0 días; la lista trae lo mismo); suite completa **659 pasan**, 41 omitidas; typecheck, lint y
+validación de las consultas de la web limpios. Desplegado en la VM. **Contra la nube:** `EA304-EA305` devuelve vuelta `FRI`, 2 días,
+1.475 min, mínimo 90. **Recorrido en Edge `recorrido_c3`: todo OK**; `recorrido_c1` y `recorrido_c2` siguen todo OK. El primer
+intento del recorrido, justo después del despliegue, encontró el panel con «Un servicio necesario no está disponible» (la VM aún
+saturada); minutos después pasó entero.
+
+**Con esto el PLAN_Correccion queda completo (C-1 a C-3).** Pendiente: publicar la web (el responsable, con `swa deploy`), la
+auditoría y el commit.

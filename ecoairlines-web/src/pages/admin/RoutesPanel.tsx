@@ -50,6 +50,25 @@ const daysLabel = (weekdays: WeekdayCode[]) =>
 
 const plusDays = (offset: number) => (offset > 0 ? ` (+${offset})` : '');
 
+/** «24 h 35 min», «1 h 10 min», «40 min». */
+const groundTime = (minutes: number) => {
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return hours ? `${hours} h${rest ? ` ${rest} min` : ''}` : `${rest} min`;
+};
+
+/**
+ * Cuándo vuelve el avión (PLAN_Correccion C-3). Si la vuelta no cabe el mismo día, el horario la pasa a un día después: hay
+ * que decirlo, porque «ida 19:00 → 12:25 (+1) · vuelta 13:00» se lee como 35 minutos en tierra.
+ */
+function returnSummary(route: ScheduledRoute): string | null {
+  if (route.groundMinutes == null) return null;
+  const delay = route.returnDelayDays ?? 0;
+  const minimum = route.turnaroundMinutes ? ` (mínimo ${route.turnaroundMinutes} min para el ${route.aircraftType})` : '';
+  const when = delay > 0 ? `La vuelta sale ${delay} día${delay > 1 ? 's' : ''} después de la ida (${daysLabel(route.inbound.weekdays ?? [])}): ` : 'La vuelta sale el mismo día: ';
+  return `${when}el avión queda ${groundTime(route.groundMinutes)} en tierra en ${route.destination}${minimum}.`;
+}
+
 /**
  * CRUD de **rutas programadas** (extensión `/admin/routes`). Una ruta es una línea de ida y vuelta con sus días y su tipo
  * de avión; al guardarla, el horario se publica en el GDS y los vuelos quedan a la venta (o dejan de estarlo) al instante.
@@ -151,7 +170,8 @@ export function RoutesPanel({ onChanged }: { onChanged?: () => void }) {
       const saved = editing.mode === 'CREATE' ? await createRoute(token, form) : await updateRoute(token, editing.routeId, form);
       setMessage(
         `${editing.mode === 'CREATE' ? 'Ruta creada' : 'Ruta actualizada'}: ${saved.outbound.flightNumber} ${saved.origin} → ${saved.destination} y ` +
-          `${saved.inbound.flightNumber} de vuelta, con ${saved.aircraft.join(', ')}. Ya está publicada para la venta.`,
+          `${saved.inbound.flightNumber} de vuelta, con ${saved.aircraft.join(', ')}. Ya está publicada para la venta.` +
+          (returnSummary(saved) ? ` ${returnSummary(saved)}` : ''),
       );
       setEditing(null);
       await load();
@@ -289,7 +309,12 @@ export function RoutesPanel({ onChanged }: { onChanged?: () => void }) {
                   : 'Sin elegir: el sistema agrega a la flota los aviones que hagan falta.'}
             </p>
           </fieldset>
-          {editing.mode === 'EDIT' && <p className="muted small">Se conservan los números de vuelo. Si la vuelta sale antes de que llegue la ida, el sistema la programa al día siguiente.</p>}
+          <p className="muted small">
+            {editing.mode === 'EDIT' ? 'Se conservan los números de vuelo. ' : ''}
+            El avión necesita un tiempo mínimo en tierra antes de la vuelta (A220-300: 35 min, A320neo: 45 min, 787-9: 90 min). Si la
+            hora de la vuelta no lo permite el mismo día, el sistema la programa para un día después; al guardar te decimos qué día sale
+            y cuánto tiempo queda el avión en tierra.
+          </p>
           <div className="admin-actions">
             <button type="submit" className="btn btn-primary" disabled={busy || form.weekdays.length === 0}>
               {busy ? 'Publicando…' : editing.mode === 'CREATE' ? 'Crear y publicar' : 'Guardar y publicar'}
@@ -309,7 +334,7 @@ export function RoutesPanel({ onChanged }: { onChanged?: () => void }) {
                 <th scope="col">Ruta</th>
                 <th scope="col">Ida</th>
                 <th scope="col">Vuelta</th>
-                <th scope="col">Días</th>
+                <th scope="col">Días (ida / vuelta)</th>
                 <th scope="col">Avión</th>
                 <th scope="col">Acciones</th>
               </tr>
@@ -329,8 +354,17 @@ export function RoutesPanel({ onChanged }: { onChanged?: () => void }) {
                     <td className="small">
                       <strong>{route.inbound.flightNumber}</strong> {route.inbound.departureLocal} → {route.inbound.arrivalLocal}
                       {plusDays(route.inbound.arrivalDayOffset)}
+                      {route.groundMinutes != null && (
+                        <span className={`block ${route.returnDelayDays ? 'text-warning' : 'muted'}`}>
+                          {route.returnDelayDays ? `${route.returnDelayDays} día${route.returnDelayDays > 1 ? 's' : ''} después · ` : ''}
+                          en tierra en {route.destination}: {groundTime(route.groundMinutes)}
+                        </span>
+                      )}
                     </td>
-                    <td className="small">{daysLabel(route.weekdays)}</td>
+                    <td className="small">
+                      Ida: {daysLabel(route.weekdays)}
+                      {route.inbound.weekdays && route.returnDelayDays ? <span className="block">Vuelta: {daysLabel(route.inbound.weekdays)}</span> : null}
+                    </td>
                     <td className="small">{route.aircraftType}<br /><span className="muted">{route.aircraft.join(', ')}</span></td>
                     <td>
                       <div className="row-actions">

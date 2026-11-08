@@ -291,6 +291,8 @@ export interface RouteLeg {
   departureLocal: string;
   arrivalLocal: string;
   arrivalDayOffset: number;
+  /** Días en que sale el tramo: la vuelta puede salir días después de la ida. */
+  weekdays?: WeekdayCode[] | null;
 }
 
 export interface ScheduledRoute {
@@ -304,13 +306,19 @@ export interface ScheduledRoute {
   aircraft: string[];
   distanceKm: number;
   durationMinutes: number;
+  /** Días entre la ida y la vuelta (0 = el mismo día). */
+  returnDelayDays?: number | null;
+  /** Minutos que el avión pasa en tierra en el destino antes de la vuelta. */
+  groundMinutes?: number | null;
+  /** Mínimo en tierra de su tipo de avión. */
+  turnaroundMinutes?: number | null;
   source: 'NETWORK' | 'ADMIN';
   createdAt: string;
   updatedAt: string;
 }
 
-const LEG = 'flightNumber origin destination departureLocal arrivalLocal arrivalDayOffset';
-const ROUTE = `routeId origin destination outbound { ${LEG} } inbound { ${LEG} } weekdays aircraftType aircraft distanceKm durationMinutes source createdAt updatedAt`;
+const LEG = 'flightNumber origin destination departureLocal arrivalLocal arrivalDayOffset weekdays';
+const ROUTE = `routeId origin destination outbound { ${LEG} } inbound { ${LEG} } weekdays aircraftType aircraft distanceKm durationMinutes returnDelayDays groundMinutes turnaroundMinutes source createdAt updatedAt`;
 
 /** Todas las rutas; con `airport`, las que salen o llegan a ese aeropuerto (el esquema no filtra: se filtra aquí). */
 export const listRoutes = (token: string, airport?: string) =>

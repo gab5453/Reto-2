@@ -36,6 +36,16 @@ const notFoundIs = (status: number) => (error: unknown) => {
   throw error;
 };
 
+/**
+ * D55: después del check-in (de cualquier pasajero) el cliente ya no modifica la reserva: ni fecha, ni maletas, ni cancelación
+ * (el asiento y la asistencia ya los bloquea Bookings). Se revisa en MS.G.CheckIn, la fuente del check-in, ANTES de consumir
+ * la cotización o cobrar: nunca se cobra un cambio que después se rechaza.
+ */
+async function assertNotCheckedIn(saga: SagaContext, d: SagaDeps, bookingId: string): Promise<void> {
+  const current = await saga.step('check-in.guard', () => d.upstreams.rest['check-in'].json<{ items?: Any[] }>('GET', `/check-ins/${bookingId}`).catch(notFoundIs(404)));
+  if ((current?.items ?? []).length) throw problem(409, 'CUTOFF_PASSED', 'Ya hiciste check-in: la reserva no se puede modificar.');
+}
+
 /** Dependencias comunes de las sagas de reservas. */
 @Injectable()
 export class SagaDeps {
@@ -488,6 +498,7 @@ export class CancelBookingSaga implements SagaDefinition<CancelInput, Any> {
     if (!compensation && !request.quoteId) {
       throw new ProblemDetailsException({ status: 400, code: 'VALIDATION_FAILED', title: 'Falta quoteId.', invalidParams: [{ name: 'quoteId', reason: 'obligatorio salvo SAGA_COMPENSATION o FLIGHT_CANCELLED' }] });
     }
+    if (!compensation) await assertNotCheckedIn(saga, this.d, bookingId);
     const fares = await this.d.fares(saga, bookingId);
     const quote = await saga.step('post-sale.quote', async () =>
       compensation
@@ -571,6 +582,7 @@ export class ChangeDateSaga implements SagaDefinition<ChangeDateInput, Any> {
     const offer = await this.d.store.changeOffer(request.changeOfferId);
     if (!offer || offer.bookingId !== bookingId) throw problem(404, 'NOT_FOUND', 'La oferta de cambio no existe para esta reserva.');
     const booking = await this.d.booking(saga, bookingId);
+    await assertNotCheckedIn(saga, this.d, bookingId);
     const fares = await this.d.fares(saga, bookingId);
     const consumed = await saga.step(
       'post-sale.consume-offer',
@@ -637,6 +649,7 @@ export class AddBaggageSaga implements SagaDefinition<AddBaggageInput, Any> {
 
   async run(saga: SagaContext, { bookingId, request }: AddBaggageInput) {
     const booking = await this.d.booking(saga, bookingId);
+    await assertNotCheckedIn(saga, this.d, bookingId);
     const fares = await this.d.fares(saga, bookingId);
     const line = baggageLine(booking, fares, request.passengerId, request.itineraryId);
     const validation = await saga.step('post-sale.validate-baggage', () => this.d.upstreams.postSale.call<Any>('ValidateBaggagePurchase', { bookingId, line, quantity: request.quantity }));

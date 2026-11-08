@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: MS.G.Schedule — red, flota, horario, precios por clase y acuerdo de promociones (interno)
-  version: 1.1.0
+  version: 1.2.0
   license:
     name: Uso académico — Integración de Sistemas (sin licencia de distribución)
   description: |
@@ -812,6 +812,11 @@ components:
           example: '07:45'
         arrivalDayOffset:
           type: integer
+        weekdays:
+          type: array
+          description: Días en que sale este tramo (1.2.0). La vuelta puede salir días después de la ida.
+          items:
+            $ref: '#/components/schemas/WeekdayCode'
 
     ScheduledRoute:
       type: object
@@ -842,6 +847,16 @@ components:
           type: integer
         durationMinutes:
           type: integer
+        returnDelayDays:
+          type: integer
+          minimum: 0
+          description: Días entre la salida de la ida y la de la vuelta (1.2.0). 0 = el mismo día.
+        groundMinutes:
+          type: integer
+          description: Minutos que el avión pasa en tierra en el destino, de la llegada de la ida a la salida de la vuelta (1.2.0).
+        turnaroundMinutes:
+          type: integer
+          description: Tiempo mínimo en tierra de su tipo de avión (1.2.0).
         source:
           type: string
           enum: [NETWORK, ADMIN]

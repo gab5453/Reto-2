@@ -1503,6 +1503,8 @@ type RouteLeg {
   departureLocal: String!
   arrivalLocal: String!
   arrivalDayOffset: Int!
+  "Días en que sale este tramo: la vuelta puede salir días después de la ida."
+  weekdays: [Weekday!]
 }
 
 type ScheduledRoute {
@@ -1516,6 +1518,12 @@ type ScheduledRoute {
   aircraft: [String!]!
   distanceKm: Int!
   durationMinutes: Int!
+  "Días entre la salida de la ida y la de la vuelta (0 = el mismo día)."
+  returnDelayDays: Int
+  "Minutos que el avión pasa en tierra en el destino antes de la vuelta."
+  groundMinutes: Int
+  "Tiempo mínimo en tierra de su tipo de avión."
+  turnaroundMinutes: Int
   source: String!
   createdAt: DateTime!
   updatedAt: DateTime!
