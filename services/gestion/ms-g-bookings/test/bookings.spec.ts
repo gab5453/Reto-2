@@ -227,6 +227,33 @@ describe('crear y consultar reservas', () => {
     const partner = await esb('get', '/bookings?channel=BOOKING&limit=50', { 'X-Actor-Id': ADMIN });
     expect(partner.body.items.length).toBe(1);
   });
+
+  it('panel (O-1): el administrador busca por PNR, orden de Booking o referencia de pago y ve canal, salida y pasajeros', async () => {
+    const { bookingId, reference } = await book({ ownerId: 'partner:BOOKING_PROTOTIPO:usr-panel', passengers: [passenger('PAX-1', { documentNumber: cedula('171003420') })] });
+    const pnr = (await esb('get', `/bookings/${bookingId}`, { 'X-Actor-Id': ADMIN })).body.pnr as string;
+    for (const value of [pnr, pnr.toLowerCase(), reference]) {
+      const found = await esb('get', `/bookings?reference=${encodeURIComponent(value)}`, { 'X-Actor-Id': ADMIN });
+      expectContract('get', '/bookings', found);
+      expect(found.body.items.map((item: Any) => item.bookingId)).toEqual([bookingId]);
+    }
+    const byOrder = await esb('get', '/bookings?reference=ORD-1&channel=BOOKING', { 'X-Actor-Id': ADMIN });
+    expect(byOrder.body.items.map((item: Any) => item.bookingId)).toContain(bookingId);
+    expect(byOrder.body.items.find((item: Any) => item.bookingId === bookingId)).toMatchObject({
+      channel: 'BOOKING', partnerId: 'BOOKING_PROTOTIPO', partnerOrderId: 'ORD-1', passengerCount: 1, refundTotal: null, departureAt: `${DAY}T07:00:00-05:00`,
+    });
+    // El dueño no busca por referencia (se ignora) ni recibe los campos del panel.
+    const mine = await esb('get', `/bookings?reference=${reference}&limit=50`, owner());
+    expect(mine.body.items.length).toBeGreaterThan(0);
+    expect(mine.body.items.every((item: Any) => item.bookingId !== bookingId && item.channel === undefined)).toBe(true);
+  });
+
+  it('panel (O-1): el detalle trae los pagos registrados solo para el administrador', async () => {
+    const { bookingId, reference } = await book({ passengers: [passenger('PAX-1', { documentNumber: cedula('171003421') })] });
+    const admin = await esb('get', `/bookings/${bookingId}`, { 'X-Actor-Id': ADMIN });
+    expectContract('get', '/bookings/{bookingId}', admin);
+    expect(admin.body.payments).toEqual([expect.objectContaining({ paymentReference: reference, provider: 'AIRLINE_DIRECT', operation: 'BOOKING', bookingId })]);
+    expect((await esb('get', `/bookings/${bookingId}`, owner())).body).not.toHaveProperty('payments');
+  });
 });
 
 describe('emisión de boletos y estados', () => {
@@ -396,6 +423,39 @@ describe('vuelos e indicadores', () => {
     expectContract('get', '/indicators', summary);
     expect(summary.body.byChannel.BOOKING).toBeGreaterThanOrEqual(2);
     expect(Number(summary.body.refundsCalculated.total)).toBeCloseTo(94.5);
+  });
+});
+
+describe('reporte de ventas y liquidación con Booking (panel O-3)', () => {
+  it('★ cuadra: cada venta de Booking con cobrado − reembolsado = neto, y los totales igualan la suma por canal y por día', async () => {
+    const { bookingId, reference } = await book({ ownerId: 'partner:BOOKING_PROTOTIPO:usr-reporte', passengers: [passenger('PAX-1', { documentNumber: cedula('171003422') })] });
+    await esb('post', `/bookings/${bookingId}/tickets`);
+    const refund = { refundId: 'REF-O3-1', amount: '94.50', penaltyAmount: '25.00', currency: 'USD', percentage: 79, status: 'CALCULATED' };
+    await esb('post', `/bookings/${bookingId}/cancellation`).send({ reasonCode: 'CUSTOMER_REQUEST', refund, seatsReleased: 1 });
+    const today = new Date(Date.now() - 5 * 3_600_000).toISOString().slice(0, 10);
+
+    const report = await esb('get', `/reports/sales?from=${today}&to=${today}`, { 'X-Actor-Id': ADMIN });
+    expect(report.status).toBe(200);
+    expectContract('get', '/reports/sales', report);
+    const item = report.body.bookingSettlement.items.find((row: Any) => row.bookingId === bookingId);
+    expect(item).toMatchObject({ paymentReference: reference, partnerOrderId: 'ORD-1', status: 'CANCELLED', charged: '119.50', refunded: '94.50', penalty: '25.00', net: '25.00' });
+
+    const cents = (value: string) => Math.round(Number(value) * 100);
+    const { totals, byChannel, byDay, bookingSettlement } = report.body;
+    expect(byChannel.reduce((sum: number, row: Any) => sum + cents(row.charged), 0)).toBe(cents(totals.charged));
+    expect(byChannel.reduce((sum: number, row: Any) => sum + row.bookings, 0)).toBe(totals.bookings);
+    expect(byDay.reduce((sum: number, row: Any) => sum + cents(row.charged), 0)).toBe(cents(totals.charged));
+    expect(cents(totals.net)).toBe(cents(totals.charged) - cents(totals.refunded));
+    expect(bookingSettlement.items.reduce((sum: number, row: Any) => sum + cents(row.net), 0)).toBe(cents(bookingSettlement.net));
+    expect(bookingSettlement.pendingRefunds.count).toBeGreaterThanOrEqual(1);
+    expect(bookingSettlement.items.every((row: Any) => row.status !== 'FAILED')).toBe(true);
+  });
+
+  it('rango: obligatorio, desde ≤ hasta y máximo un año; solo el administrador', async () => {
+    expect((await esb('get', '/reports/sales?from=2026-11-08', { 'X-Actor-Id': ADMIN })).status).toBe(400);
+    expect((await esb('get', '/reports/sales?from=2026-11-09&to=2026-11-08', { 'X-Actor-Id': ADMIN })).status).toBe(400);
+    expect((await esb('get', '/reports/sales?from=2025-01-01&to=2026-11-08', { 'X-Actor-Id': ADMIN })).status).toBe(400);
+    expect((await esb('get', '/reports/sales?from=2026-11-01&to=2026-11-08')).status).toBe(400);
   });
 });
 

@@ -186,9 +186,24 @@ type Query {
   "Pasajeros con asistencia de un vuelo (dato de salud). → MS.Admin listFlightAssistance"
   flightAssistance(flightNumber: String!, date: Date!): [FlightAssistanceItem!]! @auth(scopes: [ECOAIRLINES_ADMIN])
 
-  "Historial de eventos y entregas de webhooks. → MS.Admin listEventHistory"
-  eventHistory(from: DateTime, to: DateTime, limit: Int = 20 @constraint(minimum: 1, maximum: 100), cursor: String):
+  "Historial de eventos y entregas de webhooks; filtros por tipo y correlation ID desde el panel O-4. → MS.Admin listEventHistory"
+  eventHistory(
+    type: String @constraint(pattern: "^[a-z_.]{1,60}$")
+    correlationId: String @constraint(pattern: "^.{1,100}$")
+    from: DateTime
+    to: DateTime
+    limit: Int = 20 @constraint(minimum: 1, maximum: 100), cursor: String):
     EventHistoryPage! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "Reservas de todos los canales, solo lectura (panel O-1). → MS.Admin listAdminBookings"
+  adminBookings(filter: AdminBookingFilterInput, limit: Int = 20 @constraint(minimum: 1, maximum: 100), cursor: String):
+    AdminBookingPage! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "Detalle de cualquier reserva, solo lectura (panel O-1). → MS.Admin getAdminBooking"
+  adminBooking(bookingId: UUID!): AdminBooking! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "Ventas por día, canal y ruta, y la liquidación con Booking (panel O-3; días de Ecuador, máximo un año). → MS.Admin getSalesReport"
+  adminSalesReport(from: Date!, to: Date!): SalesReport! @auth(scopes: [ECOAIRLINES_ADMIN])
 
   "Telemetría del sistema (cada campo llama a su operación de MS.Admin)."
   telemetry: Telemetry! @auth(scopes: [ECOAIRLINES_ADMIN])
@@ -1636,6 +1651,210 @@ type EventHistoryPage {
   nextCursor: String
 }
 
+# ------------------------------------------------------------------------------------- administración: reservas (O-1)
+# Solo lectura. Tipos propios (no `Booking`): los sub-recursos de `Booking` validan que el usuario sea el dueño, y el
+# administrador ve reservas de cualquier dueño. La asistencia médica no se expone: solo qué pasajeros la tienen.
+
+"Canal de la venta."
+enum SalesChannelCode {
+  WEB
+  BOOKING
+}
+
+input AdminBookingFilterInput {
+  "PNR, orden de Booking (`partnerOrderId`) o referencia del pago de la reserva, exactos."
+  reference: String
+  status: BookingStatus
+  channel: SalesChannelCode
+  createdFrom: Date
+  createdTo: Date
+}
+
+type AdminBookingSummary {
+  bookingId: UUID!
+  pnr: String!
+  status: BookingStatus!
+  channel: SalesChannelCode!
+  partnerId: String
+  "Orden de Booking."
+  partnerOrderId: String
+  origin: IataCode
+  destination: IataCode
+  departureAt: DateTime
+  passengerCount: Int!
+  grandTotal: MoneyAmount!
+  "Suma de los reembolsos (calculados o ejecutados); null si no hay."
+  refundTotal: Decimal
+  createdAt: DateTime!
+}
+
+type AdminBookingPage {
+  nextCursor: String
+  items: [AdminBookingSummary!]!
+}
+
+type AdminSalesChannel {
+  partnerId: String
+  partnerOrderId: String
+  packageId: String
+  promotionApplied: Boolean
+  discountPercentage: Float
+}
+
+"Tarifa comprada por itinerario."
+type AdminFare {
+  itineraryId: String!
+  cabinClass: CabinClass!
+  fareBrand: String!
+  segmentIds: [String!]!
+  isRefundable: Boolean!
+  isChangeable: Boolean!
+  price: MoneyAmount!
+}
+
+"Referencia de pago registrada por la reserva (uso único en todo el sistema)."
+type AdminPayment {
+  paymentReference: String!
+  "BOOKING_PROTOTIPO (cobra Booking) o AIRLINE_DIRECT (Payment API de la web)."
+  provider: String!
+  "BOOKING, SEATS, BAGGAGE o DATE_CHANGE."
+  operation: String!
+  amount: MoneyAmount!
+  claimedAt: DateTime!
+}
+
+type AdminBooking {
+  bookingId: UUID!
+  pnr: String!
+  status: BookingStatus!
+  channel: SalesChannelCode!
+  "Dueño: el `sub` del usuario web o `partner:<client_id>:<X-User-Id>`."
+  ownerId: String!
+  "Usuario de Booking (X-User-Id) cuando la vendió un partner."
+  partnerUserId: String
+  salesChannel: AdminSalesChannel
+  paymentReference: String
+  grandTotal: MoneyAmount!
+  createdAt: DateTime!
+  updatedAt: DateTime
+  itineraries: [ItineraryOption!]!
+  passengers: [Passenger!]!
+  fares: [AdminFare!]!
+  tickets: [Ticket!]!
+  refunds: [Refund!]!
+  payments: [AdminPayment!]!
+  changes: [BookingChange!]!
+  "Pasajeros con asistencia médica (solo el id: es un dato de salud)."
+  passengersWithAssistance: [String!]!
+  "Historial (O-2): sus sagas con los pasos y sus eventos con las entregas a Booking. → MS.Admin getAdminBookingTimeline"
+  timeline: AdminBookingTimeline!
+}
+
+"Reporte de ventas (panel O-3). Montos en `currency` con 2 decimales; neto = cobrado − reembolsado."
+type SalesReport {
+  from: Date!
+  to: Date!
+  currency: CurrencyCode!
+  generatedAt: DateTime!
+  totals: SalesTotals!
+  byChannel: [SalesByChannel!]!
+  byDay: [SalesByDay!]!
+  byRoute: [SalesByRoute!]!
+  bookingSettlement: BookingSettlement!
+}
+
+type SalesTotals {
+  bookings: Int!
+  cancelled: Int!
+  passengers: Int!
+  charged: Decimal!
+  refunded: Decimal!
+  net: Decimal!
+}
+
+type SalesByChannel {
+  channel: SalesChannelCode!
+  bookings: Int!
+  charged: Decimal!
+  refunded: Decimal!
+  net: Decimal!
+}
+
+type SalesByDay {
+  date: Date!
+  channel: SalesChannelCode!
+  bookings: Int!
+  charged: Decimal!
+}
+
+type SalesByRoute {
+  origin: IataCode!
+  destination: IataCode!
+  bookings: Int!
+  passengers: Int!
+  charged: Decimal!
+}
+
+"Liquidación con Booking (canal BOOKING): lo que cobró Booking, lo reembolsado (lo ejecuta Booking) y el neto a favor de EcoAirlines."
+type BookingSettlement {
+  partnerId: String!
+  bookings: Int!
+  charged: Decimal!
+  refunded: Decimal!
+  penalties: Decimal!
+  net: Decimal!
+  pendingRefunds: PendingRefunds!
+  items: [SettlementItem!]!
+}
+
+"Reembolsos calculados que todavía ejecuta Booking."
+type PendingRefunds {
+  count: Int!
+  amount: Decimal!
+}
+
+type SettlementItem {
+  bookingId: UUID!
+  pnr: String!
+  partnerOrderId: String
+  paymentReference: String!
+  status: BookingStatus!
+  createdAt: DateTime!
+  charged: Decimal!
+  refunded: Decimal!
+  penalty: Decimal!
+  net: Decimal!
+}
+
+"Historial de una reserva (panel O-2). Nunca trae la entrada ni el resultado de una saga (datos personales y de salud)."
+type AdminBookingTimeline {
+  sagas: [AdminSaga!]!
+  "Eventos de la reserva, del más reciente al más antiguo, con cada entrega a los suscriptores."
+  events: [EventHistoryItem!]!
+}
+
+type AdminSaga {
+  sagaId: String!
+  "CREATE_BOOKING, ISSUE_TICKETS, CANCEL_BOOKING, CHECK_IN…"
+  type: String!
+  "RUNNING, COMPLETED, COMPENSATING, COMPENSATED o FAILED."
+  status: String!
+  "X-Correlation-Id del proceso: con él se busca la traza en Telemetría."
+  correlationId: String!
+  parentSagaId: String
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  errorCode: String
+  steps: [AdminSagaStep!]!
+}
+
+type AdminSagaStep {
+  name: String!
+  "STARTED, DONE o COMPENSATED."
+  status: String!
+  at: DateTime!
+}
+
 # ------------------------------------------------------------------------------------------ administración: telemetría
 
 type Telemetry {
@@ -1644,7 +1863,12 @@ type Telemetry {
   "→ MS.Admin getLatency"
   latency(from: DateTime, to: DateTime): [ServiceLatency!]!
   "Todo lo que generó un proceso, por su X-Correlation-Id. → MS.Admin getCorrelationTrace"
-  trace(correlationId: String!): CorrelationTrace
+  trace(
+    correlationId: String!
+    "Rango de búsqueda (O-2). Sin él, 7 días: lento cuando hay muchos logs; el historial de una reserva manda el de su saga."
+    from: DateTime
+    to: DateTime
+  ): CorrelationTrace
   "→ MS.Admin getQueues"
   queues: [QueueStats!]!
   "→ MS.Admin getAlerts"

@@ -2426,3 +2426,139 @@ un proyecto académico, pidió las claves conocidas. Sin cambiar código: `docke
 (por defecto `false`) e `infra/cloud/.env` fija `ADMIN_PASSWORD=EcoAdmin2026` y `SEED_DEMO_USERS=true`. Verificado por la API pública:
 los 4 inician sesión (`ADMIN` y 3 `CUSTOMER`) y el administrador lista los usuarios. **Riesgo aceptado por el responsable:** cualquiera
 que lea el README puede entrar como administrador en la nube (crear partners, cambiar precios, cancelar vuelos).
+
+**04/11 — Diagramas v5** (`PLAN/arquitectura-microservicios-v5.png`, `PLAN/modelo-conceptual-v5.png`, scripts en `PLAN/scripts/*_v5.py`).
+La v4 (25/10) era el diseño previo a implementar; la v5 dibuja lo que hay en el código.
+- **Arquitectura:** en rojo lo de D41–D53: tokens de servicio (ESB y MS de respuesta), enrutador con tabla cerrada, sagas con plazo de 3,5 s y
+  cola diferida, Payment API (navegador autoriza, ESB captura) en la VM, stock a Booking por REST con `NODE_VUE_EQ5`, entrada de eventos por
+  `POST /integraciones/booking/eventos`, gateway que verifica y reenvía el token y suscripciones graphql-ws, PWA con copia local mínima,
+  observabilidad propia (12 reglas de alerta) y una sección nueva de **despliegue** (VM + Caddy + Static Web App).
+- **Modelo de datos:** sacado de los `CREATE TABLE` de cada servicio. En rojo lo que cambió respecto del diseño: la reserva es **un documento
+  JSONB** (la v4 dibujaba 10 tablas), `booking_seats` en lugar de `seats`, inventario con **contadores por estado** y un `CHECK` contra la
+  sobreventa, y tablas nuevas: `hold_segments`, `promotion_rules`, `saga_results`, `booking_segments`, `passenger_documents`,
+  `applied_events`, `assistance_ready`, `change_offers`, `schedule_meta`, y `refunds` e `idempotency_keys` en la Payment API. La telemetría
+  se dibuja como lo que es: la pila de Prometheus, Tempo, Loki y Alertmanager, no tablas.
+
+### PLAN_Observabilidad · O-1 — Reservas y detalle en el panel — ✅ HECHA (08/11), pendiente de auditoría
+
+Para revisar una venta (como la DHV47T que pidió Booking el 08/11) sin entrar a Swagger ni a la base. Plan:
+`PLAN/PLAN_Observabilidad.md` (decisiones D-O1 a D-O6). Solo lectura (D-O4); no cambia la lógica de negocio ni los contratos del grupo.
+
+**Backend (contratos propios, cambios aditivos):**
+- **MS.G.Bookings 1.2.0:** filtro `reference` en `GET /bookings` (solo con `X-Actor-Id`): PNR (sin importar mayúsculas), orden de Booking
+  (`salesChannel.partnerOrderId`) o referencia del pago de la reserva, exactos; con índices nuevos sobre el JSONB. Para el administrador
+  cada ítem trae canal, partner, orden, salida, pasajeros, reembolso total y creación; el detalle agrega `payments` (las referencias
+  registradas en `payment_records`). El dueño no cambia: ni el filtro ni los campos nuevos le llegan.
+- **MS.Admin 1.4.0:** `listAdminBookings` y `getAdminBooking` por el enrutador del ESB (las rutas ya existían).
+- **Gateway GraphQL:** `adminBookings(filter, limit, cursor)` y `adminBooking(bookingId)` con tipos propios (`AdminBooking`,
+  `AdminBookingSummary`…): el tipo `Booking` no sirve porque sus sub-recursos validan que el usuario sea el dueño. La asistencia médica
+  NO pasa al navegador: solo `passengersWithAssistance` (ids).
+
+**Web:** `/admin/reservas` (búsqueda por PNR, orden o pago; estado, canal y fechas en la URL; «Ver más» por cursor) y
+`/admin/reservas/:bookingId` (página propia, D-O1): resumen, **liquidación** (cobrado − reembolsado = neto), itinerario y asientos,
+pasajeros con el documento enmascarado y «Mostrar documentos» (D-O2), boletos, pagos registrados, historial y «Copiar resumen para
+Booking». «Reservas» en el menú del panel. Funciones en `src/lib/admin-bookings.ts`.
+
+**Verificación:**
+- Pruebas: Bookings (28, 2 nuevas), MS.Admin (11, 2 nuevas), gateway (26, 1 nueva); `web-graphql.spec` valida las dos operaciones nuevas
+  contra el esquema. Suite completa 642 pasan; 1 intermitente de la Payment API (no se tocó) pasó al repetir (27/27). Typecheck, lint
+  (0 avisos) y build limpios.
+- **Contra la base real** (la prueba de PostgreSQL necesita una base): `DHV47T`, `dhv47t`, `ORD-BKP-7B5BADB7C0` y
+  `PAY-BKP-20261107-030453` devuelven solo DHV47T; una referencia inexistente, lista vacía. La primera consulta tras desplegar dio
+  `PROVIDER_UNAVAILABLE` (VM con carga 17 después de compilar); las siguientes, 0,3–0,7 s.
+- **Recorrido en Edge** contra la nube (build de producción en local, sin CORS solo en la prueba): **19/19**. Liquidación de DHV47T:
+  59,00 + 20,85 = 79,85 cobrado, −20,85 de reembolso (REF-1545C35F, lo ejecuta Booking), neto 59,00; documento `1******675`; el resumen
+  copiado trae orden, pago, reembolso y neto; ningún dato de asistencia en las respuestas.
+- Despliegue: compiló las 18 imágenes (la librería compartida cambió en V2.21) en ≈1 h; esta vez **ningún servicio abortó** gracias al
+  `start_period` del 03/11.
+
+**Pendiente:** publicar la web (el responsable, con `swa deploy`) y la fase O-2 (historial con sagas y eventos).
+
+### PLAN_Observabilidad · O-2 — Historial de la reserva y enlace a la traza — ✅ HECHA (08/11), pendiente de auditoría
+
+**Qué agrega:** en el detalle de una reserva, un **historial** que une sus cambios, las **sagas** que la tocaron (tipo, estado, pasos
+y su correlation ID) y los **eventos** que generó con **cada entrega a Booking** (estado, HTTP, intentos, próximo reintento). Cada saga
+tiene «Ver la traza», que abre Telemetría ya buscada.
+
+**Backend (contratos propios, aditivos):**
+- **MS.G.Webhooks 1.3.0:** filtro `subject` (el `bookingId`) en `GET /history`, con índice.
+- **ESB 1.4.0:** `SagaFilter.bookingId` (`input->>'bookingId'`, con índice: todas las sagas de una reserva lo reciben) y la
+  composición `GET /composition/bookings/{bookingId}/timeline`. **Nunca** devuelve la entrada ni el resultado de una saga (datos
+  personales y de salud): solo tipo, estado, fechas, error y nombre/estado de cada paso.
+- **MS.Admin 1.5.0:** `getAdminBookingTimeline`. **GraphQL:** `AdminBooking.timeline` (se resuelve solo si la web lo pide).
+
+**Arreglo de paso — la búsqueda por correlation ID de Telemetría ya no funcionaba en la nube.** Loki recorría 7 días: con una semana de
+logs tarda **~24 s** en la VM (1 día: 7 s) y el ESB corta a los 3 s → «Loki no está disponible». El 02/11 funcionaba porque había pocos
+logs. Ahora la traza acepta un **rango** (`from`/`to`) en GraphQL → MS.Admin → ESB → Loki: con 40 minutos responde en **0,2 s** (de
+punta a punta, 0,5–0,6 s). «Ver la traza» manda la ventana de la saga (±10 min); la búsqueda manual de Telemetría elige «Últimas 3
+horas» (por defecto), 24 horas o 7 días (lento). El correlation ID y el rango viajan en la URL.
+
+**Verificación:** Webhooks 13 pruebas (1 nueva), ESB 37 (1 nueva + rango), MS.Admin 12 (1 nueva + rango), gateway 26 (+ timeline y
+rango); suite completa **646 pasan**, 41 omitidas; typecheck, lint (0 avisos) y build limpios. Contra la nube: el historial de DHV47T
+trae 3 sagas (crear, check-in, cancelar) y 4 eventos; **recorrido en Edge 23/23** (4 nuevos de O-2), incluida la traza de `corr-e2e`
+(139 pasos en 10 servicios) desde «Ver la traza».
+
+**Notas de operación:** justo después de cada despliegue la VM queda saturada unos minutos: el login y Loki (que reconstruye su índice
+al recrearse) responden `PROVIDER_UNAVAILABLE` hasta que se calma; luego todo responde en < 1 s.
+
+**Hallazgo (BKG-16, ver HALLAZGOS.md):** el historial mostró que **Booking registró su webhook el 04/11**
+(`https://booking-core-api.azurewebsites.net/api/v2/webhooks/vuelos`) y que **rechaza con HTTP 400 todas nuestras entregas** (49
+agotadas tras 6 intentos). No se probó su endpoint: el sistema de permisos bloqueó escribir en un sistema externo; hay que preguntarle a
+Booking qué valida.
+
+### PLAN_Observabilidad · O-3 — Reportes, liquidación con Booking y tarjetas del panel — ✅ HECHA (08/11), pendiente de auditoría
+
+**Qué agrega:** la pantalla **Reportes** (`/admin/reportes`, período en la URL, por defecto los últimos 30 días): totales (vendidas,
+cobrado, reembolsado, neto y por canal), **ventas por día** (barras web/Booking), **ventas por ruta** y la **liquidación con Booking**
+reserva por reserva (PNR, orden de Booking, referencia de pago, estado, cobrado, reembolsado, neto) con fila de total y **«Exportar
+CSV»** (D-O3: coma, punto decimal, BOM para Excel, fila TOTAL; `liquidacion-booking-{desde}-a-{hasta}.csv`). Cada fila abre el detalle
+de la reserva. En el **Panel**, las tarjetas existentes enlazan a Reservas filtrada (todas / web / Booking) y a Usuarios, y hay tres
+nuevas: «Reembolsos pendientes de Booking», «Neto de Booking este mes» (abren Reportes del mes) y «Estado del sistema» (abre Telemetría).
+
+**Backend (contratos propios, aditivos; solo lectura, D-O4):**
+- **MS.G.Bookings 1.3.0:** `GET /reports/sales?from&to` (`getSalesReport`, esquema `SalesReport`). Días en hora de Ecuador (UTC−5),
+  máximo 366 días, `from ≤ to`. Excluye reservas fallidas y pendientes de pago; lo cobrado es la suma de los pagos registrados y el neto,
+  cobrado − reembolsado. Reembolsos pendientes = los `CALCULATED` que debe ejecutar Booking.
+- **ESB 1.4.0:** ruta nueva en la tabla cerrada `bookings GET /reports/sales` (48 rutas).
+- **MS.Admin 1.6.0:** `GET /ecoairlines/admin/reports/sales`. **GraphQL:** `adminSalesReport(from, to)` y sus tipos.
+
+**Arreglo de paso:** la marca BOM del CSV se escribe como `String.fromCharCode(0xfeff)`: escrita como escape, las herramientas de edición
+la convertían en un carácter invisible dentro del código fuente.
+
+**Verificación:** prueba de Bookings «★ cuadra» (la suma del reporte es igual a la suma de las reservas conocidas, por canal, por día y
+en la liquidación) y de validación del rango; pruebas nuevas en MS.Admin y gateway; suite completa **651 pasan**, 41 omitidas;
+typecheck, lint y build limpios. Contra la nube (01/11–08/11): 30 reservas, cobrado **2.823,00**, reembolsado **583,80**, neto
+**2.239,20** = web 159,70 + Booking 2.079,50; liquidación con Booking de 28 reservas (cobrado 2.663,30 − 583,80 = 2.079,50), 25
+reembolsos pendientes por 583,80; DHV47T aparece con su orden `ORD-BKP-7B5BADB7C0`, 79,85 / −20,85 / 59,00. **Recorrido en Edge
+`recorrido_o3`: todo OK** (tarjetas y sus enlaces, cuadre fila a fila contra el total, contenido exacto del CSV, enlace al detalle);
+el recorrido de O-1/O-2 sigue 23/23.
+
+**Nota:** justo después del despliegue la tarjeta «Estado del sistema» mostró 1/12 arriba (la VM aún arrancando); minutos después,
+12/12 y el nodo `HEALTHY`.
+
+**Pendiente:** publicar la web (el responsable, con `swa deploy`) y la fase O-4 (Telemetría que se refresca sola y Eventos con enlaces).
+
+### PLAN_Observabilidad · O-4 — Telemetría que se refresca sola y bitácora con la tabla nueva — ✅ HECHA (08/11), pendiente de auditoría
+
+**Qué agrega:**
+- **Telemetría** se actualiza sola **cada 15 s solo con la pestaña visible**; al volver a la pestaña se actualiza enseguida. Muestra
+  la hora de la última actualización y una casilla «Actualizar sola» para pausarla. No pide una ronda nueva si la anterior sigue en
+  curso (la VM tarda justo después de un despliegue). La búsqueda por correlation ID no se repite sola.
+- **Bitácora** (componente `EventsPanel`, que se ve en la página Observabilidad): tabla nueva con momento, evento, **reserva** (PNR,
+  enlace al detalle), **canal** (Booking con su orden, o web), **correlation ID** (enlace a Telemetría con la traza buscada en ±10 min
+  alrededor del evento) y la entrega a cada suscriptor (estado, HTTP, intentos, destino; las agotadas en rojo). **Filtros** por tipo
+  (con sugerencias), días (hora de Ecuador) y correlation ID.
+- La página **Observabilidad** no cambió (D-O5): solo el componente de la bitácora que ya mostraba.
+
+**Backend:** solo el contrato propio `contract/gateway.graphql`: `eventHistory` acepta `type` y `correlationId` (aditivo; MS.Admin y
+Webhooks ya los aceptaban). Se despliega solo el gateway.
+
+**Verificación:** prueba nueva del gateway (los filtros llegan a MS.Admin; un tipo inválido se rechaza); suite completa **652 pasan**, 41
+omitidas; typecheck, lint y build limpios. **Recorrido en Edge `recorrido_o4`: todo OK** — se refresca sola con la pestaña visible;
+con la pestaña oculta, **0 consultas en 32 s**; al volver, se refresca enseguida; pausa; filtro `booking.cancelled` del 07/11 al 08/11
+→ 2 eventos (DHV47T y F6YTMA, canal Booking con su orden, `corr-e2e`, «Agotado (HTTP 400) · 6 intentos»: BKG-16); filtro por
+`corr-e2e` → 12 eventos, todos de ese proceso; la reserva abre su detalle y el correlation ID abre la traza (139 pasos en 10
+servicios). Los recorridos de O-1/O-2 y O-3 siguen todo OK.
+
+**Con esto el PLAN_Observabilidad queda completo (O-1 a O-4).** Pendiente: publicar la web (el responsable, con `swa deploy`), la
+auditoría y el commit.

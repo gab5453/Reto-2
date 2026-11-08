@@ -42,9 +42,9 @@ const PRICING = `cabinClass fareBrand availableSeats fareRules { isRefundable is
   baggageAllowance { personalItemIncluded carryOnIncluded checkedBaggageIncluded }
   extraCheckedBaggagePrice { ${MONEY} } pricePerPassengerType { passengerType price { ${MONEY} } }`;
 export const ITINERARY = `itineraryId totalDurationMinutes stopsCount segments { ${SEGMENT} } pricingOptions { ${PRICING} }`;
-const PASSENGER = `passengerId passengerType associatedAdultId firstName lastName documentType documentNumber nationality documentExpiryDate
+export const PASSENGER = `passengerId passengerType associatedAdultId firstName lastName documentType documentNumber nationality documentExpiryDate
   birthDate gender contact { email phone } assignedSeats { segmentId seatNumber } extraBaggage { itineraryId quantity }`;
-const TICKET = `ticketId bookingId passengerId passengerName eTicketNumber status issuedAt failureReason
+export const TICKET = `ticketId bookingId passengerId passengerName eTicketNumber status issuedAt failureReason
   segments { segmentId status couponNumber flightNumber departureIataCode arrivalIataCode seatNumber }`;
 export const BOOKING = `bookingId pnr status grandTotal { ${MONEY} } createdAt updatedAt itineraries { ${ITINERARY} }
   passengers { ${PASSENGER} } changes { changedAt description } tickets { ${TICKET} }`;

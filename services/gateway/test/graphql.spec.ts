@@ -245,6 +245,79 @@ describe('cada campo → su operación REST', () => {
     fakes['MS.Admin'].on('GET', /\/telemetry\/traces\//, { status: 404, body: problem(404, 'NOT_FOUND', 'Sin datos.') });
     const telemetry = await gql('{ telemetry { services { service latencyMs } trace(correlationId: "corr-x") { correlationId } } }', {}, tokens.admin()).expect(200);
     expect(telemetry.body).toEqual({ data: { telemetry: { services: [{ service: 'esb', latencyMs: 12 }], trace: null } } });
+    await gql('{ telemetry { trace(correlationId: "corr-x", from: "2026-11-08T03:50:00Z", to: "2026-11-08T04:30:00Z") { correlationId } } }', {}, tokens.admin()).expect(200);
+    expect(fakes['MS.Admin'].last()!.path).toBe('/api/v2/ecoairlines/admin/telemetry/traces/corr-x?from=2026-11-08T03%3A50%3A00Z&to=2026-11-08T04%3A30%3A00Z');
+  });
+
+  it('★ panel O-1: adminBookings busca por referencia; adminBooking da la liquidación sin exponer la asistencia médica', async () => {
+    const DHV = 'e8bead02-1587-4dcd-86c3-a54653fb0986';
+    const SOLD = { currency: 'USD', baseFare: '59.00', taxes: '20.85', total: '79.85' };
+    fakes['MS.Admin'].on('GET', /\/api\/v2\/ecoairlines\/admin\/bookings\?/, { body: { nextCursor: null, items: [{ bookingId: DHV, pnr: 'DHV47T', status: 'CANCELLED', origin: 'UIO', destination: 'GYE', departureDate: '2026-11-08', grandTotal: SOLD, channel: 'BOOKING', partnerId: 'BOOKING_PROTOTIPO', partnerOrderId: 'ORD-BKP-7B5BADB7C0', departureAt: '2026-11-08T07:00:00-05:00', passengerCount: 1, refundTotal: '20.85', createdAt: '2026-11-08T04:09:43.317Z' }] } });
+    const list = await gql('query($f: AdminBookingFilterInput) { adminBookings(filter: $f) { items { pnr channel partnerOrderId passengerCount refundTotal grandTotal { total } } nextCursor } }', { f: { reference: 'ORD-BKP-7B5BADB7C0', channel: 'BOOKING' } }, tokens.admin()).expect(200);
+    expect(list.body.data.adminBookings).toEqual({ nextCursor: null, items: [{ pnr: 'DHV47T', channel: 'BOOKING', partnerOrderId: 'ORD-BKP-7B5BADB7C0', passengerCount: 1, refundTotal: '20.85', grandTotal: { total: '79.85' } }] });
+    expect(fakes['MS.Admin'].last()!.path).toBe('/api/v2/ecoairlines/admin/bookings?reference=ORD-BKP-7B5BADB7C0&channel=BOOKING&limit=20');
+
+    fakes['MS.Admin'].on('GET', `/api/v2/ecoairlines/admin/bookings/${DHV}`, { body: {
+      ...BOOKING, bookingId: DHV, pnr: 'DHV47T', status: 'CANCELLED', grandTotal: SOLD, channel: 'BOOKING', ownerId: 'partner:BOOKING_PROTOTIPO:7a1c2e9f-4b3d-4c8a-9e21-5f6d7c8b9a01',
+      salesChannel: { partnerId: 'BOOKING_PROTOTIPO', partnerOrderId: 'ORD-BKP-7B5BADB7C0', promotionApplied: false }, paymentReference: 'PAY-BKP-20261107-030453',
+      fares: [{ itineraryId: 'EA100-20261108', cabinClass: 'ECONOMY', fareBrand: 'SEMILLA', segmentIds: ['EA100-20261108'], price: SOLD, isRefundable: false, isChangeable: false }],
+      tickets: [{ ticketId: 'TKT-E8BEAD02-1', passengerId: 'PAX-1', passengerName: 'Ana Paz', eTicketNumber: '9997852910872', status: 'VOIDED', issuedAt: null, segments: [], failureReason: null }],
+      refunds: [{ refundId: 'REF-1545C35F', amount: '20.85', penaltyAmount: '59.00', currency: 'USD', percentage: 26.11, status: 'CALCULATED' }],
+      payments: [{ paymentReference: 'PAY-BKP-20261107-030453', provider: 'BOOKING_PROTOTIPO', operation: 'BOOKING', amount: { currency: 'USD', total: '79.85' }, bookingId: DHV, sagaId: HOLD_ID, claimedAt: '2026-11-08T04:09:43.258Z' }],
+      assistance: [{ passengerId: 'PAX-1', type: 'WCHR', needsCompanion: true, notes: 'dato de salud', status: 'REQUESTED' }],
+    } });
+    const detail = await gql(`{ adminBooking(bookingId: "${DHV}") { pnr channel partnerUserId salesChannel { partnerOrderId } fares { fareBrand isRefundable price { baseFare taxes } } tickets { eTicketNumber status bookingId } refunds { amount penaltyAmount status } payments { paymentReference provider } passengersWithAssistance } }`, {}, tokens.admin()).expect(200);
+    expect(detail.body.data.adminBooking).toEqual({
+      pnr: 'DHV47T', channel: 'BOOKING', partnerUserId: '7a1c2e9f-4b3d-4c8a-9e21-5f6d7c8b9a01', salesChannel: { partnerOrderId: 'ORD-BKP-7B5BADB7C0' },
+      fares: [{ fareBrand: 'SEMILLA', isRefundable: false, price: { baseFare: '59.00', taxes: '20.85' } }],
+      tickets: [{ eTicketNumber: '9997852910872', status: 'VOIDED', bookingId: DHV }],
+      refunds: [{ amount: '20.85', penaltyAmount: '59.00', status: 'CALCULATED' }],
+      payments: [{ paymentReference: 'PAY-BKP-20261107-030453', provider: 'BOOKING_PROTOTIPO' }],
+      passengersWithAssistance: ['PAX-1'],
+    });
+    expect(JSON.stringify(detail.body)).not.toContain('dato de salud');
+
+    // O-2: el historial se pide solo si la web lo selecciona (una operación más).
+    fakes['MS.Admin'].on('GET', `/api/v2/ecoairlines/admin/bookings/${DHV}/timeline`, { body: {
+      bookingId: DHV,
+      sagas: [{ sagaId: 'saga-1', type: 'CANCEL_BOOKING', status: 'COMPLETED', correlationId: 'corr-cancel', createdAt: '2026-11-08T04:09:59Z', updatedAt: '2026-11-08T04:09:59Z', steps: [{ name: 'postSale.consumeQuote', status: 'DONE', at: '2026-11-08T04:09:59Z' }] }],
+      events: [{ seq: 9, id: 'evt-1', type: 'ec.edu.epn.booking.vuelos.booking.cancelled', subject: DHV, time: '2026-11-08T04:10:00Z', correlationId: 'corr-cancel', public: true, data: null, deliveries: [{ subscriptionId: HOLD_ID, target: 'booking.example', outcome: 'DELIVERED', httpStatus: 200, attempts: 1, nextRetryAt: null }] }],
+    } });
+    const timeline = await gql(`{ adminBooking(bookingId: "${DHV}") { timeline { sagas { type status correlationId parentSagaId errorCode steps { name status } } events { type correlationId deliveries { outcome httpStatus } } } } }`, {}, tokens.admin()).expect(200);
+    expect(timeline.body.data.adminBooking.timeline).toEqual({
+      sagas: [{ type: 'CANCEL_BOOKING', status: 'COMPLETED', correlationId: 'corr-cancel', parentSagaId: null, errorCode: null, steps: [{ name: 'postSale.consumeQuote', status: 'DONE' }] }],
+      events: [{ type: 'ec.edu.epn.booking.vuelos.booking.cancelled', correlationId: 'corr-cancel', deliveries: [{ outcome: 'DELIVERED', httpStatus: 200 }] }],
+    });
+    const customer = await gql(`{ adminBooking(bookingId: "${DHV}") { pnr } }`, {}, tokens.customer()).expect(200);
+    expect(customer.body.errors[0].extensions.code).toBe('FORBIDDEN');
+  });
+
+  it('panel O-3: adminSalesReport con el rango; la liquidación con Booking reserva por reserva', async () => {
+    fakes['MS.Admin'].on('GET', /\/api\/v2\/ecoairlines\/admin\/reports\/sales\?/, { body: { from: '2026-11-01', to: '2026-11-08', currency: 'USD', generatedAt: '2026-11-08T18:00:00Z',
+      totals: { bookings: 1, cancelled: 1, passengers: 1, charged: '79.85', refunded: '20.85', net: '59.00' },
+      byChannel: [{ channel: 'WEB', bookings: 0, charged: '0.00', refunded: '0.00', net: '0.00' }, { channel: 'BOOKING', bookings: 1, charged: '79.85', refunded: '20.85', net: '59.00' }],
+      byDay: [{ date: '2026-11-07', channel: 'BOOKING', bookings: 1, charged: '79.85' }],
+      byRoute: [{ origin: 'UIO', destination: 'GYE', bookings: 1, passengers: 1, charged: '79.85' }],
+      bookingSettlement: { partnerId: 'BOOKING_PROTOTIPO', bookings: 1, charged: '79.85', refunded: '20.85', penalties: '59.00', net: '59.00', pendingRefunds: { count: 1, amount: '20.85' },
+        items: [{ bookingId: 'e8bead02-1587-4dcd-86c3-a54653fb0986', pnr: 'DHV47T', partnerOrderId: 'ORD-BKP-7B5BADB7C0', paymentReference: 'PAY-BKP-20261107-030453', status: 'CANCELLED', createdAt: '2026-11-08T04:09:43Z', charged: '79.85', refunded: '20.85', penalty: '59.00', net: '59.00' }] } } });
+    const report = await gql('{ adminSalesReport(from: "2026-11-01", to: "2026-11-08") { totals { charged refunded net } byDay { date channel charged } bookingSettlement { net pendingRefunds { count amount } items { pnr partnerOrderId net } } } }', {}, tokens.admin()).expect(200);
+    expect(report.body.data.adminSalesReport).toEqual({
+      totals: { charged: '79.85', refunded: '20.85', net: '59.00' },
+      byDay: [{ date: '2026-11-07', channel: 'BOOKING', charged: '79.85' }],
+      bookingSettlement: { net: '59.00', pendingRefunds: { count: 1, amount: '20.85' }, items: [{ pnr: 'DHV47T', partnerOrderId: 'ORD-BKP-7B5BADB7C0', net: '59.00' }] },
+    });
+    expect(fakes['MS.Admin'].last()!.path).toBe('/api/v2/ecoairlines/admin/reports/sales?from=2026-11-01&to=2026-11-08');
+  });
+
+  it('panel O-4: eventHistory filtra por tipo, correlation ID y fechas; MS.Admin recibe los filtros', async () => {
+    fakes['MS.Admin'].on('GET', /\/api\/v2\/ecoairlines\/admin\/events\?/, { body: { items: [{ seq: 7, id: 'evt-1', type: 'booking.cancelled', subject: 'e8bead02-1587-4dcd-86c3-a54653fb0986', time: '2026-11-08T04:10:00Z', correlationId: 'corr-dhv', public: true,
+      data: { bookingId: 'e8bead02-1587-4dcd-86c3-a54653fb0986', pnr: 'DHV47T', partnerOrderId: 'ORD-BKP-7B5BADB7C0' }, deliveries: [{ subscriptionId: 's1', target: 'https://booking.example/webhooks', outcome: 'EXHAUSTED', httpStatus: 400, attempts: 6 }] }], nextCursor: null } });
+    const page = await gql('{ eventHistory(type: "booking.cancelled", correlationId: "corr-dhv", from: "2026-11-01T05:00:00Z", limit: 50) { items { type subject correlationId deliveries { outcome httpStatus } } } }', {}, tokens.admin()).expect(200);
+    expect(page.body.data.eventHistory.items).toEqual([{ type: 'booking.cancelled', subject: 'e8bead02-1587-4dcd-86c3-a54653fb0986', correlationId: 'corr-dhv', deliveries: [{ outcome: 'EXHAUSTED', httpStatus: 400 }] }]);
+    const sent = new URL(`http://x${fakes['MS.Admin'].last()!.path}`).searchParams;
+    expect(Object.fromEntries(sent)).toEqual({ type: 'booking.cancelled', correlationId: 'corr-dhv', from: '2026-11-01T05:00:00Z', limit: '50' });
+    const tooLong = await gql(`{ eventHistory(type: "${'x'.repeat(61)}") { items { id } } }`, {}, tokens.admin());
+    expect(tooLong.body.errors).toBeDefined();
   });
 
   it('myProfile: null si el cliente aún no guardó su perfil (404 del MS)', async () => {

@@ -11,7 +11,7 @@ administración, asistencia médica, pagos con tarjeta, observabilidad y PWA.
 2. Ubicar la fase en curso y trabajar **solo** en ella.
 3. Si una tarea contradice una decisión registrada, señalarlo y pedir confirmación antes de cambiarla.
 
-Los diagramas vigentes son `PLAN/modelo-conceptual-v4.png` y `PLAN/arquitectura-microservicios-v4.png`.
+Los diagramas vigentes son `PLAN/modelo-conceptual-v5.png` y `PLAN/arquitectura-microservicios-v5.png` (04/11; se generan con `PLAN/scripts/*_v5.py`).
 
 ## Requisitos del ingeniero
 

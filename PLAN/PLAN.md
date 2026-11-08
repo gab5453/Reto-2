@@ -11,9 +11,10 @@
 | Archivo de esta carpeta | Contenido |
 |-------------------------|-----------|
 | `PLAN.md` | Este documento: plan integrado y registro de decisiones |
-| `arquitectura-microservicios-v4.png` | **Arquitectura vigente.** En rojo, lo nuevo o corregido por el contrato v2 |
-| `modelo-conceptual-v4.png` | **Modelo de datos vigente.** En rojo, lo nuevo del contrato v2; en naranja, el correlation ID (corregido) |
-| `scripts/arquitectura_v4.py` · `scripts/modelo_conceptual_v4.py` | Scripts (matplotlib) que generan las imágenes v4 |
+| `arquitectura-microservicios-v5.png` | **Arquitectura vigente (04/11): como quedó implementada y desplegada.** En rojo, lo nuevo desde la v4 (D41–D53): tokens de servicio, stock por REST, entrada de eventos por webhook, Payment API y observabilidad en la VM, despliegue en Azure |
+| `modelo-conceptual-v5.png` | **Modelo de datos vigente (04/11): las tablas que crea el código.** En rojo, lo que cambió al implementar el diseño v4 (agregados JSONB, `booking_seats`, contadores por estado, idempotencia); en naranja, el correlation ID |
+| `scripts/arquitectura_v5.py` · `scripts/modelo_conceptual_v5.py` | Scripts (matplotlib) que generan las imágenes v5: `python scripts/arquitectura_v5.py arquitectura-microservicios-v5.png` |
+| `*-v4.png` · `scripts/*_v4.py` | Historial: v4, el diseño contra el contrato v2 (25/10), antes de implementarlo |
 | `*-v3.png` · `modelo-conceptual-v3.1-correlation-id.png` | Historial: v3 (usuarios, precios, asistencia, tarjeta, telemetría) y v3.1 (correlation ID, **corregido en v4**) |
 | `*-v2.png` | Historial: primera revisión de las imágenes originales |
 

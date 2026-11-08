@@ -1,8 +1,10 @@
 import type { ReactNode } from 'react';
-import { NavLink } from 'react-router-dom';
+import { Link, NavLink } from 'react-router-dom';
 
 const SECTIONS = [
   { to: '/admin', label: 'Panel', end: true },
+  { to: '/admin/reservas', label: 'Reservas' },
+  { to: '/admin/reportes', label: 'Reportes' },
   { to: '/admin/operaciones', label: 'Operaciones' },
   { to: '/admin/usuarios', label: 'Usuarios' },
   { to: '/admin/partners', label: 'Partners' },
@@ -23,13 +25,16 @@ export function AdminNav() {
   );
 }
 
-export function Stat({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="stat-card">
+/** Un indicador. Con `to`, la tarjeta entera es un enlace a su listado (panel O-3); `hint`, un detalle debajo del valor. */
+export function Stat({ label, value, to, hint }: { label: string; value: ReactNode; to?: string; hint?: ReactNode }) {
+  const body = (
+    <>
       <p className="muted small">{label}</p>
       <p className="stat-value">{value}</p>
-    </div>
+      {hint ? <p className="muted small">{hint}</p> : null}
+    </>
   );
+  return to ? <Link to={to} className="stat-card stat-link">{body}</Link> : <div className="stat-card">{body}</div>;
 }
 
 export function DataTable({ caption, headers, rows, empty }: { caption: string; headers: string[]; rows: ReactNode[][]; empty: string }) {
@@ -51,5 +56,17 @@ export function DataTable({ caption, headers, rows, empty }: { caption: string; 
         </table>
       </div>
     </section>
+  );
+}
+
+/** Canal de una venta: «Booking» con su orden debajo, o «Web» (panel O-1). */
+export function ChannelCell({ channel, order }: { channel: 'WEB' | 'BOOKING'; order: string | null }) {
+  return channel === 'BOOKING' ? (
+    <>
+      <span className="status status-channel-booking">Booking</span>
+      {order ? <span className="muted small block">{order}</span> : null}
+    </>
+  ) : (
+    <span className="status">Web</span>
   );
 }

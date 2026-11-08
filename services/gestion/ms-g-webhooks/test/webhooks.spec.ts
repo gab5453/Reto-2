@@ -231,6 +231,17 @@ describe('feed de respaldo e historial', () => {
     expect((await esb('get', '/history')).status).toBe(400); // sin X-Actor-Id
   });
 
+  it('panel O-2: el historial de UNA reserva por su `subject` (bookingId), con sus entregas', async () => {
+    const bookingId = randomUUID();
+    await service.ingest(event('booking.confirmed', { bookingId, status: 'CONFIRMED' }, bookingId), 'partner:BOOKING_PROTOTIPO:usr-o2');
+    await service.ingest(event('booking.cancelled', { bookingId, status: 'CANCELLED' }, bookingId), 'partner:BOOKING_PROTOTIPO:usr-o2');
+    await service.ingest(event('booking.confirmed', { bookingId: randomUUID() }), undefined);
+    const history = await esb('get', `/history?subject=${bookingId}&limit=50`).set('X-Actor-Id', ADMIN);
+    expectContract('get', '/history', history);
+    expect(history.body.items.map((item: Any) => item.type.split('.').slice(-2).join('.'))).toEqual(['booking.cancelled', 'booking.confirmed']);
+    expect(history.body.items.every((item: Any) => item.subject === bookingId && Array.isArray(item.deliveries))).toBe(true);
+  });
+
   it('estadísticas de entrega', async () => {
     const stats = await esb('get', '/stats');
     expectContract('get', '/stats', stats);

@@ -69,6 +69,7 @@ export class InMemoryBookingsStore implements BookingsStore {
         return true;
       },
       savePayment: async (record) => this.set(this.payments, record.paymentReference, record, undo),
+      paymentsOf: async (bookingId) => clone([...this.payments.values()].filter((p) => p.bookingId === bookingId).sort((a, b) => a.claimedAt.localeCompare(b.claimedAt))),
       deletePayment: async (reference) => this.set(this.payments, reference, undefined, undo),
 
       documentHolders: async (claims) => clone(claims.map((claim) => this.documents.get(claimKey(claim))).filter((held): held is DocumentClaim => !!held)),

@@ -73,10 +73,23 @@ export class CompositionController {
   }
 
   @Get('telemetry/traces/:correlationId')
-  trace(@Param('correlationId') correlationId: string, @CallerContext() caller: Caller) {
+  trace(@Param('correlationId') correlationId: string, @Query('from') from: string | undefined, @Query('to') to: string | undefined, @CallerContext() caller: Caller) {
     requireActor(caller);
     if (!isValidId(correlationId)) throw new ProblemDetailsException({ status: 400, code: 'VALIDATION_FAILED', title: 'La petición no es válida.', invalidParams: [{ name: 'correlationId', reason: 'hasta 100 caracteres visibles' }] });
-    return this.composition.correlationTrace(correlationId, caller);
+    for (const [name, value] of [['from', from], ['to', to]] as const) {
+      if (value !== undefined && Number.isNaN(Date.parse(value))) throw new ProblemDetailsException({ status: 400, code: 'VALIDATION_FAILED', title: 'La petición no es válida.', invalidParams: [{ name, reason: 'fecha y hora RFC 3339' }] });
+    }
+    return this.composition.correlationTrace(correlationId, caller, { ...(from ? { from } : {}), ...(to ? { to } : {}) });
+  }
+
+  /** Panel O-2: sagas y eventos de una reserva (solo ADMIN). */
+  @Get('bookings/:bookingId/timeline')
+  bookingTimeline(@Param('bookingId') bookingId: string, @CallerContext() caller: Caller) {
+    requireActor(caller);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(bookingId)) {
+      throw new ProblemDetailsException({ status: 400, code: 'VALIDATION_FAILED', title: 'La petición no es válida.', invalidParams: [{ name: 'bookingId', reason: 'UUID' }] });
+    }
+    return this.composition.bookingTimeline(bookingId.toLowerCase(), caller);
   }
 
   @Get('telemetry/queues')

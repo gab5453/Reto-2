@@ -14,6 +14,7 @@ import {
   FailBookingDto,
   ListBookingsQuery,
   RangeQuery,
+  SalesReportQuery,
   SagaQuery,
   SeatChangeRequestDto,
   ValidatePassengersDto,
@@ -162,5 +163,11 @@ export class BookingsController {
   @Get('indicators')
   indicators(@Query() query: RangeQuery, @ActorId() _actor: string) {
     return this.bookings.summary(query.from, query.to);
+  }
+
+  /** Panel O-3: ventas por día, canal y ruta, y la liquidación con Booking (reserva por reserva, para el CSV). */
+  @Get('reports/sales')
+  salesReport(@Query() query: SalesReportQuery, @ActorId() _actor: string) {
+    return this.bookings.salesReport(query.from, query.to);
   }
 }

@@ -2008,3 +2008,192 @@ a.session-name {
   border-radius: 0;
   padding-inline: 16px;
 }
+
+/* Panel O-1: reservas de todos los canales y su detalle (solo lectura). */
+.admin-bookings-filters .inline-field input,
+.admin-bookings-filters .inline-field select {
+  min-width: 150px;
+}
+
+.admin-bookings-filters .inline-field:first-child input {
+  min-width: 260px;
+}
+
+.block {
+  display: block;
+}
+
+.num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.strong-link {
+  font-weight: 700;
+}
+
+.load-more {
+  text-align: center;
+  margin: 12px 0 0;
+}
+
+.status-channel-booking {
+  background: var(--info-bg);
+  color: var(--info-text);
+}
+
+.admin-booking-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.admin-booking .card {
+  margin-bottom: 16px;
+}
+
+.admin-booking h1 .status {
+  vertical-align: middle;
+  font-size: 0.9rem;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0;
+}
+
+.kv dt {
+  color: var(--text-muted);
+}
+
+.kv dd {
+  margin: 0;
+}
+
+.settlement {
+  width: 100%;
+}
+
+.settlement th {
+  text-align: left;
+  font-weight: 400;
+}
+
+.settlement tr.strong th,
+.settlement tr.strong td {
+  font-weight: 800;
+  border-top: 1px solid var(--border);
+}
+
+.admin-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Panel O-2: historial de una reserva (cambios, sagas con sus pasos y eventos con sus entregas). */
+.booking-timeline li {
+  padding-bottom: 14px;
+}
+
+.tag-kind {
+  display: inline-block;
+  min-width: 52px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.saga-steps summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.saga-steps ol {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.delivery {
+  display: block;
+}
+
+/* Panel O-3: tarjetas que enlazan a su listado, y reportes de ventas. */
+.stat-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.stat-link:hover,
+.stat-link:focus-visible {
+  border-color: var(--green-400);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
+}
+
+.day-bars {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.day-bars li {
+  display: grid;
+  grid-template-columns: 120px 1fr 110px;
+  align-items: center;
+  gap: 12px;
+}
+
+.day-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--surface-tint);
+  overflow: hidden;
+}
+
+.day-bar-web,
+.legend-web {
+  background: var(--green-400);
+}
+
+.day-bar-booking,
+.legend-booking {
+  background: var(--info-text);
+}
+
+.legend {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin: 0 4px 0 8px;
+  vertical-align: middle;
+}
+
+.admin table tfoot tr.strong th,
+.admin table tfoot tr.strong td {
+  font-weight: 800;
+  border-top: 1px solid var(--border);
+}
+
+/* Panel O-4: entregas agotadas en la bitácora. */
+.text-danger {
+  color: var(--danger);
+}

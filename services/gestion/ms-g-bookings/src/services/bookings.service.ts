@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { type MoneyAmount, moneyFromCents, ProblemDetailsException, resolvePassengerCounts, sameAmount, toCents } from '@ecoairlines/shared';
+import { formatCents, type MoneyAmount, moneyFromCents, ProblemDetailsException, resolvePassengerCounts, sameAmount, toCents } from '@ecoairlines/shared';
 import {
   ACTIVE_STATUSES,
   type AssistanceRecord,
@@ -199,13 +199,18 @@ export class BookingsService {
     return this.store.transaction(async (tx) => this.view(tx, await this.owned(tx, bookingId, caller), caller));
   }
 
-  async list(caller: Caller, filter: { pnr?: string; status?: BookingStatus; channel?: SalesChannelCode; createdFrom?: string; createdTo?: string }, limit: number, cursor?: string) {
+  async list(
+    caller: Caller,
+    filter: { pnr?: string; status?: BookingStatus; channel?: SalesChannelCode; createdFrom?: string; createdTo?: string; reference?: string },
+    limit: number,
+    cursor?: string,
+  ) {
     if (!caller.ownerId && !caller.actorId) {
       throw problem(400, 'VALIDATION_FAILED', 'El listado exige X-Owner-Id o X-Actor-Id.', { invalidParams: [{ name: 'X-Owner-Id', reason: 'obligatorio sin X-Actor-Id' }] });
     }
     const offset = decodeCursor(cursor);
     const page = await this.store.transaction((tx) =>
-      tx.listBookings({ ...filter, ...(caller.ownerId ? { ownerId: caller.ownerId } : {}), ...(caller.actorId ? {} : { channel: undefined }) }, limit, offset),
+      tx.listBookings({ ...filter, ...(caller.ownerId ? { ownerId: caller.ownerId } : {}), ...(caller.actorId ? {} : { channel: undefined, reference: undefined }) }, limit, offset),
     );
     return {
       items: page.items.map((booking) => {
@@ -218,6 +223,8 @@ export class BookingsService {
           destination: first.segments.at(-1)!.arrival.iataCode,
           departureDate: first.segments[0]!.departure.at.slice(0, 10),
           grandTotal: booking.grandTotal,
+          // Panel de administración (O-1): de dónde vino la venta y cuánto se devolvió, sin abrir el detalle.
+          ...(caller.actorId ? adminSummary(booking) : {}),
         };
       }),
       nextCursor: page.hasMore ? encodeCursor(offset + limit) : null,
@@ -529,6 +536,105 @@ export class BookingsService {
     };
   }
 
+  /**
+   * Reporte de ventas del panel (O-3), por fecha de creación en hora de Ecuador. Cuenta como venta lo que se cobró (no FAILED ni
+   * pendiente de pago); lo cobrado es la suma de las referencias de pago registradas de cada reserva (reserva, asientos, maletas,
+   * cambio de fecha), igual que la liquidación del detalle. Neto = cobrado − reembolsado.
+   */
+  async salesReport(from: string, to: string) {
+    if (from > to) throw problem(400, 'VALIDATION_FAILED', '«from» no puede ser posterior a «to».', { invalidParams: [{ name: 'from', reason: 'posterior a to' }] });
+    if ((Date.parse(to) - Date.parse(from)) / 86_400_000 > 366) throw problem(400, 'VALIDATION_FAILED', 'El rango es de máximo un año.', { invalidParams: [{ name: 'to', reason: 'máximo 366 días después de from' }] });
+    const localDay = (iso: string) => new Date(Date.parse(iso) - 5 * 3_600_000).toISOString().slice(0, 10);
+    const shift = (day: string, days: number) => new Date(Date.parse(day) + days * 86_400_000).toISOString().slice(0, 10);
+    const rows = await this.store.transaction(async (tx) => {
+      const candidates = (await tx.bookingsCreatedBetween(shift(from, -1), shift(to, 1))).filter((booking) => {
+        const day = localDay(booking.createdAt);
+        return day >= from && day <= to && !['FAILED', 'PENDING', 'PENDING_PAYMENT'].includes(booking.status);
+      });
+      const result = [];
+      for (const booking of candidates) {
+        const payments = await tx.paymentsOf(booking.bookingId);
+        const charged = payments.length ? payments.reduce((sum, payment) => sum + toCents(payment.amount.total), 0) : toCents(booking.grandTotal.total);
+        const refunded = booking.refunds.reduce((sum, refund) => sum + toCents(refund.amount), 0);
+        const penalty = booking.refunds.reduce((sum, refund) => sum + toCents(refund.penaltyAmount), 0);
+        const pending = booking.refunds.filter((refund) => refund.status === 'CALCULATED').reduce((sum, refund) => sum + toCents(refund.amount), 0);
+        result.push({ booking, charged, refunded, penalty, pending });
+      }
+      return result.sort((a, b) => a.booking.createdAt.localeCompare(b.booking.createdAt));
+    });
+    const money = formatCents;
+    const sum = (list: typeof rows, pick: (row: (typeof rows)[number]) => number) => list.reduce((total, row) => total + pick(row), 0);
+    const routeOf = (booking: BookingRecord) => {
+      const first = booking.itineraries[0]!;
+      return { origin: first.segments[0]!.departure.iataCode, destination: first.segments.at(-1)!.arrival.iataCode };
+    };
+
+    const byDay = new Map<string, { date: string; channel: SalesChannelCode; bookings: number; charged: number }>();
+    const byRoute = new Map<string, { origin: string; destination: string; bookings: number; passengers: number; charged: number }>();
+    for (const row of rows) {
+      const date = localDay(row.booking.createdAt);
+      const day = byDay.get(`${date}|${row.booking.channel}`) ?? { date, channel: row.booking.channel, bookings: 0, charged: 0 };
+      day.bookings++;
+      day.charged += row.charged;
+      byDay.set(`${date}|${row.booking.channel}`, day);
+      const { origin, destination } = routeOf(row.booking);
+      const route = byRoute.get(`${origin}-${destination}`) ?? { origin, destination, bookings: 0, passengers: 0, charged: 0 };
+      route.bookings++;
+      route.passengers += row.booking.passengers.length;
+      route.charged += row.charged;
+      byRoute.set(`${origin}-${destination}`, route);
+    }
+    const channelTotals = (channel: SalesChannelCode) => {
+      const list = rows.filter((row) => row.booking.channel === channel);
+      const charged = sum(list, (row) => row.charged);
+      const refunded = sum(list, (row) => row.refunded);
+      return { channel, bookings: list.length, charged: money(charged), refunded: money(refunded), net: money(charged - refunded) };
+    };
+    const partner = rows.filter((row) => row.booking.channel === 'BOOKING');
+    const partnerCharged = sum(partner, (row) => row.charged);
+    const partnerRefunded = sum(partner, (row) => row.refunded);
+    const charged = sum(rows, (row) => row.charged);
+    const refunded = sum(rows, (row) => row.refunded);
+    return {
+      from,
+      to,
+      currency: 'USD',
+      generatedAt: new Date(this.now()).toISOString(),
+      totals: {
+        bookings: rows.length,
+        cancelled: rows.filter((row) => row.booking.status === 'CANCELLED').length,
+        passengers: rows.reduce((total, row) => total + row.booking.passengers.length, 0),
+        charged: money(charged),
+        refunded: money(refunded),
+        net: money(charged - refunded),
+      },
+      byChannel: [channelTotals('WEB'), channelTotals('BOOKING')],
+      byDay: [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date) || a.channel.localeCompare(b.channel)).map((day) => ({ ...day, charged: money(day.charged) })),
+      byRoute: [...byRoute.values()].sort((a, b) => b.charged - a.charged).map((route) => ({ ...route, charged: money(route.charged) })),
+      bookingSettlement: {
+        partnerId: 'BOOKING_PROTOTIPO',
+        bookings: partner.length,
+        charged: money(partnerCharged),
+        refunded: money(partnerRefunded),
+        penalties: money(sum(partner, (row) => row.penalty)),
+        net: money(partnerCharged - partnerRefunded),
+        pendingRefunds: { count: partner.filter((row) => row.pending > 0).length, amount: money(sum(partner, (row) => row.pending)) },
+        items: partner.map((row) => ({
+          bookingId: row.booking.bookingId,
+          pnr: row.booking.pnr,
+          partnerOrderId: row.booking.salesChannel?.partnerOrderId ?? null,
+          paymentReference: row.booking.payment.paymentReference,
+          status: row.booking.status,
+          createdAt: row.booking.createdAt,
+          charged: money(row.charged),
+          refunded: money(row.refunded),
+          penalty: money(row.penalty),
+          net: money(row.charged - row.refunded),
+        })),
+      },
+    };
+  }
+
   // ------------------------------------------------------------------ asistencia
   /** Pedir o cambiar la asistencia; no después del check-in del pasajero (CUTOFF_PASSED). */
   async saveAssistance(bookingId: string, passengerId: string, input: { type: AssistanceType; needsCompanion?: boolean; notes?: string }, caller: Caller) {
@@ -605,6 +711,8 @@ export class BookingsService {
       fares: booking.fares,
       refunds: booking.refunds,
       ...(assistance ? { assistance } : {}),
+      // Solo el administrador: cada referencia de pago usada por la reserva (reserva, asientos, maletas, cambio de fecha).
+      ...(caller.actorId ? { payments: await tx.paymentsOf(booking.bookingId) } : {}),
     };
   }
 
@@ -657,6 +765,20 @@ export class BookingsService {
   private alreadyOnFlight(segmentId: string, status = 422) {
     return problem(status, 'PASSENGER_ALREADY_ON_FLIGHT', 'Un pasajero ya tiene una reserva activa en ese vuelo.', { invalidParams: [{ name: 'passengers.documentNumber', reason: `ya viaja en ${segmentId}` }] });
   }
+}
+
+/** Lo que el listado agrega para el administrador: canal, orden de Booking, salida, pasajeros y reembolso total. */
+function adminSummary(booking: BookingRecord) {
+  const refunded = booking.refunds.reduce((cents, refund) => cents + toCents(refund.amount), 0);
+  return {
+    channel: booking.channel,
+    partnerId: booking.partnerId,
+    partnerOrderId: booking.salesChannel?.partnerOrderId ?? null,
+    departureAt: booking.itineraries[0]!.segments[0]!.departure.at,
+    passengerCount: booking.passengers.length,
+    refundTotal: booking.refunds.length ? formatCents(refunded) : null,
+    createdAt: booking.createdAt,
+  };
 }
 
 /** Vista de la asistencia (sin el id de la reserva). */

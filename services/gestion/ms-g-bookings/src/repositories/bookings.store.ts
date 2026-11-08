@@ -13,6 +13,8 @@ export interface BookingFilter {
   channel?: SalesChannelCode;
   createdFrom?: string;
   createdTo?: string;
+  /** Solo el administrador: el PNR, la orden de Booking (`partnerOrderId`) o la referencia del pago de la reserva, exactos. */
+  reference?: string;
 }
 
 export type InsertResult = 'ok' | 'id-exists' | 'pnr-taken' | 'hold-taken';
@@ -33,6 +35,8 @@ export interface BookingsTx {
   insertPayment(record: PaymentRecord): Promise<boolean>;
   savePayment(record: PaymentRecord): Promise<void>;
   deletePayment(reference: string): Promise<void>;
+  /** Pagos registrados de una reserva (reserva, asientos, maletas, cambio de fecha), del más antiguo al más reciente. */
+  paymentsOf(bookingId: string): Promise<PaymentRecord[]>;
 
   /** Quién tiene ya esos documentos en esos segmentos (de otras reservas). */
   documentHolders(claims: Omit<DocumentClaim, 'bookingId'>[]): Promise<DocumentClaim[]>;
@@ -69,6 +73,10 @@ export function matches(booking: BookingRecord, filter: BookingFilter): boolean 
     (!filter.status || booking.status === filter.status) &&
     (!filter.channel || booking.channel === filter.channel) &&
     (!filter.createdFrom || created >= filter.createdFrom) &&
-    (!filter.createdTo || created <= filter.createdTo)
+    (!filter.createdTo || created <= filter.createdTo) &&
+    (!filter.reference ||
+      booking.pnr === filter.reference.toUpperCase() ||
+      booking.salesChannel?.partnerOrderId === filter.reference ||
+      booking.payment.paymentReference === filter.reference)
   );
 }

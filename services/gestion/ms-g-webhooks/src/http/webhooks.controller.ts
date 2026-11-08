@@ -34,6 +34,8 @@ class FeedQuery {
 class HistoryQuery {
   @IsOptional() @IsString() @MaxLength(60) type?: string;
   @IsOptional() @IsString() @MaxLength(100) correlationId?: string;
+  /** Panel O-2: el `bookingId` de una reserva. */
+  @IsOptional() @IsString() @MaxLength(100) subject?: string;
   @IsOptional() @Matches(DATE_TIME) from?: string;
   @IsOptional() @Matches(DATE_TIME) to?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;

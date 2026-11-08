@@ -8,6 +8,9 @@ import { Footer } from './components/Footer';
 import { Header } from './components/Header';
 import { PwaStatus } from './components/PwaStatus';
 import { AdminAssistancePage } from './pages/admin/AdminAssistancePage';
+import { AdminBookingDetailPage } from './pages/admin/AdminBookingDetailPage';
+import { AdminBookingsPage } from './pages/admin/AdminBookingsPage';
+import { AdminReportsPage } from './pages/admin/AdminReportsPage';
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
 import { AdminObservabilityPage } from './pages/admin/AdminObservabilityPage';
 import { AdminOperationsPage } from './pages/admin/AdminOperationsPage';
@@ -66,6 +69,9 @@ export default function App() {
               <Route path="/mi-perfil" element={<RequireAuth><ProfilePage /></RequireAuth>} />
               <Route path="/admin" element={<RequireAdmin><AdminDashboardPage /></RequireAdmin>} />
               <Route path="/admin/operaciones" element={<RequireAdmin><AdminOperationsPage /></RequireAdmin>} />
+              <Route path="/admin/reservas" element={<RequireAdmin><AdminBookingsPage /></RequireAdmin>} />
+              <Route path="/admin/reservas/:bookingId" element={<RequireAdmin><AdminBookingDetailPage /></RequireAdmin>} />
+              <Route path="/admin/reportes" element={<RequireAdmin><AdminReportsPage /></RequireAdmin>} />
               <Route path="/admin/usuarios" element={<RequireAdmin><AdminUsersPage /></RequireAdmin>} />
               <Route path="/admin/partners" element={<RequireAdmin><AdminPartnersPage /></RequireAdmin>} />
               <Route path="/admin/precios" element={<RequireAdmin><AdminPricesPage /></RequireAdmin>} />

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: MS.G.Bookings — reservas, pasajeros, boletos, pagos recibidos, reembolsos y asistencia (interno)
-  version: 1.1.0
+  version: 1.3.0
   license:
     name: Uso académico — Integración de Sistemas (sin licencia de distribución)
   description: |
@@ -254,7 +254,9 @@ paths:
       tags: [Reservas]
       operationId: listBookings
       summary: Reservas de un dueño (o de todos, para el administrador)
-      description: Exige `X-Owner-Id` o `X-Actor-Id`. Responde la forma `BookingListResponse` del contrato v2 (sin `_links`).
+      description: |
+        Exige `X-Owner-Id` o `X-Actor-Id`. Responde la forma `BookingListResponse` del contrato v2 (sin `_links`); con
+        `X-Actor-Id` (administrador, 1.2.0) cada ítem trae además canal, orden de Booking, salida, pasajeros y reembolso.
       parameters:
         - $ref: '#/components/parameters/OwnerIdOptional'
         - $ref: '#/components/parameters/ActorIdOptional'
@@ -282,6 +284,12 @@ paths:
           schema:
             type: string
             format: date
+        - name: reference
+          in: query
+          description: Solo con `X-Actor-Id` (1.2.0). PNR, orden de Booking (`partnerOrderId`) o referencia del pago de la reserva, exactos
+          schema:
+            type: string
+            maxLength: 80
         - $ref: './vuelos-openapi-v2.yaml#/components/parameters/Limit'
         - $ref: './vuelos-openapi-v2.yaml#/components/parameters/Cursor'
       responses:
@@ -290,7 +298,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: './vuelos-openapi-v2.yaml#/components/schemas/BookingListResponse'
+                $ref: '#/components/schemas/BookingListView'
         '400':
           $ref: '#/components/responses/ValidationFailed'
         '401':
@@ -852,6 +860,39 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /reports/sales:
+    parameters:
+      - $ref: '#/components/parameters/ActorId'
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Indicadores]
+      operationId: getSalesReport
+      summary: Reporte de ventas por día, canal y ruta, y la liquidación con Booking (panel O-3, 1.3.0)
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Reporte
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalesReport'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
 components:
   securitySchemes:
     EsbService:
@@ -1222,6 +1263,73 @@ components:
               description: Solo si el llamador es el dueño o un administrador
               items:
                 $ref: '#/components/schemas/PassengerAssistance'
+            payments:
+              type: array
+              description: Solo con `X-Actor-Id` (1.2.0). Cada referencia de pago usada por la reserva, de la más antigua a la más reciente
+              items:
+                $ref: '#/components/schemas/PaymentRecord'
+
+    BookingListView:
+      description: '`BookingListResponse` del contrato v2 (sin `_links`); los campos marcados como administrador solo llegan con `X-Actor-Id`.'
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        nextCursor:
+          type: string
+          nullable: true
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [bookingId, pnr, status, grandTotal]
+            properties:
+              bookingId:
+                type: string
+                format: uuid
+              pnr:
+                type: string
+              status:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/BookingStatus'
+              origin:
+                type: string
+              destination:
+                type: string
+              departureDate:
+                type: string
+                format: date
+              grandTotal:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/MoneyAmount'
+              channel:
+                description: Administrador
+                allOf:
+                  - $ref: '#/components/schemas/SalesChannelCode'
+              partnerId:
+                description: Administrador
+                type: string
+                nullable: true
+              partnerOrderId:
+                description: Administrador. La orden de Booking
+                type: string
+                nullable: true
+              departureAt:
+                description: Administrador. Salida del primer segmento
+                type: string
+                format: date-time
+              passengerCount:
+                description: Administrador
+                type: integer
+                minimum: 1
+              refundTotal:
+                description: Administrador. Suma de los reembolsos (calculados o ejecutados); null si no hay
+                type: string
+                nullable: true
+                pattern: ^\d+\.\d{2}$
+              createdAt:
+                description: Administrador
+                type: string
+                format: date-time
 
     BookingFares:
       type: object
@@ -1488,6 +1596,166 @@ components:
           nullable: true
         assistance:
           $ref: '#/components/schemas/PassengerAssistance'
+
+    SalesReport:
+      type: object
+      additionalProperties: false
+      description: Reporte de ventas del panel (O-3, 1.3.0). Días en hora de Ecuador; montos en USD como texto con 2 decimales.
+      required: [from, to, currency, generatedAt, totals, byChannel, byDay, byRoute, bookingSettlement]
+      properties:
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        currency:
+          type: string
+        generatedAt:
+          type: string
+          format: date-time
+        totals:
+          type: object
+          additionalProperties: false
+          required: [bookings, cancelled, passengers, charged, refunded, net]
+          properties:
+            bookings:
+              type: integer
+            cancelled:
+              type: integer
+            passengers:
+              type: integer
+            charged:
+              type: string
+              pattern: ^-?\d+\.\d{2}$
+            refunded:
+              type: string
+              pattern: ^-?\d+\.\d{2}$
+            net:
+              type: string
+              pattern: ^-?\d+\.\d{2}$
+        byChannel:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [channel, bookings, charged, refunded, net]
+            properties:
+              channel:
+                $ref: '#/components/schemas/SalesChannelCode'
+              bookings:
+                type: integer
+              charged:
+                type: string
+                pattern: ^-?\d+\.\d{2}$
+              refunded:
+                type: string
+                pattern: ^-?\d+\.\d{2}$
+              net:
+                type: string
+                pattern: ^-?\d+\.\d{2}$
+        byDay:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [date, channel, bookings, charged]
+            properties:
+              date:
+                type: string
+                format: date
+              channel:
+                $ref: '#/components/schemas/SalesChannelCode'
+              bookings:
+                type: integer
+              charged:
+                type: string
+                pattern: ^-?\d+\.\d{2}$
+        byRoute:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [origin, destination, bookings, passengers, charged]
+            properties:
+              origin:
+                type: string
+              destination:
+                type: string
+              bookings:
+                type: integer
+              passengers:
+                type: integer
+              charged:
+                type: string
+                pattern: ^-?\d+\.\d{2}$
+        bookingSettlement:
+          type: object
+          additionalProperties: false
+          description: Liquidación con Booking (canal BOOKING), reserva por reserva
+          required: [partnerId, bookings, charged, refunded, penalties, net, pendingRefunds, items]
+          properties:
+            partnerId:
+              type: string
+            bookings:
+              type: integer
+            charged:
+              type: string
+              pattern: ^-?\d+\.\d{2}$
+            refunded:
+              type: string
+              pattern: ^-?\d+\.\d{2}$
+            penalties:
+              type: string
+              pattern: ^-?\d+\.\d{2}$
+            net:
+              type: string
+              pattern: ^-?\d+\.\d{2}$
+            pendingRefunds:
+              type: object
+              additionalProperties: false
+              description: Reembolsos calculados que todavía ejecuta Booking
+              required: [count, amount]
+              properties:
+                count:
+                  type: integer
+                amount:
+                  type: string
+                  pattern: ^-?\d+\.\d{2}$
+            items:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [bookingId, pnr, paymentReference, status, createdAt, charged, refunded, penalty, net]
+                properties:
+                  bookingId:
+                    type: string
+                    format: uuid
+                  pnr:
+                    type: string
+                  partnerOrderId:
+                    type: string
+                    nullable: true
+                  paymentReference:
+                    type: string
+                  status:
+                    $ref: './vuelos-openapi-v2.yaml#/components/schemas/BookingStatus'
+                  createdAt:
+                    type: string
+                    format: date-time
+                  charged:
+                    type: string
+                    pattern: ^-?\d+\.\d{2}$
+                  refunded:
+                    type: string
+                    pattern: ^-?\d+\.\d{2}$
+                  penalty:
+                    type: string
+                    pattern: ^-?\d+\.\d{2}$
+                  net:
+                    type: string
+                    pattern: ^-?\d+\.\d{2}$
 
     BookingSummary:
       type: object

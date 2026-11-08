@@ -239,14 +239,43 @@ export class CompositionService {
    * Todo lo que generó un proceso, por su X-Correlation-Id: los pasos (logs `api_request` de cada servicio, en Loki), sus sagas
    * (`saga_log`) y sus eventos (historial de Webhooks). `404` si no hay rastro.
    */
-  async correlationTrace(correlationId: string, caller: Caller) {
+  async correlationTrace(correlationId: string, caller: Caller, range: { from?: string; to?: string } = {}) {
     const [steps, sagas, events] = await Promise.all([
-      this.upstreams.observability.correlationSteps(correlationId),
+      this.upstreams.observability.correlationSteps(correlationId, range),
       this.store.listSagas({ correlationId, limit: 50 }),
       this.upstreams.rest.webhooks.json<{ items: unknown[]; nextCursor?: string }>('GET', `/history?correlationId=${encodeURIComponent(correlationId)}&limit=100`, { caller }),
     ]);
     if (!steps.length && !sagas.length && !events.items.length) throw ProblemDetailsException.notFound('No hay rastro de ese X-Correlation-Id en los últimos 7 días.');
     return { correlationId, steps, sagas: sagas.map((saga) => ({ sagaId: saga.sagaId, type: saga.type, status: saga.status })), events };
+  }
+
+  /**
+   * Panel O-2: el historial de una reserva — sus sagas (`saga_log`, con los pasos y su estado) y sus eventos con las entregas a
+   * Booking (historial de Webhooks por `subject`). Nunca devuelve la entrada ni el resultado de una saga (datos personales y de
+   * salud): solo nombres, estados y fechas. Lo que no exista responde listas vacías.
+   */
+  async bookingTimeline(bookingId: string, caller: Caller) {
+    const [sagas, events] = await Promise.all([
+      this.store.listSagas({ bookingId, limit: 50 }),
+      this.upstreams.rest.webhooks.json<{ items: unknown[] }>('GET', `/history?subject=${encodeURIComponent(bookingId)}&limit=100`, { caller }),
+    ]);
+    return {
+      bookingId,
+      sagas: sagas
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        .map((saga) => ({
+          sagaId: saga.sagaId,
+          type: saga.type,
+          status: saga.status,
+          correlationId: saga.correlationId,
+          parentSagaId: saga.parentSagaId,
+          createdAt: saga.createdAt,
+          updatedAt: saga.updatedAt,
+          errorCode: typeof saga.error?.['code'] === 'string' ? saga.error['code'] : null,
+          steps: saga.steps.map((step) => ({ name: step.name, status: step.status, at: step.at })),
+        })),
+      events: events.items,
+    };
   }
 }
 

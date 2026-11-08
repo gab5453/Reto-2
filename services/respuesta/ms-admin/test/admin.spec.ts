@@ -98,6 +98,72 @@ describe('precios, rutas y asistencia', () => {
   });
 });
 
+describe('reservas de todos los canales (panel O-1, solo lectura)', () => {
+  const BOOKING_ID = 'e8bead02-1587-4dcd-86c3-a54653fb0986';
+  const MONEY = { currency: 'USD', baseFare: '59.00', taxes: '20.85', total: '79.85' };
+
+  it('listAdminBookings: busca por referencia con X-Actor-Id y conserva canal, orden de Booking y reembolso', async () => {
+    const item = { bookingId: BOOKING_ID, pnr: 'DHV47T', status: 'CANCELLED', origin: 'UIO', destination: 'GYE', departureDate: '2026-11-08', grandTotal: MONEY,
+      channel: 'BOOKING', partnerId: 'BOOKING_PROTOTIPO', partnerOrderId: 'ORD-BKP-7B5BADB7C0', departureAt: '2026-11-08T07:00:00-05:00', passengerCount: 1, refundTotal: '20.85', createdAt: '2026-11-08T04:09:43.317Z' };
+    esb.on('GET', '/router/bookings/bookings', { body: { items: [item], nextCursor: null } });
+    const response = await admin(http().get('/api/v2/ecoairlines/admin/bookings').query({ reference: 'ORD-BKP-7B5BADB7C0', channel: 'BOOKING', limit: 20 })).expect(200);
+    expectOwn('get', '/ecoairlines/admin/bookings', response);
+    expect(response.body.items[0]).toEqual(item);
+    expect(esb.last()!.path).toBe('/router/bookings/bookings?reference=ORD-BKP-7B5BADB7C0&channel=BOOKING&limit=20');
+    expect(esb.last()!.headers['x-actor-id']).toBe(ADMIN_SUB);
+  });
+
+  it('getAdminBooking: el detalle con dueño, canal, tarifas, reembolsos y pagos registrados', async () => {
+    const detail = {
+      bookingId: BOOKING_ID, pnr: 'DHV47T', status: 'CANCELLED', grandTotal: MONEY, createdAt: '2026-11-08T04:09:43.317Z', updatedAt: '2026-11-08T04:09:59.775Z',
+      holdId: '0f6b1a2c-3d4e-4f50-8a6b-7c8d9e0f1a2b', paymentReference: 'PAY-BKP-20261107-030453',
+      salesChannel: { partnerId: 'BOOKING_PROTOTIPO', partnerOrderId: 'ORD-BKP-7B5BADB7C0', promotionApplied: false },
+      itineraries: [], passengers: [], tickets: [], changes: [{ changedAt: '2026-11-08T04:09:59.775Z', description: 'Reserva cancelada (CUSTOMER_REQUEST).' }],
+      ownerId: 'partner:BOOKING_PROTOTIPO:7a1c2e9f-4b3d-4c8a-9e21-5f6d7c8b9a01', channel: 'BOOKING',
+      refunds: [{ refundId: 'REF-1545C35F', amount: '20.85', penaltyAmount: '59.00', currency: 'USD', percentage: 26.11, status: 'CALCULATED' }],
+      payments: [{ paymentReference: 'PAY-BKP-20261107-030453', provider: 'BOOKING_PROTOTIPO', operation: 'BOOKING', amount: { currency: 'USD', total: '79.85' }, bookingId: BOOKING_ID, sagaId: '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', claimedAt: '2026-11-08T04:09:43.258Z' }],
+    };
+    esb.on('GET', `/router/bookings/bookings/${BOOKING_ID}`, { body: detail });
+    const response = await admin(http().get(`/api/v2/ecoairlines/admin/bookings/${BOOKING_ID}`)).expect(200);
+    expectOwn('get', '/ecoairlines/admin/bookings/{bookingId}', response);
+    expect(response.body).toMatchObject({ channel: 'BOOKING', ownerId: detail.ownerId, salesChannel: { partnerOrderId: 'ORD-BKP-7B5BADB7C0' }, refunds: [{ amount: '20.85' }], payments: [{ paymentReference: 'PAY-BKP-20261107-030453' }] });
+    expect(esb.last()!.headers['x-actor-id']).toBe(ADMIN_SUB);
+    expectOwn('get', '/ecoairlines/admin/bookings/{bookingId}', await http().get(`/api/v2/ecoairlines/admin/bookings/${BOOKING_ID}`).set('Authorization', tokens.customer()).expect(403));
+  });
+
+  it('getAdminBookingTimeline (O-2): sagas con sus pasos y eventos con sus entregas, por la composición', async () => {
+    const timeline = {
+      bookingId: BOOKING_ID,
+      sagas: [{ sagaId: '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', type: 'CANCEL_BOOKING', status: 'COMPLETED', correlationId: 'corr-cancel', parentSagaId: null, createdAt: '2026-11-08T04:09:59Z', updatedAt: '2026-11-08T04:09:59Z', errorCode: null, steps: [{ name: 'bookings.get', status: 'DONE', at: '2026-11-08T04:09:59Z' }] }],
+      events: [{ seq: 9, id: 'evt-1', type: 'ec.edu.epn.booking.vuelos.booking.cancelled', subject: BOOKING_ID, time: '2026-11-08T04:10:00Z', correlationId: 'corr-cancel', public: true, data: { bookingId: BOOKING_ID }, deliveries: [] }],
+    };
+    esb.on('GET', `/composition/bookings/${BOOKING_ID}/timeline`, { body: timeline });
+    const response = await admin(http().get(`/api/v2/ecoairlines/admin/bookings/${BOOKING_ID}/timeline`)).expect(200);
+    expectOwn('get', '/ecoairlines/admin/bookings/{bookingId}/timeline', response);
+    expect(response.body).toEqual(timeline);
+    expect(esb.last()!.headers['x-actor-id']).toBe(ADMIN_SUB);
+  });
+});
+
+describe('reportes (panel O-3)', () => {
+  it('getSalesReport: el reporte de Bookings por el enrutador, con el rango y X-Actor-Id', async () => {
+    const report = { from: '2026-11-01', to: '2026-11-08', currency: 'USD', generatedAt: '2026-11-08T18:00:00Z',
+      totals: { bookings: 1, cancelled: 1, passengers: 1, charged: '79.85', refunded: '20.85', net: '59.00' },
+      byChannel: [{ channel: 'WEB', bookings: 0, charged: '0.00', refunded: '0.00', net: '0.00' }, { channel: 'BOOKING', bookings: 1, charged: '79.85', refunded: '20.85', net: '59.00' }],
+      byDay: [{ date: '2026-11-07', channel: 'BOOKING', bookings: 1, charged: '79.85' }],
+      byRoute: [{ origin: 'UIO', destination: 'GYE', bookings: 1, passengers: 1, charged: '79.85' }],
+      bookingSettlement: { partnerId: 'BOOKING_PROTOTIPO', bookings: 1, charged: '79.85', refunded: '20.85', penalties: '59.00', net: '59.00', pendingRefunds: { count: 1, amount: '20.85' },
+        items: [{ bookingId: 'e8bead02-1587-4dcd-86c3-a54653fb0986', pnr: 'DHV47T', partnerOrderId: 'ORD-BKP-7B5BADB7C0', paymentReference: 'PAY-BKP-20261107-030453', status: 'CANCELLED', createdAt: '2026-11-08T04:09:43Z', charged: '79.85', refunded: '20.85', penalty: '59.00', net: '59.00' }] } };
+    esb.on('GET', /^\/router\/bookings\/reports\/sales\?/, { body: report });
+    const response = await admin(http().get('/api/v2/ecoairlines/admin/reports/sales').query({ from: '2026-11-01', to: '2026-11-08' })).expect(200);
+    expectOwn('get', '/ecoairlines/admin/reports/sales', response);
+    expect(response.body).toEqual(report);
+    expect(esb.last()!.path).toBe('/router/bookings/reports/sales?from=2026-11-01&to=2026-11-08');
+    expect(esb.last()!.headers['x-actor-id']).toBe(ADMIN_SUB);
+    expectOwn('get', '/ecoairlines/admin/reports/sales', await admin(http().get('/api/v2/ecoairlines/admin/reports/sales').query({ from: '2026-11-01' })).expect(400));
+  });
+});
+
 describe('eventos y telemetría', () => {
   it('listEventHistory busca por correlation id (parámetro nuevo de ms-admin 1.1.0)', async () => {
     esb.on('GET', '/router/webhooks/history', { body: { items: [], nextCursor: null } });
@@ -115,6 +181,10 @@ describe('eventos y telemetría', () => {
     expect(esb.last()!.headers['x-actor-id']).toBeDefined();
     esb.on('GET', '/composition/telemetry/traces/corr-x', { body: { correlationId: 'corr-x', steps: [{ timestamp: '2026-10-26T00:00:00Z', service: 'gateway', operation: 'POST /api/v2/*path', status: '201', latency_ms: 90, request_id: 'req-1', trace_id: 'abc' }], sagas: [{ sagaId: 's1', type: 'CREATE_BOOKING', status: 'COMPLETED' }], events: { items: [] } } });
     expectOwn('get', '/ecoairlines/admin/telemetry/traces/{correlationId}', await admin(http().get('/api/v2/ecoairlines/admin/telemetry/traces/corr-x')).expect(200));
+    // O-2: el rango (from/to) llega al ESB para acotar la búsqueda en Loki.
+    esb.on('GET', /^\/composition\/telemetry\/traces\/corr-x\?/, { body: { correlationId: 'corr-x', steps: [], sagas: [], events: { items: [] } } });
+    await admin(http().get('/api/v2/ecoairlines/admin/telemetry/traces/corr-x').query({ from: '2026-11-08T03:50:00Z', to: '2026-11-08T04:30:00Z' })).expect(200);
+    expect(esb.last()!.path).toBe('/composition/telemetry/traces/corr-x?from=2026-11-08T03%3A50%3A00Z&to=2026-11-08T04%3A30%3A00Z');
     esb.on('GET', '/composition/telemetry/queues', { body: [{ queue: 'webhooks.events', messages: 0, consumers: 1, deadLetters: 0 }] });
     expectOwn('get', '/ecoairlines/admin/telemetry/queues', await admin(http().get('/api/v2/ecoairlines/admin/telemetry/queues')).expect(200));
     esb.on('GET', '/composition/telemetry/alerts', { body: [{ id: 'f1', rule: 'StockSinEnviar', severity: 'WARNING', message: 'Stock pendiente', startedAt: '2026-10-26T00:00:00Z' }] });

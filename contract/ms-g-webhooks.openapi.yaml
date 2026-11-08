@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: MS.G.Webhooks — suscripciones, entrega de CloudEvents y feed de eventos (interno)
-  version: 1.2.0
+  version: 1.3.0
   license:
     name: Uso académico — Integración de Sistemas (sin licencia de distribución)
   description: |
@@ -235,7 +235,8 @@ paths:
       summary: Historial completo de eventos y entregas (panel de administración)
       description: |
         Incluye los eventos **internos** (sin sus datos de salud: `booking.assistance_requested` se muestra sin `data`). Del más
-        reciente al más antiguo. Se puede buscar por `correlationId` para ver todo lo que generó un proceso.
+        reciente al más antiguo. Se puede buscar por `correlationId` para ver todo lo que generó un proceso, o por `subject`
+        (1.3.0) para ver los eventos de una reserva.
       parameters:
         - name: type
           in: query
@@ -245,6 +246,12 @@ paths:
             maxLength: 60
         - name: correlationId
           in: query
+          schema:
+            type: string
+            maxLength: 100
+        - name: subject
+          in: query
+          description: Sujeto del evento (el `bookingId` de una reserva, 1.3.0)
           schema:
             type: string
             maxLength: 100

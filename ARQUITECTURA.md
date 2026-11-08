@@ -217,7 +217,7 @@ la web) → `flight.status_changed` a los suscriptores.
   de otro: los datos de otro servicio se piden por su API.
 - Documentos JSONB por agregado; sin `DATABASE_URL` cada servicio funciona en memoria (pruebas).
 - **Outbox** en el ESB y en Offers: el evento se guarda en la misma transacción que el cambio y un relé lo publica.
-- Modelo lógico: `PLAN/modelo-conceptual-v4.png`. Tablas por base: `PLAN/PLAN.md` §4.6.
+- Modelo de datos: `PLAN/modelo-conceptual-v5.png` (las tablas que crea el código). Diseño original: `PLAN/PLAN.md` §4.6.
 
 ---
 

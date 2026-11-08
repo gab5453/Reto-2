@@ -1,7 +1,7 @@
 import { lastSaleDate, todayIso } from '../lib/format';
 import { graphql } from './client';
-import { MONEY } from './operations';
-import type { CabinClass, FlightOperationalStatus, MoneyAmount } from './types';
+import { ITINERARY, MONEY, PASSENGER, TICKET } from './operations';
+import type { BookingStatus, CabinClass, FlightOperationalStatus, ItineraryOption, MoneyAmount, PassengerItem, Ticket } from './types';
 
 /*
  * Administración sobre el GraphQL del gateway (`@auth(scopes: [ECOAIRLINES_ADMIN])` o `FLIGHTS_OPS`; → MS.Admin y MS.Vuelos).
@@ -184,11 +184,11 @@ export const getBookingIntegration = (token: string) =>
   ).then((data) => data.telemetry.bookingIntegration);
 
 /** Todo lo que generó un proceso, por su `X-Correlation-Id`; `null` si no se encontró nada. */
-export const getCorrelationTrace = (token: string, correlationId: string) =>
+export const getCorrelationTrace = (token: string, correlationId: string, range: { from?: string; to?: string } = {}) =>
   graphql<{ telemetry: { trace: CorrelationTrace | null } }>(
-    `query Traza($correlationId: String!) {
+    `query Traza($correlationId: String!, $from: DateTime, $to: DateTime) {
       telemetry {
-        trace(correlationId: $correlationId) {
+        trace(correlationId: $correlationId, from: $from, to: $to) {
           correlationId
           steps { timestamp service operation status latencyMs requestId traceId }
           sagas { sagaId type status }
@@ -196,7 +196,7 @@ export const getCorrelationTrace = (token: string, correlationId: string) =>
         }
       }
     }`,
-    { correlationId },
+    { correlationId, ...range },
     { token },
   ).then((data) => data.telemetry.trace);
 
@@ -215,25 +215,38 @@ export interface DomainEvent {
   eventType: string;
   occurredAt: string;
   correlationId?: string;
+  /** El `bookingId` en los eventos de reserva; el vuelo, la ruta o el usuario en los demás. */
+  subject?: string;
   data: Record<string, unknown>;
   deliveries: EventDelivery[];
+}
+
+/** Filtros de la bitácora (panel O-4). Las fechas son instantes ISO. */
+export interface EventFilter {
+  type?: string;
+  correlationId?: string;
+  from?: string;
+  to?: string;
 }
 
 interface EventHistoryItem {
   id: string;
   type: string;
   time: string;
+  subject: string | null;
   correlationId: string | null;
   data: Record<string, unknown> | null;
   deliveries: { subscriptionId: string; target: string | null; outcome: string; httpStatus: number | null; attempts: number }[];
 }
 
-export const getRecentEvents = (token: string) =>
+export const getRecentEvents = (token: string, filter: EventFilter = {}) =>
   graphql<{ eventHistory: { items: EventHistoryItem[] } }>(
-    `query Eventos($limit: Int) {
-      eventHistory(limit: $limit) { items { id type time correlationId data deliveries { subscriptionId target outcome httpStatus attempts } } }
+    `query Eventos($type: String, $correlationId: String, $from: DateTime, $to: DateTime, $limit: Int) {
+      eventHistory(type: $type, correlationId: $correlationId, from: $from, to: $to, limit: $limit) {
+        items { id type subject time correlationId data deliveries { subscriptionId target outcome httpStatus attempts } }
+      }
     }`,
-    { limit: 50 },
+    { ...Object.fromEntries(Object.entries(filter).filter(([, value]) => value)), limit: 50 },
     { token },
   ).then((data) =>
     data.eventHistory.items.map(
@@ -242,6 +255,7 @@ export const getRecentEvents = (token: string) =>
         eventType: item.type,
         occurredAt: item.time,
         ...(item.correlationId ? { correlationId: item.correlationId } : {}),
+        ...(item.subject ? { subject: item.subject } : {}),
         // null en los eventos con datos de salud: nunca llegan al panel.
         data: item.data ?? {},
         deliveries: item.deliveries.map((delivery) => ({
@@ -591,3 +605,201 @@ export const markAssistanceReady = (token: string, bookingId: string, input: { p
   graphql<{ markAssistanceReady: boolean }>('mutation AsistenciaLista($id: UUID!, $input: AssistanceReadyInput!) { markAssistanceReady(bookingId: $id, input: $input) }', { id: bookingId, input }, { token }).then(
     () => undefined,
   );
+
+// ── Reservas de todos los canales (panel O-1, solo lectura; → MS.Admin listAdminBookings y getAdminBooking) ──
+export type SalesChannelCode = 'WEB' | 'BOOKING';
+
+export interface AdminBookingFilter {
+  /** PNR, orden de Booking o referencia del pago de la reserva, exactos. */
+  reference?: string;
+  status?: BookingStatus;
+  channel?: SalesChannelCode;
+  createdFrom?: string;
+  createdTo?: string;
+}
+
+export interface AdminBookingSummary {
+  bookingId: string;
+  pnr: string;
+  status: BookingStatus;
+  channel: SalesChannelCode;
+  partnerId: string | null;
+  partnerOrderId: string | null;
+  origin: string | null;
+  destination: string | null;
+  departureAt: string | null;
+  passengerCount: number;
+  grandTotal: MoneyAmount;
+  refundTotal: string | null;
+  createdAt: string;
+}
+
+export interface AdminPayment {
+  paymentReference: string;
+  provider: string;
+  operation: string;
+  amount: MoneyAmount;
+  claimedAt: string;
+}
+
+export interface AdminRefund {
+  refundId: string;
+  amount: string;
+  penaltyAmount: string;
+  currency: string;
+  percentage: number | null;
+  status: 'CALCULATED' | 'SETTLED' | 'NOT_REFUNDABLE';
+}
+
+export interface AdminBooking {
+  bookingId: string;
+  pnr: string;
+  status: BookingStatus;
+  channel: SalesChannelCode;
+  ownerId: string;
+  partnerUserId: string | null;
+  salesChannel: { partnerId: string | null; partnerOrderId: string | null; packageId: string | null; promotionApplied: boolean | null; discountPercentage: number | null } | null;
+  paymentReference: string | null;
+  grandTotal: MoneyAmount;
+  createdAt: string;
+  updatedAt: string | null;
+  itineraries: ItineraryOption[];
+  passengers: PassengerItem[];
+  fares: { itineraryId: string; cabinClass: CabinClass; fareBrand: string; segmentIds: string[]; isRefundable: boolean; isChangeable: boolean; price: MoneyAmount }[];
+  tickets: Ticket[];
+  refunds: AdminRefund[];
+  payments: AdminPayment[];
+  changes: { changedAt: string; description: string | null }[];
+  /** Solo los ids: la asistencia médica es un dato de salud. */
+  passengersWithAssistance: string[];
+}
+
+export const listAdminBookings = (token: string, filter: AdminBookingFilter, cursor?: string) =>
+  graphql<{ adminBookings: { nextCursor: string | null; items: AdminBookingSummary[] } }>(
+    `query ReservasDelPanel($filter: AdminBookingFilterInput, $limit: Int, $cursor: String) {
+      adminBookings(filter: $filter, limit: $limit, cursor: $cursor) {
+        nextCursor
+        items {
+          bookingId pnr status channel partnerId partnerOrderId origin destination departureAt passengerCount
+          grandTotal { ${MONEY} } refundTotal createdAt
+        }
+      }
+    }`,
+    { filter, limit: 20, ...(cursor ? { cursor } : {}) },
+    { token },
+  ).then((data) => data.adminBookings);
+
+export const getAdminBooking = (token: string, bookingId: string) =>
+  graphql<{ adminBooking: AdminBooking }>(
+    `query ReservaDelPanel($id: UUID!) {
+      adminBooking(bookingId: $id) {
+        bookingId pnr status channel ownerId partnerUserId paymentReference createdAt updatedAt grandTotal { ${MONEY} }
+        salesChannel { partnerId partnerOrderId packageId promotionApplied discountPercentage }
+        itineraries { ${ITINERARY} }
+        passengers { ${PASSENGER} }
+        fares { itineraryId cabinClass fareBrand segmentIds isRefundable isChangeable price { ${MONEY} } }
+        tickets { ${TICKET} }
+        refunds { refundId amount penaltyAmount currency percentage status }
+        payments { paymentReference provider operation claimedAt amount { ${MONEY} } }
+        changes { changedAt description }
+        passengersWithAssistance
+      }
+    }`,
+    { id: bookingId },
+    { token },
+  ).then((data) => data.adminBooking);
+
+// ── Historial de una reserva (panel O-2; → MS.Admin getAdminBookingTimeline) ──
+export interface AdminSaga {
+  sagaId: string;
+  type: string;
+  status: 'RUNNING' | 'COMPLETED' | 'COMPENSATING' | 'COMPENSATED' | 'FAILED';
+  correlationId: string;
+  parentSagaId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  errorCode: string | null;
+  steps: { name: string; status: 'STARTED' | 'DONE' | 'COMPENSATED'; at: string }[];
+}
+
+export interface AdminTimelineEvent {
+  id: string;
+  type: string;
+  time: string;
+  correlationId: string | null;
+  public: boolean;
+  deliveries: { subscriptionId: string; target: string | null; outcome: string; httpStatus: number | null; attempts: number; nextRetryAt: string | null }[];
+}
+
+export interface AdminBookingTimeline {
+  sagas: AdminSaga[];
+  events: AdminTimelineEvent[];
+}
+
+export const getAdminBookingTimeline = (token: string, bookingId: string) =>
+  graphql<{ adminBooking: { timeline: AdminBookingTimeline } }>(
+    `query HistorialDeReserva($id: UUID!) {
+      adminBooking(bookingId: $id) {
+        timeline {
+          sagas { sagaId type status correlationId parentSagaId createdAt updatedAt errorCode steps { name status at } }
+          events { id type time correlationId public deliveries { subscriptionId target outcome httpStatus attempts nextRetryAt } }
+        }
+      }
+    }`,
+    { id: bookingId },
+    { token },
+  ).then((data) => data.adminBooking.timeline);
+
+// ── Reporte de ventas y liquidación con Booking (panel O-3; → MS.Admin getSalesReport) ──
+export interface SettlementItem {
+  bookingId: string;
+  pnr: string;
+  partnerOrderId: string | null;
+  paymentReference: string;
+  status: BookingStatus;
+  createdAt: string;
+  charged: string;
+  refunded: string;
+  penalty: string;
+  net: string;
+}
+
+export interface SalesReport {
+  from: string;
+  to: string;
+  currency: string;
+  generatedAt: string;
+  totals: { bookings: number; cancelled: number; passengers: number; charged: string; refunded: string; net: string };
+  byChannel: { channel: SalesChannelCode; bookings: number; charged: string; refunded: string; net: string }[];
+  byDay: { date: string; channel: SalesChannelCode; bookings: number; charged: string }[];
+  byRoute: { origin: string; destination: string; bookings: number; passengers: number; charged: string }[];
+  bookingSettlement: {
+    partnerId: string;
+    bookings: number;
+    charged: string;
+    refunded: string;
+    penalties: string;
+    net: string;
+    pendingRefunds: { count: number; amount: string };
+    items: SettlementItem[];
+  };
+}
+
+export const getSalesReport = (token: string, from: string, to: string) =>
+  graphql<{ adminSalesReport: SalesReport }>(
+    `query ReporteDeVentas($from: Date!, $to: Date!) {
+      adminSalesReport(from: $from, to: $to) {
+        from to currency generatedAt
+        totals { bookings cancelled passengers charged refunded net }
+        byChannel { channel bookings charged refunded net }
+        byDay { date channel bookings charged }
+        byRoute { origin destination bookings passengers charged }
+        bookingSettlement {
+          partnerId bookings charged refunded penalties net pendingRefunds { count amount }
+          items { bookingId pnr partnerOrderId paymentReference status createdAt charged refunded penalty net }
+        }
+      }
+    }`,
+    { from, to },
+    { token },
+  ).then((data) => data.adminSalesReport);

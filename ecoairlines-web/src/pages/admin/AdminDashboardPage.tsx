@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getIndicators, type AdminIndicators } from '../../api/admin';
+import { getIndicators, getSalesReport, getServicesHealth, type AdminIndicators, type SalesReport, type ServiceHealth } from '../../api/admin';
 import { useAuth } from '../../auth/AuthContext';
 import { Stat } from '../../components/AdminUi';
 import { ProblemAlert } from '../../components/ProblemAlert';
 import { cityOf } from '../../data/airports';
-import { formatDateTime, formatMoney } from '../../lib/format';
+import { formatDateTime, formatMoney, todayIso } from '../../lib/format';
 import { FleetPanel } from './FleetPanel';
 import { RoutesPanel } from './RoutesPanel';
 
@@ -25,6 +25,20 @@ export function AdminDashboardPage() {
   const [refreshedAt, setRefreshedAt] = useState<string>();
   const [error, setError] = useState<unknown>(null);
   const [tab, setTab] = useState<Tab>('SCHEDULE');
+  // Panel O-3: el mes en curso con Booking y el estado de los servicios. Cada uno puede fallar solo; el resto del panel sigue.
+  const [month, setMonth] = useState<SalesReport | null>(null);
+  const [services, setServices] = useState<ServiceHealth[] | null>(null);
+
+  useEffect(() => {
+    if (!token) return;
+    let active = true;
+    const today = todayIso();
+    getSalesReport(token, `${today.slice(0, 8)}01`, today).then((report) => active && setMonth(report), () => undefined);
+    getServicesHealth(token).then((list) => active && setServices(list), () => undefined);
+    return () => {
+      active = false;
+    };
+  }, [token]);
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -76,13 +90,37 @@ export function AdminDashboardPage() {
       {error ? <ProblemAlert error={error} /> : null}
 
       <section className="stats-grid" aria-label="Indicadores">
-        <Stat label="Reservas" value={stats.totalBookings} />
-        <Stat label="Por la web" value={stats.bookingsByChannel.web} />
-        <Stat label="Por Booking" value={stats.bookingsByChannel.booking} />
+        <Stat label="Reservas" value={stats.totalBookings} to="/admin/reservas" />
+        <Stat label="Por la web" value={stats.bookingsByChannel.web} to="/admin/reservas?canal=WEB" />
+        <Stat label="Por Booking" value={stats.bookingsByChannel.booking} to="/admin/reservas?canal=BOOKING" />
         <Stat label="Pasajeros" value={stats.totalPassengers} />
         <Stat label="Ingresos" value={formatMoney(stats.revenue)} />
         <Stat label="Vuelos hoy" value={stats.flightsToday} />
-        <Stat label="Clientes / administradores" value={`${stats.customers} / ${stats.admins}`} />
+        <Stat label="Clientes / administradores" value={`${stats.customers} / ${stats.admins}`} to="/admin/usuarios" />
+        {month ? (
+          <>
+            <Stat
+              label="Reembolsos pendientes de Booking"
+              value={month.bookingSettlement.pendingRefunds.count}
+              hint={`${formatMoney(month.bookingSettlement.pendingRefunds.amount, month.currency)} que ejecuta Booking`}
+              to={`/admin/reportes?desde=${month.from}&hasta=${month.to}`}
+            />
+            <Stat
+              label="Neto de Booking este mes"
+              value={formatMoney(month.bookingSettlement.net, month.currency)}
+              hint={`${month.bookingSettlement.bookings} reservas · cobrado ${formatMoney(month.bookingSettlement.charged, month.currency)}`}
+              to={`/admin/reportes?desde=${month.from}&hasta=${month.to}`}
+            />
+          </>
+        ) : null}
+        {services ? (
+          <Stat
+            label="Estado del sistema"
+            value={`${services.filter((item) => item.status === 'UP').length} / ${services.length} arriba`}
+            hint={services.some((item) => item.status !== 'UP') ? `Con problemas: ${services.filter((item) => item.status !== 'UP').map((item) => item.service).join(', ')}` : 'Todo funciona'}
+            to="/admin/telemetria"
+          />
+        ) : null}
       </section>
 
       <section className="card">

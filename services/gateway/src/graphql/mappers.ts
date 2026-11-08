@@ -35,6 +35,44 @@ export function booking(detail: Any): Any {
   };
 }
 
+/** Ítem de `listAdminBookings` (panel O-1). */
+export function adminBookingSummary(item: Any): Any {
+  return {
+    ...item,
+    partnerId: item['partnerId'] ?? null,
+    partnerOrderId: item['partnerOrderId'] ?? null,
+    origin: item['origin'] ?? null,
+    destination: item['destination'] ?? null,
+    departureAt: item['departureAt'] ?? null,
+    passengerCount: item['passengerCount'] ?? 0,
+    refundTotal: item['refundTotal'] ?? null,
+  };
+}
+
+/**
+ * `BookingView` de MS.Admin → `AdminBooking`. La asistencia médica (tipo, notas) NO pasa al navegador: solo qué pasajeros
+ * la tienen. El usuario de Booking sale del dueño `partner:<client_id>:<X-User-Id>`.
+ */
+export function adminBooking(detail: Any): Any {
+  const { assistance, ...rest } = booking(detail);
+  const ownerId = String(detail['ownerId'] ?? '');
+  const partnerUserId = ownerId.startsWith('partner:') ? ownerId.split(':').slice(2).join(':') || null : null;
+  return {
+    ...rest,
+    ownerId,
+    partnerUserId,
+    salesChannel: detail['salesChannel'] ?? null,
+    paymentReference: detail['paymentReference'] ?? null,
+    fares: ((detail['fares'] as Any[] | undefined) ?? []).map((fare) => ({ ...fare, segmentIds: fare['segmentIds'] ?? [], isRefundable: Boolean(fare['isRefundable']), isChangeable: Boolean(fare['isChangeable']) })),
+    tickets: ((detail['tickets'] as Any[] | undefined) ?? []).map((ticket) => ({ ...ticket, bookingId: ticket['bookingId'] ?? detail['bookingId'], segments: ticket['segments'] ?? [] })),
+    refunds: detail['refunds'] ?? [],
+    payments: ((detail['payments'] as Any[] | undefined) ?? []).map((payment) => ({
+      paymentReference: payment['paymentReference'], provider: payment['provider'], operation: payment['operation'], amount: payment['amount'], claimedAt: payment['claimedAt'],
+    })),
+    passengersWithAssistance: [...new Set(((assistance as Any[] | undefined) ?? []).map((item) => String(item['passengerId'])))],
+  };
+}
+
 export function webhook(subscription: Any, hint: string | undefined = subscription['secretHint']): Any {
   return { ...subscription, events: ((subscription['events'] as string[] | undefined) ?? []).map(eventToEnum), secret: maskSecret(hint) };
 }
@@ -126,6 +164,14 @@ export function cancellation(status: number, body: Any): Any {
 
 export function eventHistoryItem(item: Any): Any {
   return { ...item, deliveries: item['deliveries'] ?? [] };
+}
+
+/** `BookingTimeline` de MS.Admin (panel O-2). */
+export function bookingTimeline(body: Any): Any {
+  return {
+    sagas: ((body['sagas'] as Any[] | undefined) ?? []).map((saga) => ({ ...saga, parentSagaId: saga['parentSagaId'] ?? null, errorCode: saga['errorCode'] ?? null, steps: saga['steps'] ?? [] })),
+    events: ((body['events'] as Any[] | undefined) ?? []).map(eventHistoryItem),
+  };
 }
 
 export function trace(body: Any): Any {

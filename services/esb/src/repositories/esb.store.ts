@@ -58,6 +58,8 @@ export interface SagaFilter {
   parentSagaId?: string;
   /** V2.16: las sagas de un proceso (búsqueda por X-Correlation-Id del panel). */
   correlationId?: string;
+  /** Panel O-2: las sagas de una reserva (todas reciben su `bookingId` en la entrada). */
+  bookingId?: string;
   limit: number;
 }
 
@@ -256,7 +258,7 @@ export class InMemoryEsbStore implements EsbStore {
   }
   async listSagas(filter: SagaFilter) {
     return [...this.sagas.values()]
-      .filter((s) => (!filter.type || s.type === filter.type) && (!filter.status || s.status === filter.status) && (!filter.parentSagaId || s.parentSagaId === filter.parentSagaId) && (!filter.correlationId || s.correlationId === filter.correlationId))
+      .filter((s) => (!filter.type || s.type === filter.type) && (!filter.status || s.status === filter.status) && (!filter.parentSagaId || s.parentSagaId === filter.parentSagaId) && (!filter.correlationId || s.correlationId === filter.correlationId) && (!filter.bookingId || (s.input as { bookingId?: unknown } | null)?.bookingId === filter.bookingId))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, filter.limit)
       .map((s) => structuredClone(s));
@@ -354,6 +356,7 @@ CREATE TABLE IF NOT EXISTS saga_log (
 CREATE INDEX IF NOT EXISTS saga_log_pending ON saga_log (lease_until) WHERE status IN ('RUNNING', 'COMPENSATING');
 CREATE INDEX IF NOT EXISTS saga_log_parent ON saga_log (parent_saga_id) WHERE parent_saga_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS saga_log_created ON saga_log (created_at DESC);
+CREATE INDEX IF NOT EXISTS saga_log_booking ON saga_log ((input->>'bookingId'));
 CREATE TABLE IF NOT EXISTS outbox (
   seq bigserial UNIQUE,
   id text PRIMARY KEY,
@@ -543,6 +546,7 @@ export class PostgresEsbStore implements EsbStore {
     if (filter.status) where.push(`status = $${values.push(filter.status)}`);
     if (filter.parentSagaId) where.push(`parent_saga_id = $${values.push(filter.parentSagaId)}`);
     if (filter.correlationId) where.push(`correlation_id = $${values.push(filter.correlationId)}`);
+    if (filter.bookingId) where.push(`input->>'bookingId' = $${values.push(filter.bookingId)}`);
     const sql = `SELECT * FROM saga_log ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC LIMIT $${values.push(filter.limit)}`;
     return (await this.pool.query(sql, values)).rows.map(toSaga);
   }

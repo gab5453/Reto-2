@@ -110,6 +110,13 @@ export function createResolvers(options: ResolverOptions) {
       const page = (await ms.call<Any>('MS.Admin', 'GET', '/ecoairlines/admin/events', { query: args })).body;
       return { items: ((page['items'] as Any[] | undefined) ?? []).map(map.eventHistoryItem), nextCursor: page['nextCursor'] ?? null };
     },
+    /** Reservas de todos los canales para el panel (O-1, solo lectura): el filtro `reference` busca PNR, orden o pago. */
+    adminBookings: async (_, { filter, limit, cursor }, { ms }) => {
+      const page = (await ms.call<Any>('MS.Admin', 'GET', '/ecoairlines/admin/bookings', { query: { ...filter, limit, cursor } })).body;
+      return { items: ((page['items'] as Any[] | undefined) ?? []).map(map.adminBookingSummary), nextCursor: page['nextCursor'] ?? null };
+    },
+    adminBooking: async (_, { bookingId }, { ms }) => map.adminBooking((await ms.call('MS.Admin', 'GET', `/ecoairlines/admin/bookings/${id(bookingId)}`)).body),
+    adminSalesReport: async (_, { from, to }, { ms }) => (await ms.call('MS.Admin', 'GET', '/ecoairlines/admin/reports/sales', { query: { from, to } })).body,
     /** Cada campo de `Telemetry` llama a su propia operación (algunas responden 503 hasta V2.16). */
     telemetry: () => ({}),
   };
@@ -234,9 +241,9 @@ export function createResolvers(options: ResolverOptions) {
       ((await ms.call<Any[]>('MS.Admin', 'GET', '/ecoairlines/admin/telemetry/services')).body ?? []).map((s) => ({ service: s['service'], status: s['status'], latencyMs: s['latency_ms'] ?? null, version: s['version'] ?? null, checkedAt: s['checkedAt'] })),
     latency: async (_, { from, to }, { ms }) =>
       ((await ms.call<Any[]>('MS.Admin', 'GET', '/ecoairlines/admin/telemetry/latency', { query: { from, to } })).body ?? []).map((l) => ({ service: l['service'], p50Ms: l['p50_ms'], p95Ms: l['p95_ms'], p99Ms: l['p99_ms'], requests: l['requests'], errorRate: l['errorRate'] })),
-    trace: async (_, { correlationId }, { ms }) => {
+    trace: async (_, { correlationId, from, to }, { ms }) => {
       try {
-        return map.trace((await ms.call('MS.Admin', 'GET', `/ecoairlines/admin/telemetry/traces/${id(correlationId)}`)).body);
+        return map.trace((await ms.call('MS.Admin', 'GET', `/ecoairlines/admin/telemetry/traces/${id(correlationId)}`, { query: { from, to } })).body);
       } catch (error) {
         if (isNotFound(error)) return null;
         throw error;
@@ -257,6 +264,9 @@ export function createResolvers(options: ResolverOptions) {
     Booking,
     BookingSummary: { booking: (async (summary, _, { ms }) => map.booking((await ms.call('MS.Reservas', 'GET', `/vuelos/bookings/${id(summary['bookingId'])}`)).body)) as Resolver },
     Telemetry,
+    AdminBooking: {
+      timeline: (async (booking, _, { ms }) => map.bookingTimeline((await ms.call('MS.Admin', 'GET', `/ecoairlines/admin/bookings/${id(booking['bookingId'])}/timeline`)).body)) as Resolver,
+    },
     Seat: { characteristics: ((seat) => seat['characteristics'] ?? []) as Resolver, isAvailable: ((seat) => seat['isAvailable'] ?? seat['status'] === 'AVAILABLE') as Resolver },
     PassengerCheckIn: { segments: ((passenger) => passenger['segments'] ?? []) as Resolver },
     DefaultAssistance: { needsCompanion: ((assistance) => assistance['needsCompanion'] ?? false) as Resolver },

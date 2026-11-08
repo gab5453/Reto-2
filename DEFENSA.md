@@ -32,7 +32,7 @@ Detalle técnico: `ARQUITECTURA.md`, `EVENTOS.md` y `CRITERIOS.md`. Decisiones: 
 ## 3. Guion de demostración (≈ 15 min)
 
 ### Paso 1 — La arquitectura (2 min)
-Mostrar el diagrama de `ARQUITECTURA.md` §1 (o `PLAN/arquitectura-microservicios-v4.png`). Recorrerlo de arriba abajo:
+Mostrar el diagrama de `ARQUITECTURA.md` §1 (o `PLAN/arquitectura-microservicios-v5.png`, con el despliegue en Azure). Recorrerlo de arriba abajo:
 gateway → 5 MS de respuesta → ESB → 9 MS.G con su base cada uno. Señalar **dónde está cada tecnología** (§3 de ARQUITECTURA).
 
 ### Paso 2 — Booking compra por el contrato v2 (3 min)

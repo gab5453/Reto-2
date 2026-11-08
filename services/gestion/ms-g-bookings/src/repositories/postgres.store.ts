@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS bookings (
   data       jsonb NOT NULL
 );
 CREATE INDEX IF NOT EXISTS bookings_owner_idx ON bookings (owner_id, created_at DESC);
+-- Búsqueda del panel (O-1): por la orden de Booking o la referencia del pago de la reserva.
+CREATE INDEX IF NOT EXISTS bookings_partner_order_idx ON bookings ((data->'salesChannel'->>'partnerOrderId'));
+CREATE INDEX IF NOT EXISTS bookings_payment_ref_idx ON bookings ((data->'payment'->>'paymentReference'));
 CREATE TABLE IF NOT EXISTS booking_segments (
   booking_id uuid NOT NULL REFERENCES bookings(booking_id) ON DELETE CASCADE,
   segment_id text NOT NULL,
@@ -84,6 +87,10 @@ function where(filter: BookingFilter): { sql: string; values: unknown[] } {
   if (filter.channel) add('channel = ?', filter.channel);
   if (filter.createdFrom) add('created_at >= ?::date', filter.createdFrom);
   if (filter.createdTo) add(`created_at < (?::date + 1)`, filter.createdTo);
+  if (filter.reference) {
+    const at = values.push(filter.reference);
+    parts.push(`(pnr = upper($${at}) OR data->'salesChannel'->>'partnerOrderId' = $${at} OR data->'payment'->>'paymentReference' = $${at})`);
+  }
   return { sql: parts.length ? `WHERE ${parts.join(' AND ')}` : '', values };
 }
 
@@ -190,6 +197,8 @@ export class PostgresBookingsStore implements BookingsStore {
       deletePayment: async (reference) => {
         await db.query('DELETE FROM payment_records WHERE payment_reference = $1', [reference]);
       },
+      paymentsOf: async (bookingId) =>
+        (await db.query('SELECT * FROM payment_records WHERE booking_id = $1 ORDER BY claimed_at', [bookingId])).rows.map(toPayment),
 
       documentHolders: async (claims) => {
         if (!claims.length) return [];

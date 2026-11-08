@@ -559,6 +559,42 @@ describe('telemetría del panel (V2.16, D50)', () => {
     expect(JSON.stringify(response.body)).not.toContain('secreto'); // la entrada de la saga nunca sale
     expect(msg.calls('webhooks', 'GET')[0]!.headers['x-actor-id']).toBe(ADMIN);
     await admin(http().get('/composition/telemetry/traces/corr-sin-rastro')).expect(404);
+
+    // O-2: con rango, Loki busca solo en esa ventana (7 días tardan ~24 s en la VM); un rango inválido → 400.
+    const from = '2026-11-08T03:50:00.000Z';
+    const to = '2026-11-08T04:30:00.000Z';
+    await admin(http().get(`/composition/telemetry/traces/${corr}`).query({ from, to })).expect(200);
+    const loki = new URL(msg.calls('loki').at(-1)!.path, 'http://x').searchParams;
+    expect([loki.get('start'), loki.get('end')]).toEqual([String(Date.parse(from) * 1_000_000), String(Date.parse(to) * 1_000_000)]);
+    await admin(http().get(`/composition/telemetry/traces/${corr}`).query({ from: 'ayer' })).expect(400);
+  });
+
+  it('★ panel O-2: historial de una reserva — sus sagas con los pasos (sin entrada ni resultado) y sus eventos por `subject`', async () => {
+    const bookingId = randomUUID();
+    const earlier = new Date(Date.now() - 60_000).toISOString();
+    const now = new Date().toISOString();
+    const saga = (type: string, createdAt: string, extra: Record<string, unknown> = {}) => ({
+      sagaId: randomUUID(), type, status: 'COMPLETED' as const, input: { bookingId, request: { documentNumber: 'P1234567', notes: 'dato de salud' } },
+      steps: [{ name: 'bookings.get', status: 'DONE' as const, result: { secreto: 'x' }, at: createdAt }], result: { secreto: 'resultado' }, error: null,
+      ownerId: OWNER, actorId: null, correlationId: `corr-${type}`, parentSagaId: null, attempts: 1, leaseUntil: createdAt, nextAttemptAt: createdAt, createdAt, updatedAt: createdAt, ...extra,
+    });
+    await store.insertSaga(saga('CANCEL_BOOKING', now));
+    await store.insertSaga(saga('CREATE_BOOKING', earlier));
+    await store.insertSaga({ ...saga('CREATE_BOOKING', now), input: { bookingId: randomUUID() } }); // de otra reserva
+    msg.on('webhooks', 'GET', /^\/history\?/, (r) => ({
+      status: 200,
+      body: { items: r.path.includes(`subject=${bookingId}`) ? [{ seq: 7, id: randomUUID(), type: 'ec.edu.epn.booking.vuelos.booking.cancelled', subject: bookingId, time: now, correlationId: 'corr-CANCEL_BOOKING', public: true, data: { bookingId }, deliveries: [] }] : [] },
+    }));
+    const response = await admin(http().get(`/composition/bookings/${bookingId}/timeline`)).expect(200);
+    expectContract('GET', '/composition/bookings/{bookingId}/timeline', response);
+    expect(response.body.sagas.map((s: { type: string }) => s.type)).toEqual(['CREATE_BOOKING', 'CANCEL_BOOKING']);
+    expect(response.body.sagas[0].steps).toEqual([{ name: 'bookings.get', status: 'DONE', at: earlier }]);
+    expect(response.body.events).toHaveLength(1);
+    const body = JSON.stringify(response.body);
+    for (const hidden of ['secreto', 'P1234567', 'dato de salud']) expect(body).not.toContain(hidden);
+    expect(msg.calls('webhooks', 'GET').at(-1)!.headers['x-actor-id']).toBe(ADMIN);
+    await svc(http().get(`/composition/bookings/${bookingId}/timeline`)).expect(403); // sin X-Actor-Id
+    await admin(http().get('/composition/bookings/no-es-uuid/timeline')).expect(400);
   });
 
   it('colas de RabbitMQ (con usuario y contraseña) sin las de espera, con sus fallidos; alertas de Alertmanager', async () => {

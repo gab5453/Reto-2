@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: MS.Admin — panel de administración de EcoAirlines (respuesta)
-  version: 1.3.0
+  version: 1.6.0
   license:
     name: Uso académico — Integración de Sistemas (sin licencia de distribución)
   description: |
@@ -769,6 +769,138 @@ paths:
           $ref: '#/components/responses/Problem401'
         '403':
           $ref: '#/components/responses/Problem403'
+  /ecoairlines/admin/bookings:
+    get:
+      tags: [Administración]
+      operationId: listAdminBookings
+      summary: "Reservas de todos los canales (solo lectura, 1.4.0)"
+      description: "Enrutador → MS.G.Bookings `listBookings` con `X-Actor-Id`: cada ítem trae canal, orden de Booking, salida, pasajeros y reembolso."
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: reference
+          in: query
+          description: PNR, orden de Booking o referencia del pago de la reserva, exactos
+          schema:
+            type: string
+            maxLength: 80
+        - name: status
+          in: query
+          schema:
+            $ref: './vuelos-openapi-v2.yaml#/components/schemas/BookingStatus'
+        - name: channel
+          in: query
+          schema:
+            $ref: './ms-g-bookings.openapi.yaml#/components/schemas/SalesChannelCode'
+        - name: createdFrom
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: createdTo
+          in: query
+          schema:
+            type: string
+            format: date
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-bookings.openapi.yaml#/components/schemas/BookingListView'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+  /ecoairlines/admin/bookings/{bookingId}:
+    get:
+      tags: [Administración]
+      operationId: getAdminBooking
+      summary: "Detalle de cualquier reserva (solo lectura, 1.4.0)"
+      description: "Enrutador → MS.G.Bookings `getBooking` con `X-Actor-Id`: incluye canal, dueño, tarifas, reembolsos y pagos registrados."
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-bookings.openapi.yaml#/components/schemas/BookingView'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+  /ecoairlines/admin/bookings/{bookingId}/timeline:
+    get:
+      tags: [Administración]
+      operationId: getAdminBookingTimeline
+      summary: "Historial de una reserva: sagas y eventos con sus entregas (solo lectura, 1.5.0)"
+      description: "Composición del ESB: `saga_log` (sin la entrada ni el resultado de cada saga) + historial de Webhooks por `subject`."
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingTimeline'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+  /ecoairlines/admin/reports/sales:
+    get:
+      tags: [Administración]
+      operationId: getSalesReport
+      summary: "Ventas por día, canal y ruta, y la liquidación con Booking (solo lectura, 1.6.0)"
+      description: "Enrutador → MS.G.Bookings `getSalesReport` con `X-Actor-Id`. Días en hora de Ecuador; máximo un año."
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-bookings.openapi.yaml#/components/schemas/SalesReport'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
   /ecoairlines/admin/bookings/{bookingId}/assistance-ready:
     put:
       tags: [Administración]
@@ -886,6 +1018,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/CorrelationId'
         - $ref: '#/components/parameters/CorrelationIdQuery'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
       responses:
         '200':
           description: OK
@@ -1218,6 +1352,63 @@ components:
           type: string
         span_id:
           type: string
+
+    BookingTimeline:
+      type: object
+      additionalProperties: false
+      required: [bookingId, sagas, events]
+      description: Historial de una reserva (panel O-2, 1.5.0) — sus sagas con los pasos y sus eventos con las entregas a Booking.
+      properties:
+        bookingId:
+          type: string
+          format: uuid
+        sagas:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [sagaId, type, status, correlationId, createdAt, updatedAt, steps]
+            properties:
+              sagaId:
+                type: string
+              type:
+                type: string
+              status:
+                type: string
+                enum: [RUNNING, COMPLETED, COMPENSATING, COMPENSATED, FAILED]
+              correlationId:
+                type: string
+              parentSagaId:
+                type: string
+                nullable: true
+              createdAt:
+                type: string
+                format: date-time
+              updatedAt:
+                type: string
+                format: date-time
+              errorCode:
+                type: string
+                nullable: true
+              steps:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [name, status, at]
+                  properties:
+                    name:
+                      type: string
+                    status:
+                      type: string
+                      enum: [STARTED, DONE, COMPENSATED]
+                    at:
+                      type: string
+                      format: date-time
+        events:
+          type: array
+          items:
+            $ref: './ms-g-webhooks.openapi.yaml#/components/schemas/EventHistoryItem'
 
     CorrelationTrace:
       type: object

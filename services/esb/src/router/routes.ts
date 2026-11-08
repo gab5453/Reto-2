@@ -76,6 +76,8 @@ export const REST_ROUTES: readonly RestRoute[] = [
   r('bookings', 'GET', '/bookings/{bookingId}/tickets/{ticketId}', 'getTicket'),
   r('bookings', 'PUT', '/bookings/{bookingId}/passengers/{passengerId}/assistance', 'saveAssistance'),
   r('bookings', 'DELETE', '/bookings/{bookingId}/passengers/{passengerId}/assistance', 'deleteAssistance'),
+  // Panel O-3: reporte de ventas y liquidación con Booking (solo lectura, con X-Actor-Id).
+  r('bookings', 'GET', '/reports/sales', 'getSalesReport'),
   // CheckIn: el check-in registrado. Los pases de abordar van por la composición (dueño en Bookings + puerta vigente, V2.12).
   r('check-in', 'GET', '/check-ins/{bookingId}', 'getCheckIn'),
 ];

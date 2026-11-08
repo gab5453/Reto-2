@@ -77,13 +77,16 @@ export class ObservabilityClient {
     });
   }
 
-  /** Los pasos (una línea `api_request` por salto) de un proceso, por su X-Correlation-Id, en los últimos 7 días. */
-  async correlationSteps(correlationId: string): Promise<TraceStep[]> {
-    const end = Date.now();
+  /**
+   * Los pasos (una línea `api_request` por salto) de un proceso, por su X-Correlation-Id: en el rango pedido o, sin él, en los
+   * últimos 7 días. Con una semana de logs, 7 días tardan ~24 s en la VM (más que el plazo de 3 s); una ventana de minutos, 0,2 s.
+   */
+  async correlationSteps(correlationId: string, range: { from?: string; to?: string } = {}): Promise<TraceStep[]> {
+    const end = range.to ? Date.parse(range.to) : Date.now();
     const params = new URLSearchParams({
       // El valor va entre backticks (cadena cruda de LogQL): se quitan del id para que no rompa la consulta.
       query: `{service_name=~".+"} | correlation_id=\`${correlationId.replace(/`/g, '')}\` | type=\`api_request\``,
-      start: String((end - 7 * 86_400_000) * 1_000_000),
+      start: String((range.from ? Date.parse(range.from) : end - 7 * 86_400_000) * 1_000_000),
       end: String(end * 1_000_000),
       limit: '500',
       direction: 'forward',

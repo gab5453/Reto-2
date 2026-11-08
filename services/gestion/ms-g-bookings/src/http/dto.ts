@@ -226,12 +226,20 @@ export class ListBookingsQuery {
   @IsOptional() @IsIn(['WEB', 'BOOKING']) channel?: SalesChannelCode;
   @IsOptional() @Matches(DATE) createdFrom?: string;
   @IsOptional() @Matches(DATE) createdTo?: string;
+  /** Solo con `X-Actor-Id`: PNR, orden de Booking o referencia del pago, exactos. */
+  @IsOptional() @IsString() @MaxLength(80) reference?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 20;
   @IsOptional() @IsString() @MaxLength(200) cursor?: string;
 }
 
 export class SagaQuery {
   @IsUUID() sagaId!: string;
+}
+
+/** Reporte de ventas (panel O-3): rango obligatorio, en días de Ecuador. */
+export class SalesReportQuery {
+  @Matches(DATE) from!: string;
+  @Matches(DATE) to!: string;
 }
 
 export class RangeQuery {

@@ -118,6 +118,14 @@ export const adminHandlers: Record<string, Handler> = {
   deleteAircraft: esb('DELETE', (c) => `/router/schedule/aircraft/${p(c, 'registration')}`, { status: 204 }),
   getFleetSchedule: esb('GET', (c) => withQuery('/router/schedule/fleet-schedule', c.query)),
 
+  // reservas de todos los canales, solo lectura (panel O-1): el MS.G las da completas porque llega `X-Actor-Id`
+  listAdminBookings: esb('GET', (c) => withQuery('/router/bookings/bookings', c.query)),
+  getAdminBooking: esb('GET', (c) => `/router/bookings/bookings/${p(c, 'bookingId')}`),
+  // historial (O-2): sagas y eventos con sus entregas, por la composición del ESB
+  getAdminBookingTimeline: esb('GET', (c) => `/composition/bookings/${p(c, 'bookingId')}/timeline`),
+  // reportes (O-3): ventas por día, canal y ruta, y la liquidación con Booking
+  getSalesReport: esb('GET', (c) => withQuery('/router/bookings/reports/sales', c.query)),
+
   // asistencia por vuelo (dato de salud: solo el administrador; nunca en logs)
   listFlightAssistance: esb('GET', (c) => withQuery(`/composition/flights/${p(c, 'flightNumber')}/assistance`, c.query)),
   markAssistanceReady: async (context) => {
@@ -130,7 +138,7 @@ export const adminHandlers: Record<string, Handler> = {
   getServicesHealth: esb('GET', () => '/composition/services-health'),
   // Plataforma de observabilidad (V2.16, D50), por la composición del ESB. Si una pieza no responde: 503 del contrato.
   getLatency: esb('GET', (c) => withQuery('/composition/telemetry/latency', c.query)),
-  getCorrelationTrace: esb('GET', (c) => `/composition/telemetry/traces/${encodeURIComponent(c.params['correlationId'])}`),
+  getCorrelationTrace: esb('GET', (c) => withQuery(`/composition/telemetry/traces/${encodeURIComponent(c.params['correlationId'])}`, c.query)),
   getQueues: esb('GET', () => '/composition/telemetry/queues'),
   getAlerts: esb('GET', () => '/composition/telemetry/alerts'),
   getBookingIntegration: esb('GET', () => '/composition/booking-integration'),

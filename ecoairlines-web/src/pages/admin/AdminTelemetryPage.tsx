@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   getAlerts,
   getBookingIntegration,
@@ -27,6 +28,9 @@ const loadAll = (token: string) =>
 
 const when = (iso: string | null) => (iso ? formatDateTime(iso) : 'Nunca');
 
+/** Refresco automático (panel O-4): cada 15 s, solo con la pestaña visible; al volver a la pestaña se refresca enseguida. */
+const REFRESH_MS = 15_000;
+
 /**
  * Telemetría (V2.16, `telemetry` del GraphQL): salud, latencia y errores (Prometheus), colas (RabbitMQ), alertas (Alertmanager),
  * integración con Booking y **búsqueda por correlation ID** (Loki, sagas y eventos). Si la plataforma de observabilidad está
@@ -39,10 +43,20 @@ export function AdminTelemetryPage() {
   const [queues, setQueues] = useState<Part<QueueStats[]>>({});
   const [alerts, setAlerts] = useState<Part<Alert[]>>({});
   const [booking, setBooking] = useState<Part<BookingIntegration>>({});
-  const [correlationId, setCorrelationId] = useState('');
-  const [trace, setTrace] = useState<CorrelationTrace | null>();
-  const [traceError, setTraceError] = useState<unknown>(null);
-  const [searching, setSearching] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [auto, setAuto] = useState(true);
+  // Evita pedir de nuevo mientras la ronda anterior sigue en curso (la VM puede tardar justo después de un despliegue).
+  const busy = useRef(false);
+  // El correlation ID buscado vive en la URL (?correlationId=…): «Ver la traza» del detalle de una reserva llega ya buscado.
+  const [params, setParams] = useSearchParams();
+  const searched = params.get('correlationId')?.trim() ?? '';
+  // Rango de la búsqueda en Loki: 7 días tardan ~24 s en la VM; el historial de una reserva manda el de su saga.
+  const from = params.get('desde') ?? undefined;
+  const to = params.get('hasta') ?? undefined;
+  const key = `${searched}|${from ?? ''}|${to ?? ''}`;
+  const [correlationId, setCorrelationId] = useState(searched);
+  const [hours, setHours] = useState('3');
+  const [result, setResult] = useState<{ key: string; trace?: CorrelationTrace | null; error?: unknown } | null>(null);
 
   const apply = useCallback((results: Awaited<ReturnType<typeof loadAll>>) => {
     setHealth(settled(results[0]));
@@ -50,30 +64,66 @@ export function AdminTelemetryPage() {
     setQueues(settled(results[2]));
     setAlerts(settled(results[3]));
     setBooking(settled(results[4]));
+    setUpdatedAt(new Date().toISOString());
   }, []);
 
+  const reload = useCallback(
+    (isActive: () => boolean = () => true) => {
+      if (!token || busy.current) return;
+      busy.current = true;
+      void loadAll(token)
+        .then((results) => isActive() && apply(results))
+        .finally(() => {
+          busy.current = false;
+        });
+    },
+    [token, apply],
+  );
+
   useEffect(() => {
-    if (!token) return;
     let active = true;
-    void loadAll(token).then((results) => active && apply(results));
+    reload(() => active);
     return () => {
       active = false;
     };
-  }, [token, apply]);
+  }, [reload]);
 
-  const search = async (event: FormEvent) => {
+  useEffect(() => {
+    if (!auto) return;
+    let active = true;
+    const tick = () => {
+      if (document.visibilityState === 'visible') reload(() => active);
+    };
+    const timer = window.setInterval(tick, REFRESH_MS);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', tick);
+    };
+  }, [auto, reload]);
+
+  useEffect(() => {
+    if (!token || !searched) return;
+    let active = true;
+    getCorrelationTrace(token, searched, { ...(from ? { from } : {}), ...(to ? { to } : {}) }).then(
+      (value) => active && setResult({ key, trace: value }),
+      (caught: unknown) => active && setResult({ key, error: caught }),
+    );
+    return () => {
+      active = false;
+    };
+  }, [token, searched, from, to, key]);
+
+  const current = searched && result?.key === key ? result : null;
+  const trace = current?.trace;
+  const traceError = current?.error ?? null;
+  const searching = Boolean(searched) && !current;
+
+  const search = (event: FormEvent) => {
     event.preventDefault();
-    if (!token) return;
-    setSearching(true);
-    setTrace(undefined);
-    setTraceError(null);
-    try {
-      setTrace(await getCorrelationTrace(token, correlationId.trim()));
-    } catch (caught) {
-      setTraceError(caught);
-    } finally {
-      setSearching(false);
-    }
+    const value = correlationId.trim();
+    if (value) setParams({ correlationId: value, desde: new Date(Date.now() - Number(hours) * 3_600_000).toISOString() });
   };
 
   const services = health.value ?? [];
@@ -86,9 +136,16 @@ export function AdminTelemetryPage() {
           <p className="eyebrow">Portal administrativo</p>
           <h1>Telemetría</h1>
           <p className="muted small">El sistema por dentro. El detalle de los tableros está en Grafana.</p>
+          <p className="muted small" role="status" aria-live="polite">
+            {updatedAt ? `Actualizado: ${localClock(updatedAt)}` : 'Cargando…'}
+            {auto ? ' · se actualiza cada 15 s mientras la pestaña está visible' : ' · actualización automática en pausa'}
+          </p>
         </div>
         <div className="admin-actions">
-          <button type="button" className="btn btn-primary" onClick={() => token && void loadAll(token).then(apply)}>Actualizar</button>
+          <label className="inline-field small">
+            <input type="checkbox" checked={auto} onChange={(event) => setAuto(event.target.checked)} /> Actualizar sola
+          </label>
+          <button type="button" className="btn btn-primary" onClick={() => reload()}>Actualizar</button>
         </div>
       </header>
 
@@ -106,10 +163,19 @@ export function AdminTelemetryPage() {
             X-Correlation-Id
             <input value={correlationId} required maxLength={128} placeholder="corr-…" onChange={(event) => setCorrelationId(event.target.value)} />
           </label>
+          <label className="inline-field">
+            Buscar en
+            <select value={hours} onChange={(event) => setHours(event.target.value)}>
+              <option value="3">Últimas 3 horas</option>
+              <option value="24">Últimas 24 horas</option>
+              <option value="168">Últimos 7 días (lento)</option>
+            </select>
+          </label>
           <button type="submit" className="btn btn-primary btn-sm" disabled={searching || !correlationId.trim()}>{searching ? 'Buscando…' : 'Buscar'}</button>
         </form>
         {traceError ? <ProblemAlert error={traceError} /> : null}
-        {trace === null && <p className="muted">No se encontró nada con ese identificador en los últimos 7 días.</p>}
+        {searched && from ? <p className="muted small">Rango: {formatDateTime(from)} → {to ? formatDateTime(to) : 'ahora'}</p> : null}
+        {trace === null && <p className="muted">No se encontró nada con ese identificador en ese rango.</p>}
         {trace && (
           <>
             <p className="small">
@@ -183,6 +249,9 @@ export function AdminTelemetryPage() {
     </div>
   );
 }
+
+/** Hora con segundos, para ver que el refresco avanza. */
+const localClock = (iso: string) => new Date(iso).toLocaleTimeString('es-EC', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
 function Unavailable({ part, what }: { part: Part<unknown>; what: string }) {
   if (!part.error) return null;

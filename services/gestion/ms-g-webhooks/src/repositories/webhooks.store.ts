@@ -10,6 +10,8 @@ export const WEBHOOKS_STORE = Symbol('WEBHOOKS_STORE');
 export interface HistoryFilter {
   name?: string;
   correlationId?: string;
+  /** Panel O-2: los eventos de una reserva (`subject` = su `bookingId`). */
+  subject?: string;
   from?: string;
   to?: string;
 }
@@ -100,7 +102,14 @@ export class InMemoryWebhooksStore implements WebhooksStore {
     return clone(
       [...this.events]
         .reverse()
-        .filter((e) => (!filter.name || e.name === filter.name) && (!filter.correlationId || e.correlationId === filter.correlationId) && (!filter.from || e.time >= filter.from) && (!filter.to || e.time <= filter.to))
+        .filter(
+          (e) =>
+            (!filter.name || e.name === filter.name) &&
+            (!filter.correlationId || e.correlationId === filter.correlationId) &&
+            (!filter.subject || e.subject === filter.subject) &&
+            (!filter.from || e.time >= filter.from) &&
+            (!filter.to || e.time <= filter.to),
+        )
         .slice(offset, offset + limit),
     );
   }
@@ -153,6 +162,7 @@ CREATE TABLE IF NOT EXISTS event_log (
   event          jsonb NOT NULL
 );
 CREATE INDEX IF NOT EXISTS event_log_correlation_idx ON event_log (correlation_id);
+CREATE INDEX IF NOT EXISTS event_log_subject_idx ON event_log (subject);
 CREATE TABLE IF NOT EXISTS deliveries (
   event_seq       bigint NOT NULL REFERENCES event_log(seq),
   subscription_id uuid NOT NULL REFERENCES subscriptions(id),
@@ -260,8 +270,9 @@ export class PostgresWebhooksStore implements WebhooksStore {
     return (
       await this.pool.query(
         `SELECT * FROM event_log WHERE ($1::text IS NULL OR name = $1) AND ($2::text IS NULL OR correlation_id = $2)
-           AND ($3::timestamptz IS NULL OR time >= $3) AND ($4::timestamptz IS NULL OR time <= $4) ORDER BY seq DESC LIMIT $5 OFFSET $6`,
-        [f.name ?? null, f.correlationId ?? null, f.from ?? null, f.to ?? null, limit, offset],
+           AND ($3::timestamptz IS NULL OR time >= $3) AND ($4::timestamptz IS NULL OR time <= $4) AND ($7::text IS NULL OR subject = $7)
+           ORDER BY seq DESC LIMIT $5 OFFSET $6`,
+        [f.name ?? null, f.correlationId ?? null, f.from ?? null, f.to ?? null, limit, offset, f.subject ?? null],
       )
     ).rows.map(toEvent);
   }

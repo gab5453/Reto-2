@@ -63,6 +63,7 @@
 | BKG-12 | ⚪ | Nuestro descuento máximo (50 %) es más estricto que el contrato (0–100) | Informativo | D35 |
 | BKG-13 | ✅ | `booking.epn.edu.ec` no resuelve en el DNS público: el stock gRPC no puede llegar a Booking desde la nube | Resuelto (03/11) | Booking publicó `POST https://booking-core-api.azurewebsites.net/api/v2/inventory/stock` (D53) |
 | BKG-15 | 🟡 | Webhooks de Booking (`/api/v2/webhooks/vuelos`) «se activan en unos días» | Esperar el aviso | Ver sección 8 |
+| BKG-16 | 🔴 | Booking registró su webhook (04/11) pero **rechaza con HTTP 400 todas nuestras entregas** | **Sí**: preguntar qué valida | 49 entregas agotadas; se ven en el historial de cada reserva |
 | BKG-14 | 🟠 | Contrato v2: `extraBaggage` al crear la reserva no dice si su precio va incluido en el pago | **Sí** | Se ignora al crear; las maletas se compran con `addBaggage` |
 
 ---
@@ -393,3 +394,15 @@
 - **Qué falta saber:** si es la URL donde Booking recibe nuestros eventos (hoy los entrega `ms-g-webhooks` a la URL que Booking registra
   con `POST /vuelos/webhooks`) o por donde nos envían `payment.*` y `package.cancelled` (BKG-01). Con su URL y su secreto de firma se
   configura sin cambiar código.
+
+### BKG-16 🔴 Booking rechaza nuestros webhooks con HTTP 400 (08/11)
+
+- **Qué pasa:** el 04/11 Booking (`partner:BOOKING_PROTOTIPO`) suscribió `https://booking-core-api.azurewebsites.net/api/v2/webhooks/vuelos`
+  a 8 eventos. **Las 49 entregas** (`booking.confirmed`, `booking.ticket_issued`, `booking.checked_in`, `booking.cancelled`…) terminaron
+  `EXHAUSTED` con **HTTP 400** tras 6 intentos. Se ve en el panel: Reservas → una reserva de Booking → Historial.
+- **Qué enviamos** (contrato v2 §8): `POST` con `Content-Type: application/cloudevents+json`, el CloudEvent 1.0 completo
+  (`specversion`, `type` `ec.edu.epn.booking.vuelos.*`, `source`, `id`, `time`, `subject`, `correlationid`, `data`) y
+  `X-Webhook-Signature: sha256=<HMAC del cuerpo con el secreto que registraron>`.
+- **Pregunta:** ¿qué valida su endpoint? ¿Esperan `application/json` en vez de `application/cloudevents+json`, otro formato de firma u
+  otros campos en `data`? Un 400 con su ProblemDetails (como el del stock) diría el motivo.
+- **Mientras tanto:** los eventos quedan en el feed `GET /vuelos/eventos` (respaldo del contrato), así que Booking puede leerlos.

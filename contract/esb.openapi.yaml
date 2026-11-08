@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ESB — enrutador, composición, transversal y entrada de eventos de Booking (interno)
-  version: 1.3.0
+  version: 1.4.0
   license:
     name: Uso académico — Integración de Sistemas (sin licencia de distribución)
   description: |
@@ -68,7 +68,7 @@ info:
     ### Enrutador
     `/router/<servicio><ruta del MS.G>` reenvía la petición (cuerpo, query y `Content-Type`) al MS.G y devuelve su status, su
     cuerpo y sus cabeceras `Content-Type`, `Location`, `Retry-After`, `WWW-Authenticate` y `Cache-Control`. Solo existen las
-    47 rutas de `x-esb-routes` (copiadas de la tabla del Enrutador del plan, idénticas al contrato de cada MS.G); otra ruta del
+    48 rutas de `x-esb-routes` (copiadas de la tabla del Enrutador del plan, idénticas al contrato de cada MS.G); otra ruta del
     mismo servicio → `404` (o `405` con otro método): lo que coordina varios MS.G es del orquestador o de la composición.
     `POST /oauth2/token` se reenvía **sin** el token del ESB: el partner se autentica con su `client_id` y `client_secret` en el
     cuerpo (`client_secret_post`), que el MS de respuesta arma a partir de su `Authorization: Basic`.
@@ -138,6 +138,7 @@ info:
   - { service: bookings, method: GET, path: '/bookings/{bookingId}/tickets/{ticketId}', operationId: getTicket, contract: ms-g-bookings.openapi.yaml }
   - { service: bookings, method: PUT, path: '/bookings/{bookingId}/passengers/{passengerId}/assistance', operationId: saveAssistance, contract: ms-g-bookings.openapi.yaml }
   - { service: bookings, method: DELETE, path: '/bookings/{bookingId}/passengers/{passengerId}/assistance', operationId: deleteAssistance, contract: ms-g-bookings.openapi.yaml }
+  - { service: bookings, method: GET, path: '/reports/sales', operationId: getSalesReport, contract: ms-g-bookings.openapi.yaml }
   - { service: check-in, method: GET, path: '/check-ins/{bookingId}', operationId: getCheckIn, contract: ms-g-check-in.openapi.yaml }
   x-esb-offers-routes: [Search, GetSeatMap, CreateHold, GetHold, ReleaseHold]
 servers:
@@ -519,6 +520,34 @@ paths:
         '503':
           $ref: '#/components/responses/Problem'
 
+  /composition/bookings/{bookingId}/timeline:
+    get:
+      tags: [Composición]
+      operationId: composeBookingTimeline
+      summary: Historial de una reserva — sus sagas (saga_log, sin entrada ni resultado) y sus eventos con las entregas (Webhooks)
+      description: Solo para el panel de administración (exige `X-Actor-Id`). Panel O-2.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/ActorId'
+        - name: bookingId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Historial
+          content:
+            application/json:
+              schema:
+                $ref: './ms-admin.openapi.yaml#/components/schemas/BookingTimeline'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
   /composition/telemetry/traces/{correlationId}:
     get:
       tags: [Composición]
@@ -532,6 +561,14 @@ paths:
           in: path
           required: true
           schema: { type: string, maxLength: 100 }
+        - name: from
+          in: query
+          description: Inicio del rango en Loki (1.4.0). Sin él, 7 días atrás (lento con una semana de logs)
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: Fin del rango en Loki (1.4.0). Sin él, ahora
+          schema: { type: string, format: date-time }
       responses:
         '200':
           description: Resultado
