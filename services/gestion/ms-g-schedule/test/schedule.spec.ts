@@ -394,3 +394,24 @@ describe('regreso de cada ruta (PLAN_Correccion C-3)', () => {
     await esb('delete', `/routes/${sameDay.body.routeId}?soldSeats=0`);
   });
 });
+
+describe('red nacional: capitales de provincia (PLAN_Provincias)', () => {
+  it('★ Quito → Guaranda (capital sin aeropuerto, código propio) y Quito → Galápagos (UTC−6): rutas válidas con su hora local', async () => {
+    const guaranda = await esb('post', '/routes').send(routeBody({ destination: 'GDA', outboundDepartureLocal: '04:05', inboundDepartureLocal: '06:05', weekdays: ['TUE'] }));
+    expect(guaranda.status).toBe(201);
+    expectContract('post', '/routes', guaranda);
+    expect(guaranda.body).toMatchObject({ destination: 'GDA', aircraftType: 'Airbus A220-300', returnDelayDays: 0 });
+
+    const galapagos = await esb('post', '/routes').send(routeBody({ destination: 'SCY', outboundDepartureLocal: '04:10', inboundDepartureLocal: '08:10', weekdays: ['TUE'] }));
+    expect(galapagos.status).toBe(201);
+    // Llega a la hora local de San Cristóbal: una hora menos que en Quito.
+    const minutes = 4 * 60 + 10 + galapagos.body.durationMinutes - 60;
+    const local = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+    expect(galapagos.body.outbound.arrivalLocal).toBe(local);
+    expect(galapagos.body.returnDelayDays).toBe(0);
+
+    await esb('delete', `/routes/${guaranda.body.routeId}?soldSeats=0`);
+    await esb('delete', `/routes/${galapagos.body.routeId}?soldSeats=0`);
+  });
+});
+

@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import { getFleetSchedule, type FleetLeg, type FleetSchedule } from '../../api/admin';
 import { useAuth } from '../../auth/AuthContext';
 import { ProblemAlert } from '../../components/ProblemAlert';
-import { AIRPORTS, cityOf } from '../../data/airports';
+import { cityOf } from '../../data/airports';
 import { lastSaleDate, localDate, localTime, todayIso } from '../../lib/format';
+import { AirportOptions } from '../../components/AirportOptions';
 
 type Direction = 'ARRIVALS' | 'DEPARTURES' | 'BOTH';
 const DIRECTIONS: [Direction, string][] = [
@@ -106,9 +107,7 @@ export function FleetSchedulePanel() {
           Aeropuerto
           <select value={airport} onChange={(event) => setAirport(event.target.value)}>
             <option value="">Todos</option>
-            {AIRPORTS.map((candidate) => (
-              <option key={candidate.code} value={candidate.code}>{candidate.city} ({candidate.code})</option>
-            ))}
+            <AirportOptions />
           </select>
         </label>
         <label className="field">

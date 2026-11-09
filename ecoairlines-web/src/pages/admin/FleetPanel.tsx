@@ -11,7 +11,7 @@ import {
 } from '../../api/admin';
 import { useAuth } from '../../auth/AuthContext';
 import { ProblemAlert } from '../../components/ProblemAlert';
-import { AIRPORTS } from '../../data/airports';
+import { AirportOptions } from '../../components/AirportOptions';
 
 const CABIN_LABELS: Record<string, string> = { ECONOMY: 'Economy', BUSINESS: 'Business' };
 
@@ -129,9 +129,7 @@ export function FleetPanel() {
           <label className="field">
             Base (donde empieza y termina su semana)
             <select value={form.base} onChange={(event) => setForm({ ...form, base: event.target.value })}>
-              {AIRPORTS.map((airport) => (
-                <option key={airport.code} value={airport.code}>{airport.city} ({airport.code})</option>
-              ))}
+              <AirportOptions />
             </select>
           </label>
           <div className="field field-end">
@@ -149,9 +147,7 @@ export function FleetPanel() {
           Base
           <select value={base} onChange={(event) => setBase(event.target.value)}>
             <option value="">Todas</option>
-            {AIRPORTS.map((airport) => (
-              <option key={airport.code} value={airport.code}>{airport.city} ({airport.code})</option>
-            ))}
+            <AirportOptions />
           </select>
         </label>
         <label className="field">
@@ -200,9 +196,7 @@ export function FleetPanel() {
                         title={free ? undefined : 'Opera rutas: primero quítale sus rutas'}
                         onChange={(event) => move(plane, event.target.value)}
                       >
-                        {AIRPORTS.map((airport) => (
-                          <option key={airport.code} value={airport.code}>{airport.code}</option>
-                        ))}
+                        <AirportOptions short />
                       </select>
                     </td>
                     <td>{free ? 'Disponible' : 'En servicio'}</td>

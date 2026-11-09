@@ -1,4 +1,4 @@
-import { AIRPORTS } from '@ecoairlines/shared';
+import { AIRPORTS, BASE_NETWORK_AIRPORTS } from '@ecoairlines/shared';
 import {
   DEFAULT_FLEET,
   DEFAULT_ROUTES,
@@ -26,7 +26,8 @@ describe('Horario semanal de vuelos y aviones', () => {
   const start = '2026-10-06';
 
   it('genera 2 vuelos diarios por ruta, todos con todos, y todos operan los 7 días', () => {
-    const airports = Object.keys(AIRPORTS);
+    // La red «todos con todos» se genera con los 10 aeropuertos originales (PLAN_Provincias: la red nacional se arma con rutas).
+    const airports: string[] = [...BASE_NETWORK_AIRPORTS];
     const { flights } = generateTimetable();
     expect(flights).toHaveLength(airports.length * (airports.length - 1) * 2);
     for (const origin of airports) {

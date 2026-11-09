@@ -13,8 +13,8 @@ import {
 } from '../../api/admin';
 import { useAuth } from '../../auth/AuthContext';
 import { ProblemAlert } from '../../components/ProblemAlert';
-import { AIRPORTS } from '../../data/airports';
 import { distanceKm } from '../../lib/co2';
+import { AirportOptions } from '../../components/AirportOptions';
 
 const WEEKDAYS: [WeekdayCode, string][] = [
   ['MON', 'Lun'],
@@ -211,9 +211,7 @@ export function RoutesPanel({ onChanged }: { onChanged?: () => void }) {
           Aeropuerto
           <select value={airport} onChange={(event) => setAirport(event.target.value)}>
             <option value="">Todos</option>
-            {AIRPORTS.map((candidate) => (
-              <option key={candidate.code} value={candidate.code}>{candidate.city} ({candidate.code})</option>
-            ))}
+            <AirportOptions />
           </select>
         </label>
         <div className="field field-end">
@@ -236,17 +234,13 @@ export function RoutesPanel({ onChanged }: { onChanged?: () => void }) {
             <label className="field">
               Origen (base de los aviones)
               <select value={form.origin} onChange={(event) => changeRoute({ origin: event.target.value })}>
-                {AIRPORTS.map((candidate) => (
-                  <option key={candidate.code} value={candidate.code}>{candidate.city} ({candidate.code})</option>
-                ))}
+                <AirportOptions />
               </select>
             </label>
             <label className="field">
               Destino
               <select value={form.destination} onChange={(event) => changeRoute({ destination: event.target.value })}>
-                {AIRPORTS.map((candidate) => (
-                  <option key={candidate.code} value={candidate.code}>{candidate.city} ({candidate.code})</option>
-                ))}
+                <AirportOptions />
               </select>
             </label>
             <label className="field">

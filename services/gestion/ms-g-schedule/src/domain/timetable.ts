@@ -1,6 +1,7 @@
 import {
   AIRCRAFT_MAX_ROUTE_KM,
   AIRPORTS,
+  BASE_NETWORK_AIRPORTS,
   type Airport,
   type AircraftType,
   aircraftFor as aircraftForDistance,
@@ -301,7 +302,7 @@ interface RouteSlot {
  *    avión hace la ida y la vuelta el mismo día; en las largas la vuelta es al día siguiente y se suman aviones.
  */
 export function generateRoutes(
-  airports: readonly Airport[] = Object.values(AIRPORTS),
+  airports: readonly Airport[] = BASE_NETWORK_AIRPORTS.map((code) => AIRPORTS[code]!),
   rules: TimetableRules = DEFAULT_TIMETABLE_RULES,
 ): RouteDefinition[] {
   const slots = new Map<string, RouteSlot>();
@@ -396,7 +397,7 @@ export function buildTimetable(routes: readonly RouteDefinition[], fleet: readon
 
 /** Horario completo de la red base. */
 export function generateTimetable(
-  airports: readonly Airport[] = Object.values(AIRPORTS),
+  airports: readonly Airport[] = BASE_NETWORK_AIRPORTS.map((code) => AIRPORTS[code]!),
   rules: TimetableRules = DEFAULT_TIMETABLE_RULES,
 ): Timetable {
   return buildTimetable(generateRoutes(airports, rules));

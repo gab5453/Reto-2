@@ -1,9 +1,9 @@
 import { useId, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import type { PassengerBreakdown } from '../api/types';
-import { AIRPORTS } from '../data/airports';
 import { lastSaleDate, todayIso } from '../lib/format';
 import { toQuery, type TripType } from '../lib/search-params';
+import { AirportOptions } from './AirportOptions';
 
 interface Leg {
   origin: string;
@@ -179,11 +179,7 @@ function AirportSelect({ id, label, value, onChange }: { id: string; label: stri
     <div className="field">
       <label htmlFor={id}>{label}</label>
       <select id={id} value={value} onChange={(event) => onChange(event.target.value)}>
-        {AIRPORTS.map((airport) => (
-          <option key={airport.code} value={airport.code}>
-            {airport.city} ({airport.code})
-          </option>
-        ))}
+        <AirportOptions />
       </select>
     </div>
   );

@@ -2655,3 +2655,38 @@ saturada); minutos después pasó entero.
 
 **Con esto el PLAN_Correccion queda completo (C-1 a C-3).** Pendiente: publicar la web (el responsable, con `swa deploy`), la
 auditoría y el commit.
+
+### PLAN_Provincias · P-1 — Red nacional: las 24 provincias del Ecuador — ✅ HECHA (08/11), pendiente de auditoría
+
+Pedido del responsable: una red más local, con la capital de cada provincia disponible para crear rutas (haya o no aeropuerto),
+y rutas desde Quito a todas. Decisiones D-P1 (códigos), D-P2 (capitales **y** aeropuertos reales fuera de la capital) y D-P3
+(rutas diarias desde Quito, ida y vuelta el mismo día) en `PLAN/PLAN_Provincias.md`.
+
+- **Catálogo (`packages/shared`):** 24 ciudades nuevas (21 capitales + Manta, Santa Rosa y Salinas), con provincia, coordenadas y
+  huso horario. Galápagos es UTC−6. Las 7 capitales sin aeropuerto usan un código propio (GDA, AZG, RBA, IBR, BHO, STE, SDT, ZMR) y
+  su nombre dice «(simulado)». Ecuador queda con 27 ciudades; la red, con 34.
+- **MS.G.Schedule:** la red «todos con todos» de las pruebas del motor (`generateRoutes`) usa `BASE_NETWORK_AIRPORTS`, los 10
+  originales: su numeración de vuelos y sus franjas solo alcanzan para ~10 aeropuertos. La red real no se toca.
+- **Web:** `data/airports.ts` con las mismas ciudades, y el componente `AirportOptions`. Los 10 selectores de aeropuertos
+  (buscador, flota, rutas, vuelos, horario de la flota) agrupan «Ecuador» (con la provincia: «Guaranda (GDA) · Bolívar») e
+  «Internacional».
+- **Contratos:** sin cambios (el del grupo solo exige 3 letras).
+
+**Rutas en la nube (D-P3):** 24 rutas Quito → cada ciudad nueva (`rutas_provincias.mjs`, por la API de administración), diarias.
+La ida sale desde las 06:00 cada 20 minutos y la vuelta 3 h después (EA308–EA355). Todas vuelven el mismo día, con 115 a 145
+minutos en tierra. Cada ruta agregó su A220-300 con base en Quito (HC-J04, HC-J06 a HC-J28). Quito ⇄ Galápagos: 1.255 km, 2 h 05 de
+vuelo.
+- El primer intento, justo después del despliegue, falló entero: el ESB no respondía a tiempo y se abrió el circuito hacia
+  Schedule. Una ruta (Esmeraldas) se creó igual en segundo plano. El segundo intento, con la VM ya estable y 5 s entre rutas,
+  creó las otras 23.
+- **Hallazgo:** los intentos fallidos dejaron **dos aviones sin ruta (HC-J03 y HC-J05)**. Cuando una creación de ruta se deshace
+  por timeout, la ruta se anula pero los aviones que agregó quedan en la flota (disponibles, sin vuelos). No afecta la operación;
+  se pueden dar de baja desde «Flota».
+- **Stock a Booking:** los vuelos nuevos generaron ~6.900 envíos de stock pendientes. Salen en serie, uno por uno, con reintento
+  espaciado. Booking verá las ciudades nuevas; conviene avisarles.
+
+**Verificación:** prueba nueva de Schedule (Quito → Guaranda con código propio y Quito → Galápagos con la llegada en hora local
+UTC−6); la prueba de la red «todos con todos» ahora se arma con los 10 originales; suite completa **660 pasan**, 41 omitidas;
+typecheck y lint limpios. **Recorrido en Edge `recorrido_p1` contra la nube: todo OK** (buscador agrupado con 27 + 7 ciudades;
+«Guaranda (GDA) · Bolívar»; búsquedas Quito → Galápagos y Quito → Guaranda con vuelo directo; panel con las 24 rutas, Quito ⇄
+Zamora diaria y del mismo día). `recorrido_c1` sigue todo OK.

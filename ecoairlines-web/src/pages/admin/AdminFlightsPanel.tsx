@@ -3,8 +3,9 @@ import { getFlightOperations, updateFlightStatus, type FlightOperation } from '.
 import type { FlightOperationalStatus } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
 import { ProblemAlert } from '../../components/ProblemAlert';
-import { AIRPORTS, cityOf } from '../../data/airports';
+import { cityOf } from '../../data/airports';
 import { STATUS_LABELS, lastSaleDate, localDate, localTime, todayIso } from '../../lib/format';
+import { AirportOptions } from '../../components/AirportOptions';
 
 /** Transiciones válidas del contrato (MS.G.FlightStatus las vuelve a validar: `INVALID_STATUS_TRANSITION`). */
 const TRANSITIONS: Record<FlightOperationalStatus, FlightOperationalStatus[]> = {
@@ -145,18 +146,14 @@ export function AdminFlightsPanel() {
           Origen
           <select value={origin} onChange={(event) => setOrigin(event.target.value)}>
             <option value="">Todos</option>
-            {AIRPORTS.map((airport) => (
-              <option key={airport.code} value={airport.code}>{airport.city} ({airport.code})</option>
-            ))}
+            <AirportOptions />
           </select>
         </label>
         <label className="field">
           Destino (ruta)
           <select value={destination} onChange={(event) => setDestination(event.target.value)}>
             <option value="">Todos</option>
-            {AIRPORTS.filter((airport) => airport.code !== origin).map((airport) => (
-              <option key={airport.code} value={airport.code}>{airport.city} ({airport.code})</option>
-            ))}
+            <AirportOptions exclude={origin} />
           </select>
         </label>
         <label className="field">
