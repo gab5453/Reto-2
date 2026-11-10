@@ -3010,7 +3010,7 @@ con peticiones, errores y p95), MS.Admin y gateway; suite **709 pasan**, 41 omit
 - **Traza recién hecha:** Tempo tarda un minuto o dos en dejarla buscable; el aviso lo dice («vuelve a buscarlo»).
 - Del script: en SVG no hay `innerText` (se usa `textContent`); a 4× el recorrido termina antes de pulsar «Pausa».
 
-### PLAN_Telemetria_Asientos · T-5 — Telemetría en tiempo real por WebSocket — 🔶 IMPLEMENTADA (10/11), falta el recorrido en la nube
+### PLAN_Telemetria_Asientos · T-5 — Telemetría en tiempo real por WebSocket — ✅ HECHA (10/11), pendiente de auditoría
 
 Decisión del responsable (D-T13): además del refresco cada 15 s, el panel recibe los cambios empujados por el servidor.
 
@@ -3037,5 +3037,62 @@ una consulta por vuelta; al irse el último se detiene; solo los saltos nuevos; 
 si cambia; token vencido → `UNAUTHENTICATED` y los demás siguen; por WebSocket real: el recorrido y el mapa llegan, la consulta va con
 el token del administrador, un cliente recibe `FORBIDDEN` sin que se consulte nada); los documentos de suscripción de la web validados
 contra `gateway.graphql`; la regla de arquitectura (ningún acceso a la red fuera de `api/client.ts`) se cumple; suite **715 pasan**,
-41 omitidas; typecheck y lint limpios. **Pendiente:** el recorrido en Edge contra la nube (`recorrido_t5`: abrir el recorrido de un ID
-nuevo, comprar con ese ID y ver llegar los pasos; el mapa empujado; cortar el WebSocket y ver el respaldo).
+41 omitidas; typecheck y lint limpios. Desplegado. **Recorrido en Edge `recorrido_t5` contra la nube: todo OK:**
+- se abrió «Recorrido» de un correlation ID que todavía no existía: «● En vivo», esperando el proceso;
+- una compra real con ese ID (AJVDG8, luego cancelada): **los pasos aparecieron solos, sin recargar, 2,3 s después de confirmada la
+  reserva**, y siguieron llegando hasta 52 saltos en 6 trazas (búsqueda, hold, pago, reserva, boletos, cancelación; 14 nodos: los MS
+  de respuesta, el ESB, los MS.G, la Payment API y la API de Booking);
+- ninguna consulta de refresco del recorrido ni del mapa mientras había conexión en vivo; el mapa cambió empujado por el servidor;
+- con el WebSocket bloqueado (`routeWebSocket`), el mapa avisó «Actualización cada 15 s: sin conexión en vivo» y siguió con el refresco
+  (3 consultas en ~35 s). En ese momento, con la VM atendiendo la compra y dos navegadores, una de las consultas falló junto con otros
+  paneles de la página (colas, alertas, integración con Booking): un tropiezo de la plataforma, no del respaldo, que se reintentó solo.
+
+**Con esto el PLAN_Telemetria_Asientos queda completo (T-1 a T-5).**
+
+### Incidente 09–10/11 — Booking: 503 intermitentes y la reserva 9M2XWF — ✅ ATENDIDO (10/11)
+
+**Reporte de Booking:** la búsqueda y el hold fallaban de forma intermitente (`503 El ESB no respondió a tiempo`), una cancelación
+respondió 502, y su reserva de prueba **9M2XWF** quedó activa «porque el servidor no respondió al cancelar».
+
+**Diagnóstico (con datos):**
+- **Los 503 caen en las ventanas de los despliegues** (Prometheus, 5xx por media hora): 9/11 19:13–20:43 (T-1, R-1, P-1), 23:13
+  (T-2), 10/11 00:43 (M-1), 02:13–02:43 (M-2, T-3) y 03:43–04:43 (T-4, T-5). Sin desplegar, del 8/11 20:13 al 9/11 19:13: **un solo**
+  503. La peor ventana (20:26–20:44, despliegue de P-1) coincidió con las pruebas de Booking.
+- **Causa:** la VM (Standard_B2pls_v2, 2 vCPU, 4 GB, 26 contenedores) vive al borde de la memoria y usa el swap. Al compilar las
+  imágenes en la VM (y cualquier cambio de `packages/shared` recompila las 18), el disco se satura (presión de E/S de hasta 73 %,
+  carga 30–47) y el ESB no responde dentro de los 4,5 s de los MS de respuesta. Los créditos de CPU **no** se agotaron (~30).
+- **Agravante permanente:** los 18 servicios Node se revisaban cada 10 s con `node -e fetch(…)`, es decir, ~2 procesos Node nuevos
+  por segundo (50–70 MB cada uno) aun sin desplegar.
+- **9M2XWF no quedó activa por un fallo:** se creó bien (20:20:09), **Booking le hizo check-in** (20:20:22) y sus dos cancelaciones
+  (20:20:25 y 21:44:18) respondieron **409 `CUTOFF_PASSED` en < 0,1 s** (regla D2: después del check-in no se modifica nada). En Loki
+  esas peticiones no tienen ningún 502; si lo vieron, vino de otro tramo.
+
+**Arreglos:**
+- **Chequeos de salud livianos** (`infra/docker-compose.yml`, los 18 servicios Node): `wget` de Alpine en lugar de un proceso Node,
+  cada **30 s** (antes 10), con `start_interval: 5s` durante 60 s al arrancar. Aplicado en la VM.
+- **Cancelación de administrador** (excepción a D2, pedida por el responsable): MS.Admin 1.13.0
+  `POST /ecoairlines/admin/bookings/{bookingId}/cancel` con un **motivo obligatorio** (5–200 caracteres) y GraphQL
+  `adminCancelBooking(bookingId, reason)`. Usa la saga «Cancelar» con `SAGA_COMPENSATION` (la vía con que EcoAirlines ya cancela las
+  reservas de un vuelo cancelado): sin cotización ni regla del check-in, reembolso completo sin penalidad, asientos liberados (Offers
+  los libera en cualquier estado) y `booking.cancelled` a Booking; el motivo queda en el historial. **No toca el ESB.**
+- **Despliegue acotado:** se compilaron solo `ms-admin` y `gateway` (~3 min) y se recrearon los contenedores (~4 min), en lugar del
+  despliegue completo (~20 min de degradación).
+- **9M2XWF cancelada** con esa vía el 10/11 a las 04:59 (vuelo de las 07:00): estado `CANCELLED`, evento `booking.cancelled` emitido.
+
+**Verificación:** pruebas nuevas (MS.Admin: la saga recibe `SAGA_COMPENSATION`, el motivo y el administrador; motivo corto → 400; un
+cliente → 403. Gateway: la mutación va a MS.Admin; un cliente → `FORBIDDEN`); suite **717 pasan**, 41 omitidas; typecheck y lint
+limpios. En la VM: todos los servicios `healthy` con el chequeo nuevo; health 200 en ~0,3 s; la presión de E/S bajó de 63–73 % a ~1 %.
+
+**«No se pudo conectar con el servidor» en la web (y el 502 de Booking):** mientras el gateway se reinicia, quien responde es
+Caddy, con un 502 vacío y **sin cabeceras CORS**: el navegador lo bloqueaba y la web mostraba un falso «sin conexión»; Booking veía
+un 502 sin explicación. **Arreglo** (`infra/cloud/Caddyfile`, `handle_errors 502 503 504`): ahora responde **503 con `Retry-After: 10`**,
+como error GraphQL en `/api/graphql` (la web muestra «El servicio no está disponible en este momento: reintenta en unos segundos») y
+como ProblemDetails `PROVIDER_UNAVAILABLE` en el resto del API (Booking), con CORS solo para el origen de la web (`WEB_ORIGIN`, el
+mismo `CORS_ORIGINS` del gateway). Probado con un Caddy descartable en la VM sin acceso al gateway (los tres casos: web, Booking y
+un origen ajeno sin CORS) y aplicado recreando solo Caddy (segundos).
+
+**Pendiente (propuesto, sin aplicar):**
+- Límite de memoria de Node por servicio (`--max-old-space-size`) para que la VM deje de usar el swap.
+- No recompilar las 18 imágenes en cada despliegue (compilar solo lo que cambió) y desplegar en horarios acordados con Booking.
+- Que la cotización de cancelación avise `CUTOFF_PASSED` tras el check-in (hoy responde 200 y recién la cancelación dice que no).
+- Una VM de 8 GB resolvería la memoria de raíz, pero sube el costo (decisión del responsable).

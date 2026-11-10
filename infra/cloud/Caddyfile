@@ -31,6 +31,34 @@
 		respond "No existe." 404
 	}
 
+	# Si el gateway no responde (se está reiniciando en un despliegue o la VM está saturada), quien contesta es Caddy. Antes devolvía
+	# un 502 vacío y SIN cabeceras CORS: el navegador lo bloqueaba y la web decía «No se pudo conectar con el servidor», y Booking
+	# veía un 502 sin explicación. Ahora es un 503 con Retry-After, en el formato de cada cliente y con CORS para la web.
+	handle_errors 502 503 504 {
+		@web header Origin {$WEB_ORIGIN}
+		header @web Access-Control-Allow-Origin {$WEB_ORIGIN}
+		header @web Access-Control-Expose-Headers "Retry-After, X-Correlation-Id"
+		header @web Vary Origin
+		header Retry-After 10
+		header Cache-Control no-store
+
+		# La web usa GraphQL: el error va como un error GraphQL (la web muestra su título).
+		@graphql path /api/graphql
+		handle @graphql {
+			header Content-Type application/json
+			respond `{"errors":[{"message":"El servicio no está disponible en este momento: reintenta en unos segundos.","extensions":{"code":"PROVIDER_UNAVAILABLE","status":503,"type":"about:blank","title":"El servicio no está disponible en este momento: reintenta en unos segundos.","retryAfter":10}}]}` 503
+		}
+		# Booking y el resto del API: ProblemDetails del contrato v2.
+		@api path /api/* /oauth2/* /health
+		handle @api {
+			header Content-Type application/problem+json
+			respond `{"type":"about:blank","title":"El servicio no está disponible en este momento: reintenta en unos segundos.","status":503,"code":"PROVIDER_UNAVAILABLE","detail":"El gateway de EcoAirlines no respondió (reinicio o carga momentánea)."}` 503
+		}
+		handle {
+			respond "El servicio no está disponible en este momento." 503
+		}
+	}
+
 	log {
 		# Sin cabeceras: nunca se registran tokens (Authorization) ni cookies.
 		format filter {

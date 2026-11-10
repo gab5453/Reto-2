@@ -140,6 +140,17 @@ export const adminHandlers: Record<string, Handler> = {
   // asistencia por vuelo (dato de salud: solo el administrador; nunca en logs)
   listFlightAssistance: esb('GET', (c) => withQuery(`/composition/flights/${p(c, 'flightNumber')}/assistance`, c.query)),
   getFlightDelayImpact: esb('GET', (c) => withQuery(`/composition/flights/${p(c, 'flightNumber')}/delay-impact`, c.query)),
+  /**
+   * Cancelación de administrador (1.13.0): la saga «Cancelar» con `SAGA_COMPENSATION`, que no exige cotización ni aplica la regla
+   * del check-in (la misma vía con que EcoAirlines cancela las reservas de un vuelo cancelado). Solo el administrador y con motivo.
+   */
+  adminCancelBooking: async (context) => {
+    const actorId = actorOf(context);
+    const bookingId = p(context, 'bookingId');
+    const reason = `Cancelación de administrador: ${String((context.body as { reason: string }).reason).trim()}`.slice(0, 200);
+    await saga(context, { method: 'POST', path: `/sagas/bookings/${bookingId}/cancel`, json: { reasonCode: 'SAGA_COMPENSATION', reason }, actorId }, actorId);
+    return { status: 200, body: { bookingId: context.params['bookingId'], status: 'CANCELLED' } };
+  },
   markAssistanceReady: async (context) => {
     const actorId = actorOf(context);
     return { status: 200, body: await saga(context, { method: 'PUT', path: `/sagas/bookings/${p(context, 'bookingId')}/assistance-ready`, json: context.body, actorId }, actorId) };

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: MS.Admin — panel de administración de EcoAirlines (respuesta)
-  version: 1.12.0
+  version: 1.13.0
   license:
     name: Uso académico — Integración de Sistemas (sin licencia de distribución)
   description: |
@@ -1150,6 +1150,43 @@ paths:
           $ref: '#/components/responses/Problem403'
         '404':
           $ref: '#/components/responses/Problem404'
+  /ecoairlines/admin/bookings/{bookingId}/cancel:
+    post:
+      tags: [Administración]
+      operationId: adminCancelBooking
+      summary: "Cancelar una reserva como administrador, aunque tenga check-in (1.13.0)"
+      description: |
+        Excepción a la regla «después del check-in no se modifica nada» (D2), solo para el administrador y con un motivo escrito
+        (p. ej. una reserva de prueba de Booking que quedó activa). Usa la saga «Cancelar» con `SAGA_COMPENSATION`: sin cotización,
+        reembolso completo sin penalidad, asientos liberados y `booking.cancelled` a Booking. El motivo queda en el historial.
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCancelRequest'
+      responses:
+        '200':
+          description: Reserva cancelada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCancellation'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
   /ecoairlines/admin/events:
     get:
       tags: [Administración]
@@ -1720,6 +1757,29 @@ components:
           type: array
           items:
             $ref: './ms-g-webhooks.openapi.yaml#/components/schemas/EventHistoryItem'
+
+    AdminCancelRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 5
+          maxLength: 200
+          description: Por qué se cancela como administrador (queda en el historial de la reserva)
+
+    AdminCancellation:
+      type: object
+      additionalProperties: false
+      required: [bookingId, status]
+      properties:
+        bookingId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [CANCELLED]
 
     Journey:
       type: object

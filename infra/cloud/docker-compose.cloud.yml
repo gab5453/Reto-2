@@ -16,6 +16,8 @@ services:
     restart: unless-stopped
     environment:
       DOMAIN: ${DOMAIN:?falta DOMAIN en cloud/.env}
+      # El origen de la web (el mismo que autoriza el gateway): Caddy lo usa para las cabeceras CORS de sus respuestas de error.
+      WEB_ORIGIN: ${CORS_ORIGINS:?falta CORS_ORIGINS en cloud/.env}
     ports:
       - "80:80"
       - "443:443"

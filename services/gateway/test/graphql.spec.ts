@@ -412,3 +412,15 @@ describe('vista «Recorrido» y mapa en vivo (PLAN_Telemetria_Asientos T-4)', ()
   });
 });
 
+
+describe('cancelación de administrador', () => {
+  it('★ adminCancelBooking va a MS.Admin con el motivo; solo administradores', async () => {
+    const BOOKING = 'dc4d0bf7-e126-4533-bcb5-f328f7461d51';
+    fakes['MS.Admin'].on('POST', `/api/v2/ecoairlines/admin/bookings/${BOOKING}/cancel`, { body: { bookingId: BOOKING, status: 'CANCELLED' } });
+    const done = await gql(`mutation { adminCancelBooking(bookingId: "${BOOKING}", reason: "Reserva de prueba de Booking") }`, {}, tokens.admin()).expect(200);
+    expect(done.body.data.adminCancelBooking).toBe(true);
+    expect(fakes['MS.Admin'].last('POST')!.json).toEqual({ reason: 'Reserva de prueba de Booking' });
+    const denied = await gql(`mutation { adminCancelBooking(bookingId: "${BOOKING}", reason: "Reserva de prueba de Booking") }`, {}, tokens.customer()).expect(200);
+    expect(denied.body.errors[0].extensions.code).toBe('FORBIDDEN');
+  });
+});

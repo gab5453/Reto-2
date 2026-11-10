@@ -239,6 +239,10 @@ export function createResolvers(options: ResolverOptions) {
       const body = (await ms.call<Any>('MS.Vuelos', 'PATCH', `/vuelos/flights/${id(flightNumber)}/status`, { body: input })).body;
       return { ...body, affectedBookings: body['affectedBookings'] ?? 0 };
     },
+    adminCancelBooking: async (_, { bookingId, reason }, { ms }) => {
+      await ms.call('MS.Admin', 'POST', `/ecoairlines/admin/bookings/${id(bookingId)}/cancel`, { body: { reason } });
+      return true;
+    },
     markAssistanceReady: async (_, { bookingId, input }, { ms }) => {
       await ms.call('MS.Admin', 'PUT', `/ecoairlines/admin/bookings/${id(bookingId)}/assistance-ready`, { body: input });
       return true;

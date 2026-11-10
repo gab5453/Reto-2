@@ -263,3 +263,18 @@ describe('vista «Recorrido» y mapa en vivo (PLAN_Telemetria_Asientos T-4)', ()
   });
 });
 
+
+describe('cancelación de administrador (excepción a D2)', () => {
+  const BOOKING = 'dc4d0bf7-e126-4533-bcb5-f328f7461d51';
+  it('★ cancela con SAGA_COMPENSATION (sin cotización ni regla del check-in), con el motivo y el administrador; un cliente no puede', async () => {
+    esb.on('POST', `/sagas/bookings/${BOOKING}/cancel`, { body: { bookingId: BOOKING, status: 'CANCELLED' } });
+    const response = await admin(http().post(`/api/v2/ecoairlines/admin/bookings/${BOOKING}/cancel`)).send({ reason: 'Reserva de prueba de Booking que quedó activa' }).expect(200);
+    expectOwn('post', '/ecoairlines/admin/bookings/{bookingId}/cancel', response);
+    expect(response.body).toEqual({ bookingId: BOOKING, status: 'CANCELLED' });
+    const call = esb.last()!;
+    expect(JSON.parse(call.body!)).toEqual({ reasonCode: 'SAGA_COMPENSATION', reason: 'Cancelación de administrador: Reserva de prueba de Booking que quedó activa' });
+    expect(call.headers['x-actor-id']).toBeDefined();
+    await admin(http().post(`/api/v2/ecoairlines/admin/bookings/${BOOKING}/cancel`)).send({ reason: 'x' }).expect(400);
+    await http().post(`/api/v2/ecoairlines/admin/bookings/${BOOKING}/cancel`).set('Authorization', tokens.customer()).send({ reason: 'Quiero cancelar' }).expect(403);
+  });
+});

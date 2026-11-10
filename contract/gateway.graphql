@@ -326,6 +326,11 @@ type Mutation {
   updateFlightStatus(flightNumber: String!, input: FlightStatusUpdateInput!): FlightStatusUpdate!
     @auth(scopes: [FLIGHTS_OPS])
 
+  """
+  Cancela una reserva como administrador, aunque tenga check-in (excepción a D2, con motivo escrito). Reembolso completo sin
+  penalidad y asientos liberados. → MS.Admin adminCancelBooking
+  """
+  adminCancelBooking(bookingId: UUID!, reason: String!): Boolean! @auth(scopes: [ECOAIRLINES_ADMIN])
   "Marca que el aeropuerto confirmó la asistencia de un pasajero. → MS.Admin markAssistanceReady"
   markAssistanceReady(bookingId: UUID!, input: AssistanceReadyInput!): Boolean! @auth(scopes: [ECOAIRLINES_ADMIN])
 }
