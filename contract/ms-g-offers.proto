@@ -79,7 +79,7 @@ service HoldService {
   // Un hold CONSUMED responde FAILED_PRECONDITION / HOLD_ALREADY_CONSUMED (se compensa cancelando la reserva).
   rpc ReleaseHold(ReleaseHoldRequest) returns (ReleaseHoldResponse);
   // Saga "Crear reserva": valida el hold (vigente, del dueño) y el descuento, sin cambiar nada.
-  rpc ValidateHold(ValidateHoldRequest) returns (ValidateHoldResponse);
+  rpc ValidateHold(ValidateHoldRequest) returns (ValidateHoldResponse);  // También revisa los asientos pedidos (SEAT_TAKEN).
   // Saga "Crear reserva": convierte el hold en reserva (HELD → BOOKED) y asigna los asientos pedidos (o automáticos).
   // Idempotente por `booking_id`. Errores: HOLD_EXPIRED, HOLD_ALREADY_CONSUMED (otra reserva), SEAT_TAKEN.
   rpc ConsumeHold(ConsumeHoldRequest) returns (ConsumeHoldResponse);
@@ -422,6 +422,9 @@ message ValidateHoldRequest {
   string hold_id = 1;
   string owner_id = 2;
   optional PromotionRequest promotion = 3;
+  // Asientos que piden los pasajeros (assignedSeats). Se revisan ANTES del pago: si alguno ya está tomado, SEAT_TAKEN y no se
+  // cobra (pedido de Booking, PLAN_Telemetria_Asientos T-1). ConsumeHold los vuelve a validar de forma atómica.
+  repeated RequestedSeat requested_seats = 4;
 }
 
 message ValidateHoldResponse {
@@ -620,6 +623,35 @@ message PublishTimetableRequest {
   string to = 3;
   optional string route_id = 4; // si llega, solo se reemplazan los vuelos de esa ruta
   repeated ScheduledFlight flights = 5;
+  // Catálogo de aeropuertos de Schedule (M-1): Offers guarda su copia para las distancias. Vacío = conserva la que tiene.
+  repeated CatalogAirport airports = 6;
+  // Catálogo de tipos de avión de Schedule (M-2): con él Offers arma el mapa de asientos y los cupos por cabina. Vacío = conserva
+  // la copia que tiene (Offers nunca quita un tipo: un vuelo con ventas de un tipo borrado sigue teniendo su mapa).
+  repeated CatalogAircraftType aircraft_types = 7;
+}
+
+message CatalogAircraftType {
+  string name = 1;
+  int32 turnaround_minutes = 2;
+  repeated CatalogCabin cabins = 3;
+}
+
+message CatalogCabin {
+  string cabin_class = 1; // ECONOMY o BUSINESS
+  int32 first_row = 2;
+  int32 last_row = 3;
+  string layout = 4;      // letras por fila; '-' es el pasillo
+  repeated int32 exit_rows = 5;
+  repeated int32 extra_legroom_rows = 6;
+}
+
+message CatalogAirport {
+  string code = 1;
+  string city = 2;
+  string country = 3; // ISO 3166-1 alfa-2
+  double lat = 4;
+  double lon = 5;
+  int32 utc_offset_minutes = 6;
 }
 
 message FarePrice {
@@ -642,6 +674,22 @@ message PublishFarePricesRequest {
   string publish_id = 1;
   repeated FarePrice prices = 2;
   repeated PromotionRule promotions = 3;
+  // Tarifa base y precios exactos por ruta (P-1). Sin `pricing`, Offers usa 35 + 0,085 por km (los de siempre).
+  optional PricingBase pricing = 4;
+  repeated RouteFarePrice route_prices = 5;
+}
+
+// Tarifa de un adulto en un vuelo, sin impuestos: (fixed_charge + per_km × km) × multiplicador del paquete.
+message PricingBase {
+  double fixed_charge = 1;
+  double per_km = 2;
+}
+
+// Precio exacto de un paquete en una ruta (tarifa base de un adulto, sin impuestos): reemplaza la fórmula en esa ruta.
+message RouteFarePrice {
+  string route_id = 1;
+  string fare_brand = 2;
+  double amount = 3;
 }
 
 message PublishResult {

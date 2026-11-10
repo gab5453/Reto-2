@@ -165,6 +165,27 @@ export class SagasController {
     });
   }
 
+  /** P-1: tarifa base y/o precio exacto de los paquetes de una ruta (`route.prices` vacío lo quita). */
+  @Put('sagas/pricing')
+  pricing(@Req() req: RawRequest, @Res() res: Response, @Body() body: unknown) {
+    return this.write(req, res, (caller, instance) => {
+      const request = object(body);
+      const fixedCharge = request['fixedCharge'];
+      const perKm = request['perKm'];
+      const route = request['route'] as { routeId?: unknown; prices?: unknown } | undefined;
+      if (fixedCharge !== undefined && typeof fixedCharge !== 'number') throw invalid('fixedCharge', 'número');
+      if (perKm !== undefined && typeof perKm !== 'number') throw invalid('perKm', 'número');
+      if (route !== undefined && (typeof route.routeId !== 'string' || !Array.isArray(route.prices))) throw invalid('route', 'routeId y prices');
+      if (fixedCharge === undefined && perKm === undefined && route === undefined) throw invalid('body', 'fixedCharge, perKm o route');
+      return this.sagas.execute(
+        this.sagas.savePrices,
+        { kind: 'pricing', ...(fixedCharge !== undefined ? { fixedCharge } : {}), ...(perKm !== undefined ? { perKm } : {}), ...(route ? { route: route as never } : {}) },
+        requireActor(caller),
+        instance,
+      );
+    });
+  }
+
   @Put('sagas/promotion-agreements/:partnerId')
   promotionAgreement(@Param('partnerId') partnerId: string, @Req() req: RawRequest, @Res() res: Response, @Body() body: unknown) {
     return this.write(req, res, (caller, instance) => {

@@ -30,3 +30,15 @@ datasources:
         spanStartTimeShift: -5m
         spanEndTimeShift: 5m
         filterByTraceID: true
+      # T-3: grafo de servicios (las métricas que escribe el metrics-generator de Tempo en Prometheus) y grafo de nodos de una traza.
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      # Búsqueda por correlation ID en el editor de TraceQL.
+      search:
+        filters:
+          - id: correlation-id
+            tag: correlation_id
+            operator: '='
+            scope: span

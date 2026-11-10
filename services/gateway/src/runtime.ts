@@ -1,6 +1,7 @@
 import type { TokenVerifier } from '@ecoairlines/shared';
 import { ContractFiles, RateLimiter } from '@ecoairlines/shared/respuesta/index.js';
 import type { GatewayConfig } from './config.js';
+import { LiveTopics } from './graphql/live-topics.js';
 import { buildRestRoutes, type RestRoutes } from './rest/routes.js';
 import { Upstreams } from './upstream.js';
 
@@ -12,6 +13,8 @@ export class GatewayRuntime {
   readonly routes: RestRoutes;
   readonly limiter: RateLimiter;
   readonly upstreams: Upstreams;
+  /** T-5: los temas en vivo (recorrido y mapa) con su sondeo compartido. */
+  readonly live = new LiveTopics();
 
   constructor(
     readonly config: GatewayConfig,

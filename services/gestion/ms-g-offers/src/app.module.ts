@@ -1,4 +1,5 @@
 import { type DynamicModule, Inject, Injectable, Logger, Module, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
+import { registerAircraftTypes, registerAirports } from '@ecoairlines/shared';
 import { observeGauge } from '@ecoairlines/shared/telemetry/metrics.js';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { configureService, EcoServiceModule, type HealthCheck, JwksTokenVerifier, TOKEN_VERIFIER, type TokenVerifier } from '@ecoairlines/shared';
@@ -33,6 +34,12 @@ export class OffersLifecycle implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit(): Promise<void> {
     await this.store.init();
+    // M-1: la copia del catálogo de aeropuertos que publicó el ESB (sin ella, la semilla de shared).
+    const airports = await this.store.transaction((tx) => tx.airportCatalog());
+    if (airports.length) registerAirports(airports);
+    // M-2: y la copia de los tipos de avión (sin ella, los 3 de la semilla).
+    const types = await this.store.transaction((tx) => tx.aircraftTypeCatalog());
+    if (types.length) registerAircraftTypes(types);
     // V2.16: stock pendiente de enviar a Booking (alerta "stock sin enviar"; hoy BKG-13).
     observeGauge('ecoairlines.stock.pending', 'Cambios de stock pendientes de enviar a Booking', async () => (await this.store.stats(new Date().toISOString().slice(0, 10))).pendingStockPushes);
     if (this.config.busUrl) {

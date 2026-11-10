@@ -1,19 +1,24 @@
 import pg from 'pg';
-import type {
-  AircraftRecord,
-  AircraftType,
-  CabinClass,
-  FareBrand,
-  FarePriceRecord,
-  PriceChangeRecord,
-  PromotionAgreementRecord,
-  RouteRecord,
-  ScheduleChanges,
-  ScheduleState,
-  Source,
+import {
+  type AircraftRecord,
+  type AircraftTypeRecord,
+  type AirportRecord,
+  type AircraftType,
+  type CabinClass,
+  DEFAULT_PRICING,
+  type FareBrand,
+  type FarePriceRecord,
+  type PriceChangeRecord,
+  type PricingChangeRecord,
+  type PricingSettings,
+  type PromotionAgreementRecord,
+  type RouteRecord,
+  type ScheduleChanges,
+  type ScheduleState,
+  type Source,
 } from '../domain/model.js';
 import type { Weekday } from '../domain/timetable.js';
-import { encodeCursor, type Page, type PriceWork, type ScheduleRepository, type ScheduleWork } from './schedule.repository.js';
+import { type AircraftTypeWork, type AirportWork, encodeCursor, type Page, type PriceWork, type PricingWork, type ScheduleRepository, type ScheduleWork } from './schedule.repository.js';
 
 /**
  * PostgreSQL (base `schedule`, usuario `schedule_svc`; D10). Tablas del modelo conceptual v4. Se crean al arrancar.
@@ -75,6 +80,53 @@ CREATE TABLE IF NOT EXISTS price_changes (
   FOREIGN KEY (cabin_class, fare_brand) REFERENCES fare_class_prices(cabin_class, fare_brand)
 );
 CREATE INDEX IF NOT EXISTS price_changes_changed_at_idx ON price_changes (changed_at DESC, id);
+-- P-1: tarifa base (cargo fijo y precio por km) y precios exactos por ruta (route_prices: routeId → paquete → US$).
+CREATE TABLE IF NOT EXISTS pricing_settings (
+  id           smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  fixed_charge numeric(8, 2) NOT NULL,
+  per_km       numeric(8, 4) NOT NULL,
+  route_prices jsonb NOT NULL DEFAULT '{}'::jsonb,
+  updated_at   timestamptz,
+  updated_by   uuid
+);
+CREATE TABLE IF NOT EXISTS pricing_changes (
+  id         uuid PRIMARY KEY,
+  field      text NOT NULL,
+  route_id   text,
+  fare_brand text,
+  old_value  numeric(10, 4),
+  new_value  numeric(10, 4),
+  changed_by uuid NOT NULL,
+  changed_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pricing_changes_changed_at_idx ON pricing_changes (changed_at DESC, id);
+-- M-1: catálogo de aeropuertos (antes constante del código). El código no se edita; desactivar en vez de borrar si está en uso.
+CREATE TABLE IF NOT EXISTS airports (
+  code               char(3) PRIMARY KEY,
+  city               text NOT NULL,
+  name               text NOT NULL,
+  country            char(2) NOT NULL,
+  province           text,
+  lat                numeric(9, 6) NOT NULL,
+  lon                numeric(9, 6) NOT NULL,
+  utc_offset_minutes smallint NOT NULL,
+  active             boolean NOT NULL DEFAULT true,
+  created_at         timestamptz NOT NULL,
+  updated_at         timestamptz NOT NULL,
+  updated_by         uuid
+);
+-- M-2: catálogo de tipos de avión (antes constante del código). cabins: [{cabinClass, firstRow, lastRow, layout, exitRows, extraLegroomRows}].
+CREATE TABLE IF NOT EXISTS aircraft_types (
+  name                text PRIMARY KEY,
+  registration_prefix text NOT NULL UNIQUE,
+  max_route_km        integer,
+  turnaround_minutes  integer NOT NULL,
+  cabins              jsonb NOT NULL,
+  source              text NOT NULL CHECK (source IN ('NETWORK', 'ADMIN')),
+  created_at          timestamptz NOT NULL,
+  updated_at          timestamptz NOT NULL,
+  updated_by          uuid
+);
 CREATE TABLE IF NOT EXISTS promotion_agreements (
   partner_id              text PRIMARY KEY,
   allows_promotions       boolean NOT NULL,
@@ -91,6 +143,13 @@ CREATE TABLE IF NOT EXISTS promotion_agreements (
 
 type Row = Record<string, unknown>;
 const iso = (value: unknown): string => (value instanceof Date ? value.toISOString() : String(value));
+const toPricing = (row: Row): PricingSettings => ({
+  fixedCharge: Number(row['fixed_charge']),
+  perKm: Number(row['per_km']),
+  routePrices: (row['route_prices'] as PricingSettings['routePrices'] | null) ?? {},
+  updatedAt: row['updated_at'] ? iso(row['updated_at']) : null,
+  updatedBy: (row['updated_by'] as string | null) ?? null,
+});
 const audit = (row: Row) => ({
   source: row['source'] as Source,
   createdAt: iso(row['created_at']),
@@ -250,6 +309,99 @@ export class PostgresScheduleRepository implements ScheduleRepository {
     return rows.length > limit ? { items, nextCursor: encodeCursor(offset + limit) } : { items };
   }
 
+  async listAirports(): Promise<AirportRecord[]> {
+    const { rows } = await this.pool.query('SELECT * FROM airports ORDER BY code');
+    return rows.map(toAirport);
+  }
+
+  async seedAirports(airports: AirportRecord[]): Promise<boolean> {
+    return this.transaction(async (client) => {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext('schedule:changes'))`);
+      const { rows } = await client.query('SELECT count(*) AS n FROM airports');
+      if (Number((rows[0] as Row)['n']) > 0) return false;
+      for (const airport of airports) await saveAirport(client, airport);
+      return true;
+    });
+  }
+
+  async changeAirports<T>(work: AirportWork<T>): Promise<T> {
+    return this.transaction(async (client) => {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext('schedule:changes'))`);
+      const { rows } = await client.query('SELECT * FROM airports ORDER BY code');
+      const { changes, result } = work(rows.map(toAirport), await this.readState(client));
+      for (const airport of changes.saveAirports ?? []) await saveAirport(client, airport);
+      for (const code of changes.deleteAirports ?? []) await client.query('DELETE FROM airports WHERE code = $1', [code]);
+      return result;
+    });
+  }
+
+  async listAircraftTypes(): Promise<AircraftTypeRecord[]> {
+    const { rows } = await this.pool.query('SELECT * FROM aircraft_types ORDER BY name');
+    return rows.map(toAircraftType);
+  }
+
+  async seedAircraftTypes(types: AircraftTypeRecord[]): Promise<boolean> {
+    return this.transaction(async (client) => {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext('schedule:changes'))`);
+      const { rows } = await client.query('SELECT count(*) AS n FROM aircraft_types');
+      if (Number((rows[0] as Row)['n']) > 0) return false;
+      for (const type of types) await saveAircraftType(client, type);
+      return true;
+    });
+  }
+
+  async changeAircraftTypes<T>(work: AircraftTypeWork<T>): Promise<T> {
+    return this.transaction(async (client) => {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext('schedule:changes'))`);
+      const { rows } = await client.query('SELECT * FROM aircraft_types ORDER BY name');
+      const { changes, result } = work(rows.map(toAircraftType), await this.readState(client));
+      for (const type of changes.saveAircraftTypes ?? []) await saveAircraftType(client, type);
+      for (const name of changes.deleteAircraftTypes ?? []) await client.query('DELETE FROM aircraft_types WHERE name = $1', [name]);
+      return result;
+    });
+  }
+
+  async getPricing(): Promise<PricingSettings> {
+    const { rows } = await this.pool.query('SELECT * FROM pricing_settings WHERE id = 1');
+    return rows[0] ? toPricing(rows[0]) : { ...DEFAULT_PRICING, routePrices: {}, updatedAt: null, updatedBy: null };
+  }
+
+  async changePricing(work: PricingWork): Promise<PricingSettings> {
+    await this.transaction(async (client) => {
+      await client.query('INSERT INTO pricing_settings (id, fixed_charge, per_km) VALUES (1, $1, $2) ON CONFLICT (id) DO NOTHING', [DEFAULT_PRICING.fixedCharge, DEFAULT_PRICING.perKm]);
+      const { rows } = await client.query('SELECT * FROM pricing_settings WHERE id = 1 FOR UPDATE');
+      const { next, history } = work(toPricing(rows[0]!));
+      await client.query('UPDATE pricing_settings SET fixed_charge = $1, per_km = $2, route_prices = $3, updated_at = $4, updated_by = $5 WHERE id = 1', [
+        next.fixedCharge,
+        next.perKm,
+        JSON.stringify(next.routePrices),
+        next.updatedAt,
+        next.updatedBy,
+      ]);
+      for (const h of history) {
+        await client.query(
+          `INSERT INTO pricing_changes (id, field, route_id, fare_brand, old_value, new_value, changed_by, changed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [h.id, h.field, h.routeId, h.fareBrand, h.oldValue, h.newValue, h.changedBy, h.changedAt],
+        );
+      }
+    });
+    return this.getPricing();
+  }
+
+  async listPricingChanges(limit: number): Promise<PricingChangeRecord[]> {
+    const { rows } = await this.pool.query('SELECT * FROM pricing_changes ORDER BY changed_at DESC, id LIMIT $1', [limit]);
+    return rows.map((row: Row) => ({
+      id: String(row['id']),
+      field: row['field'] as PricingChangeRecord['field'],
+      routeId: (row['route_id'] as string | null) ?? null,
+      fareBrand: (row['fare_brand'] as FareBrand | null) ?? null,
+      oldValue: row['old_value'] === null ? null : Number(row['old_value']),
+      newValue: row['new_value'] === null ? null : Number(row['new_value']),
+      changedBy: String(row['changed_by']),
+      changedAt: iso(row['changed_at']),
+    }));
+  }
+
   async getAgreement(partnerId: string) {
     const { rows } = await this.pool.query('SELECT * FROM promotion_agreements WHERE partner_id = $1', [partnerId]);
     return rows[0] ? toAgreement(rows[0]) : undefined;
@@ -340,4 +492,54 @@ export class PostgresScheduleRepository implements ScheduleRepository {
       client.release();
     }
   }
+}
+
+function toAirport(row: Row): AirportRecord {
+  return {
+    code: String(row['code']),
+    city: String(row['city']),
+    name: String(row['name']),
+    country: String(row['country']),
+    ...(row['province'] ? { province: String(row['province']) } : {}),
+    lat: Number(row['lat']),
+    lon: Number(row['lon']),
+    utcOffsetMinutes: Number(row['utc_offset_minutes']),
+    active: Boolean(row['active']),
+    createdAt: iso(row['created_at']),
+    updatedAt: iso(row['updated_at']),
+    updatedBy: (row['updated_by'] as string | null) ?? null,
+  };
+}
+
+async function saveAirport(client: pg.PoolClient, a: AirportRecord): Promise<void> {
+  await client.query(
+    `INSERT INTO airports (code, city, name, country, province, lat, lon, utc_offset_minutes, active, created_at, updated_at, updated_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     ON CONFLICT (code) DO UPDATE SET city = $2, name = $3, country = $4, province = $5, lat = $6, lon = $7, utc_offset_minutes = $8,
+       active = $9, updated_at = $11, updated_by = $12`,
+    [a.code, a.city, a.name, a.country, a.province ?? null, a.lat, a.lon, a.utcOffsetMinutes, a.active, a.createdAt, a.updatedAt, a.updatedBy],
+  );
+}
+
+function toAircraftType(row: Row): AircraftTypeRecord {
+  return {
+    name: String(row['name']),
+    registrationPrefix: String(row['registration_prefix']),
+    maxRouteKm: row['max_route_km'] === null ? null : Number(row['max_route_km']),
+    turnaroundMinutes: Number(row['turnaround_minutes']),
+    cabins: row['cabins'] as AircraftTypeRecord['cabins'],
+    source: row['source'] as Source,
+    createdAt: iso(row['created_at']),
+    updatedAt: iso(row['updated_at']),
+    updatedBy: (row['updated_by'] as string | null) ?? null,
+  };
+}
+
+async function saveAircraftType(client: pg.PoolClient, t: AircraftTypeRecord): Promise<void> {
+  await client.query(
+    `INSERT INTO aircraft_types (name, registration_prefix, max_route_km, turnaround_minutes, cabins, source, created_at, updated_at, updated_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT (name) DO UPDATE SET registration_prefix = $2, max_route_km = $3, turnaround_minutes = $4, cabins = $5, updated_at = $8, updated_by = $9`,
+    [t.name, t.registrationPrefix, t.maxRouteKm, t.turnaroundMinutes, JSON.stringify(t.cabins), t.source, t.createdAt, t.updatedAt, t.updatedBy],
+  );
 }

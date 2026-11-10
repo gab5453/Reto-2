@@ -1,17 +1,24 @@
 import { Body, Controller, Delete, Get, HttpCode, Inject, Param, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { ActorId, ProblemDetailsException, ServiceTokenGuard } from '@ecoairlines/shared';
+import { AircraftTypesService } from '../services/aircraft-types.service.js';
+import { AirportsService } from '../services/airports.service.js';
 import { PricingService } from '../services/pricing.service.js';
 import { PromotionsService } from '../services/promotions.service.js';
 import { ScheduleService } from '../services/schedule.service.js';
 import {
   AircraftRequestDto,
+  AircraftTypeRequestDto,
+  CreateAircraftTypeRequestDto,
+  AirportRequestDto,
+  CreateAirportRequestDto,
   CreateRouteQuery,
   DateQuery,
   HistoryQuery,
   PromotionAgreementDto,
   RouteChangeRequestDto,
   SaveFarePricesDto,
+  SavePricingDto,
   ScheduledRouteRequestDto,
   SoldSeatsQuery,
   TimetableQuery,
@@ -53,11 +60,6 @@ export class ScheduleController {
   @HttpCode(204)
   async deleteRoute(@Param('routeId') routeId: string, @Query() query: SoldSeatsQuery, @ActorId() _actor: string) {
     await this.schedule.deleteRoute(routeId, query.soldSeats);
-  }
-
-  @Get('aircraft-types')
-  aircraftTypes() {
-    return this.schedule.listAircraftTypes();
   }
 
   @Get('aircraft')
@@ -120,6 +122,16 @@ export class PricingController {
     return this.pricing.save(body.items, actor);
   }
 
+  @Get('pricing')
+  pricingSettings() {
+    return this.pricing.pricing();
+  }
+
+  @Put('pricing')
+  savePricing(@Body() body: SavePricingDto, @ActorId() actor: string) {
+    return this.pricing.savePricing(body, actor);
+  }
+
   @Get('fare-prices/reference')
   reference() {
     return this.pricing.reference();
@@ -142,5 +154,86 @@ export class PricingController {
     }
     if (!PromotionAgreementDto.valid(body)) throw invalidDate('vigencia_hasta');
     return this.promotions.save(partnerId, body, actor);
+  }
+}
+
+const quarterHour = (minutes: number) => {
+  if (minutes % 15 !== 0) {
+    throw new ProblemDetailsException({ status: 400, code: 'VALIDATION_FAILED', title: 'Huso horario inválido.', invalidParams: [{ name: 'utcOffsetMinutes', reason: 'múltiplo de 15 minutos' }] });
+  }
+};
+const iataParam = (code: string) => {
+  if (!/^[A-Z]{3}$/.test(code)) throw new ProblemDetailsException({ status: 400, code: 'VALIDATION_FAILED', title: 'Código inválido.', invalidParams: [{ name: 'code', reason: '3 letras mayúsculas' }] });
+};
+
+/** Catálogo de aeropuertos (M-1; contrato: Aeropuertos). */
+@Controller('airports')
+@UseGuards(ServiceTokenGuard)
+export class AirportsController {
+  constructor(@Inject(AirportsService) private readonly airports: AirportsService) {}
+
+  @Get()
+  list() {
+    return this.airports.list();
+  }
+
+  @Post()
+  async create(@Body() body: CreateAirportRequestDto, @ActorId() actor: string, @Res({ passthrough: true }) response: Response) {
+    quarterHour(body.utcOffsetMinutes);
+    const { code, ...input } = body;
+    const airport = await this.airports.create(code, input, actor);
+    response.location(`/airports/${airport.code}`);
+    return airport;
+  }
+
+  @Get(':code')
+  get(@Param('code') code: string) {
+    iataParam(code);
+    return this.airports.get(code);
+  }
+
+  @Put(':code')
+  update(@Param('code') code: string, @Body() body: AirportRequestDto, @ActorId() actor: string) {
+    iataParam(code);
+    quarterHour(body.utcOffsetMinutes);
+    return this.airports.update(code, body, actor);
+  }
+
+  @Delete(':code')
+  @HttpCode(204)
+  async remove(@Param('code') code: string, @ActorId() _actor: string) {
+    iataParam(code);
+    await this.airports.delete(code);
+  }
+}
+
+/** Catálogo de tipos de avión (M-2; contrato: Flota). El nombre va en la ruta codificado («Airbus%20A320neo»). */
+@Controller('aircraft-types')
+@UseGuards(ServiceTokenGuard)
+export class AircraftTypesController {
+  constructor(@Inject(AircraftTypesService) private readonly types: AircraftTypesService) {}
+
+  @Get()
+  list() {
+    return this.types.list();
+  }
+
+  @Post()
+  async create(@Body() body: CreateAircraftTypeRequestDto, @ActorId() actor: string, @Res({ passthrough: true }) response: Response) {
+    const { aircraftType, ...input } = body;
+    const created = await this.types.create(aircraftType.trim(), { ...input, maxRouteKm: input.maxRouteKm ?? null }, actor);
+    response.location(`/aircraft-types/${encodeURIComponent(created.aircraftType)}`);
+    return created;
+  }
+
+  @Put(':aircraftType')
+  update(@Param('aircraftType') aircraftType: string, @Body() body: AircraftTypeRequestDto, @ActorId() actor: string) {
+    return this.types.update(aircraftType, { ...body, maxRouteKm: body.maxRouteKm ?? null }, actor);
+  }
+
+  @Delete(':aircraftType')
+  @HttpCode(204)
+  async remove(@Param('aircraftType') aircraftType: string, @ActorId() _actor: string) {
+    await this.types.delete(aircraftType);
   }
 }

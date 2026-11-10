@@ -1,4 +1,5 @@
 import { ProblemDetailsException } from '@ecoairlines/shared';
+import { flattenOtlp, type RawSpan } from '../composition/journey.js';
 
 /**
  * Adaptador de la plataforma de observabilidad (V2.16, D50) para la composición del panel: Prometheus (latencia, errores),
@@ -9,12 +10,17 @@ export interface ObservabilityUrls {
   prometheus?: string;
   loki?: string;
   alertmanager?: string;
+  /** Tempo (T-4): los spans de un proceso para la vista «Recorrido». */
+  tempo?: string;
   /** API de administración de RabbitMQ, con usuario y contraseña (los del bus). */
   rabbitmq?: { url: string; user: string; password: string };
 }
 
 /** Histograma de la instrumentación HTTP (semántica estable de OpenTelemetry: `http.server.request.duration`, en segundos). */
 const HISTOGRAM = 'http_server_request_duration_seconds';
+
+/** Plazo de las consultas a Tempo de la vista «Recorrido» (T-4); MS.Admin espera hasta 12 s al ESB para ella. */
+const TEMPO_TIMEOUT_MS = 8_000;
 
 const unavailable = (what: string) => new ProblemDetailsException({ status: 503, code: 'PROVIDER_UNAVAILABLE', title: `${what} no está disponible.`, retryAfterSeconds: 30 });
 
@@ -36,12 +42,14 @@ export class ObservabilityClient {
     private readonly timeoutMs = 3_000,
   ) {}
 
-  private async get<T>(what: string, url: string | undefined, path: string, headers: Record<string, string> = {}): Promise<T> {
+  private async get<T>(what: string, url: string | undefined, path: string, headers: Record<string, string> = {}, timeoutMs = this.timeoutMs): Promise<T> {
     if (!url) throw unavailable(what);
     let response: Response;
     try {
-      response = await fetch(`${url}${path}`, { headers: { accept: 'application/json', ...headers }, signal: AbortSignal.timeout(this.timeoutMs) });
-    } catch {
+      response = await fetch(`${url}${path}`, { headers: { accept: 'application/json', ...headers }, signal: AbortSignal.timeout(timeoutMs) });
+    } catch (error) {
+      // Plazo vencido: la pieza está arriba pero la consulta fue muy pesada (T-2). Se dice así, no «no disponible».
+      if (error instanceof Error && error.name === 'TimeoutError') throw new ProblemDetailsException({ status: 503, code: 'PROVIDER_UNAVAILABLE', title: `${what} tardó demasiado en responder.`, detail: 'La búsqueda tardó demasiado: prueba con un rango más corto.', retryAfterSeconds: 5 });
       throw unavailable(what);
     }
     if (!response.ok) throw unavailable(what);
@@ -81,13 +89,14 @@ export class ObservabilityClient {
    * Los pasos (una línea `api_request` por salto) de un proceso, por su X-Correlation-Id: en el rango pedido o, sin él, en los
    * últimos 7 días. Con una semana de logs, 7 días tardan ~24 s en la VM (más que el plazo de 3 s); una ventana de minutos, 0,2 s.
    */
-  async correlationSteps(correlationId: string, range: { from?: string; to?: string } = {}): Promise<TraceStep[]> {
-    const end = range.to ? Date.parse(range.to) : Date.now();
+  async correlationSteps(correlationId: string, window: { from: Date; to: Date }): Promise<TraceStep[]> {
+    // Loki no indexa el correlation ID: filtra línea por línea todo el rango (1 día ~7 s, 7 días ~24 s en la VM). Por eso la
+    // ventana la calcula la composición, lo más corta posible (T-2).
     const params = new URLSearchParams({
       // El valor va entre backticks (cadena cruda de LogQL): se quitan del id para que no rompa la consulta.
       query: `{service_name=~".+"} | correlation_id=\`${correlationId.replace(/`/g, '')}\` | type=\`api_request\``,
-      start: String((range.from ? Date.parse(range.from) : end - 7 * 86_400_000) * 1_000_000),
-      end: String(end * 1_000_000),
+      start: String(window.from.getTime() * 1_000_000),
+      end: String(window.to.getTime() * 1_000_000),
       limit: '500',
       direction: 'forward',
     });
@@ -112,6 +121,48 @@ export class ObservabilityClient {
       }
     }
     return steps.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  }
+
+  /**
+   * Spans de todas las trazas de un correlation ID (T-4), aplanados. Busca en Tempo con TraceQL dentro de la ventana y trae hasta
+   * 20 trazas. Tempo sí indexa los atributos de los spans: es rápido aunque la ventana sea larga.
+   */
+  async journeySpans(correlationId: string, window: { from: Date; to: Date }): Promise<RawSpan[]> {
+    const query = `{ span.correlation_id = "${correlationId.replace(/["\\]/g, '')}" }`;
+    const params = new URLSearchParams({ q: query, start: String(Math.floor(window.from.getTime() / 1000)), end: String(Math.ceil(window.to.getTime() / 1000)), limit: '20' });
+    // Solo el panel, y de vez en cuando: más plazo que el resto (Tempo tarda más con la VM cargada).
+    const found = await this.get<{ traces?: { traceID: string }[] }>('Tempo', this.urls.tempo, `/api/search?${params}`, {}, TEMPO_TIMEOUT_MS);
+    const ids = [...new Set((found.traces ?? []).map((trace) => trace.traceID))].slice(0, 20);
+    const traces = await Promise.all(ids.map((id) => this.get<unknown>('Tempo', this.urls.tempo, `/api/v2/traces/${encodeURIComponent(id)}`, {}, TEMPO_TIMEOUT_MS)));
+    return traces.flatMap(flattenOtlp);
+  }
+
+  /**
+   * Mapa del sistema en vivo (T-4): aristas cliente → servidor de los últimos 5 minutos, de las métricas que el metrics-generator
+   * de Tempo escribe en Prometheus (T-3): peticiones y errores por minuto y p95.
+   */
+  async systemMap() {
+    const now = new Date();
+    const [requests, failed, p95] = await Promise.all([
+      this.promql('sum by (client, server) (rate(traces_service_graph_request_total[5m])) * 60', now),
+      this.promql('sum by (client, server) (rate(traces_service_graph_request_failed_total[5m])) * 60', now),
+      this.promql('1000 * histogram_quantile(0.95, sum by (le, client, server) (rate(traces_service_graph_request_server_seconds_bucket[5m])))', now),
+    ]);
+    const key = (row: Vector[number]) => `${row.metric['client']}→${row.metric['server']}`;
+    const value = (vector: Vector) => new Map(vector.map((row) => [key(row), Number(row.value[1])]));
+    const [failedBy, p95By] = [value(failed), value(p95)];
+    const round = (number: number | undefined) => (number === undefined || !Number.isFinite(number) ? null : Math.round(number * 100) / 100);
+    const edges = requests
+      .filter((row) => row.metric['client'] && row.metric['server'] && Number(row.value[1]) > 0)
+      .map((row) => ({
+        from: row.metric['client']!,
+        to: row.metric['server']!,
+        requestsPerMinute: round(Number(row.value[1])) ?? 0,
+        errorsPerMinute: round(failedBy.get(key(row))) ?? 0,
+        p95Ms: round(p95By.get(key(row))),
+      }))
+      .sort((a, b) => b.requestsPerMinute - a.requestsPerMinute);
+    return { generatedAt: now.toISOString(), windowMinutes: 5, edges };
   }
 
   /** Colas de RabbitMQ con su cola de fallidos (`<cola>.dlq`); las de espera de reintentos se omiten. */

@@ -7,6 +7,7 @@ import { ProblemAlert } from '../../components/ProblemAlert';
 import { maskDocument, settlementOf, summaryText } from '../../lib/admin-bookings';
 import { PASSENGER_LABELS, STATUS_LABELS, formatDateTime, formatMoney, localDate, localTime } from '../../lib/format';
 import { BookingTimelinePanel } from './BookingTimelinePanel';
+import { FlightDelayNotice } from '../../components/FlightDelayNotice';
 
 const OPERATION_LABELS: Record<string, string> = { BOOKING: 'Reserva', SEATS: 'Asientos', BAGGAGE: 'Maletas', DATE_CHANGE: 'Cambio de fecha' };
 const PROVIDER_LABELS: Record<string, string> = { BOOKING_PROTOTIPO: 'Booking (cobra Booking)', AIRLINE_DIRECT: 'Payment API (web)' };
@@ -71,6 +72,8 @@ export function AdminBookingDetailPage() {
           <button type="button" className="btn btn-primary btn-sm" onClick={() => void copy()}>{copied ? 'Copiado ✓' : 'Copiar resumen para Booking'}</button>
         </div>
       </header>
+
+      {booking.status === 'CONFIRMED' && <FlightDelayNotice segments={segments} />}
 
       <div className="admin-booking-grid">
         <section className="card" aria-labelledby="resumen">

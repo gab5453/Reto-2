@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { applyDiscount, type MoneyAmount, type PassengerCounts, seatsRequired, sumMoney } from '@ecoairlines/shared';
-import { findFare, localDate, multiplierOf, priceItinerary, seatsOf, toItineraryOption } from '../domain/catalog.js';
+import { findFare, localDate, priceItinerary, priceRuleOf, seatsOf, toItineraryOption } from '../domain/catalog.js';
 import type { BookingSeatRecord, CabinClass, FareSelection, HoldRecord, PassengerType, PricedSelection, SeatStatus } from '../domain/model.js';
 import { OFFERS_STORE, type OffersStore, type OffersTx, SeatTakenError } from '../repositories/offers.store.js';
 import { checkPassengers } from './catalog.service.js';
@@ -23,8 +23,12 @@ export interface AssignedSeat {
   status: SeatStatus;
 }
 
+/** `SEAT_TAKEN` con el formato que espera Booking: título fijo y el asiento y el segmento en `detail` (T-1). */
 const seatTaken = (error: SeatTakenError) =>
-  problem(409, 'SEAT_TAKEN', `El asiento ${error.seatNumber} ya no está disponible.`, { invalidParams: [{ name: 'seatNumber', reason: `${error.seatNumber} en ${error.segmentId}` }] });
+  problem(409, 'SEAT_TAKEN', 'Asiento no disponible', {
+    detail: `El asiento ${error.seatNumber} del segmento ${error.segmentId} ya fue tomado.`,
+    invalidParams: [{ name: 'seatNumber', reason: `${error.seatNumber} en ${error.segmentId}` }],
+  });
 const holdNotFound = () => problem(404, 'NOT_FOUND', 'Hold no encontrado.');
 
 /**
@@ -57,6 +61,7 @@ export class HoldsService {
         });
       }
       const prices = await tx.farePrices();
+      const pricing = await tx.pricingSettings();
       const priced: PricedSelection[] = [];
       for (const selection of input.selections) {
         const itinerary = itineraries.find((candidate) => candidate.itineraryId === selection.itineraryId)!;
@@ -74,8 +79,8 @@ export class HoldsService {
         priced.push({
           ...selection,
           segmentIds: itinerary.flights.map((flight) => flight.segmentId),
-          itinerary: toItineraryOption(itinerary, counts, { prices, availableSeats: () => availableSeats }, selection),
-          price: priceItinerary(itinerary, multiplierOf(fare, prices), counts),
+          itinerary: toItineraryOption(itinerary, counts, { prices, pricing, availableSeats: () => availableSeats }, selection),
+          price: priceItinerary(itinerary, priceRuleOf(fare, prices, pricing), counts),
         });
       }
       const now = this.now();
@@ -117,9 +122,15 @@ export class HoldsService {
   }
 
   /** Saga "Crear reserva": hold vigente del dueño y descuento dentro del acuerdo (D35). Devuelve el monto a cobrar (BKG-08). */
-  async validate(holdId: string, ownerId: string, promotion?: { partnerId: string; discountPercentage: number }) {
+  async validate(
+    holdId: string,
+    ownerId: string,
+    promotion?: { partnerId: string; discountPercentage: number },
+    requestedSeats: { segmentId: string; seatNumber: string }[] = [],
+  ) {
     return this.store.transaction(async (tx) => {
       const hold = await this.usable(tx, holdId, ownerId);
+      await this.checkRequestedSeats(tx, hold, requestedSeats);
       let expected: MoneyAmount = hold.lockedPrice;
       if (promotion && promotion.discountPercentage > 0) {
         const rule = await tx.promotionRule(promotion.partnerId);
@@ -226,6 +237,29 @@ export class HoldsService {
     const hold = await tx.hold(holdId);
     if (!hold || (ownerId !== undefined && ownerId !== '' && hold.ownerId !== ownerId)) throw holdNotFound();
     return this.expireIfDue(tx, hold);
+  }
+
+  /**
+   * Revisión previa al pago (T-1): cada asiento pedido existe, es de la cabina comprada y está libre. No ocupa nada: el asiento se
+   * toma de forma atómica al consumir el hold (si otro cliente lo toma en ese instante, ahí también responde SEAT_TAKEN).
+   */
+  private async checkRequestedSeats(tx: OffersTx, hold: HoldRecord, requested: { segmentId: string; seatNumber: string }[]) {
+    if (!requested.length) return;
+    const seen = new Set<string>();
+    for (const { segmentId, seatNumber } of requested) {
+      const key = `${segmentId}/${seatNumber}`;
+      if (seen.has(key)) throw validation('Dos pasajeros pidieron el mismo asiento.', 'assignedSeats', `${seatNumber} en ${segmentId}`);
+      seen.add(key);
+      const selection = hold.selections.find((candidate) => candidate.segmentIds.includes(segmentId));
+      if (!selection) throw validation('El segmento no es de la reserva temporal.', 'assignedSeats', segmentId);
+      const flight = await tx.flight(segmentId);
+      const seat = flight && seatsOf(flight.aircraftType).find((candidate) => candidate.seatNumber === seatNumber);
+      if (!seat) throw validation('El asiento no existe en el avión.', 'seatNumber', `${seatNumber} en ${segmentId}`);
+      if (seat.cabinClass !== selection.cabinClass) {
+        throw problem(422, 'SEAT_CABIN_MISMATCH', `El asiento ${seatNumber} es de ${seat.cabinClass} y la tarifa es ${selection.cabinClass}.`, { invalidParams: [{ name: 'seatNumber', reason: seatNumber }] });
+      }
+      if ((await tx.assignedSeats(segmentId)).some((taken) => taken.seatNumber === seatNumber)) throw seatTaken(new SeatTakenError(segmentId, seatNumber));
+    }
   }
 
   private async usable(tx: OffersTx, holdId: string, ownerId: string): Promise<HoldRecord> {

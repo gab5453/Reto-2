@@ -5,13 +5,17 @@ import { Stat } from '../../components/AdminUi';
 import { ProblemAlert } from '../../components/ProblemAlert';
 import { cityOf } from '../../data/airports';
 import { formatDateTime, formatMoney, todayIso } from '../../lib/format';
+import { AircraftTypesPanel } from './AircraftTypesPanel';
+import { AirportsPanel } from './AirportsPanel';
 import { FleetPanel } from './FleetPanel';
 import { RoutesPanel } from './RoutesPanel';
 
-type Tab = 'SCHEDULE' | 'FLEET' | 'ROUTES';
+type Tab = 'SCHEDULE' | 'FLEET' | 'TYPES' | 'AIRPORTS' | 'ROUTES';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'SCHEDULE', label: 'Rutas programadas' },
   { id: 'FLEET', label: 'Flota' },
+  { id: 'TYPES', label: 'Tipos de avión' },
+  { id: 'AIRPORTS', label: 'Aeropuertos' },
   { id: 'ROUTES', label: 'Ventas por ruta' },
 ];
 
@@ -145,6 +149,10 @@ export function AdminDashboardPage() {
           {tab === 'SCHEDULE' && <RoutesPanel onChanged={() => void load()} />}
 
           {tab === 'FLEET' && <FleetPanel />}
+
+          {tab === 'TYPES' && <AircraftTypesPanel />}
+
+          {tab === 'AIRPORTS' && <AirportsPanel />}
 
           {tab === 'ROUTES' && (
             stats.byRoute.length === 0 ? (

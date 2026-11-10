@@ -12,7 +12,7 @@ import {
   scaleMoney,
   sumMoney,
 } from '@ecoairlines/shared';
-import type { CabinPricing, FarePriceRecord, FlightRecord, FlightSegment, ItineraryOption, SeatCharacteristic } from './model.js';
+import { type CabinPricing, DEFAULT_PRICING_SETTINGS, type FarePriceRecord, type FlightRecord, type FlightSegment, type ItineraryOption, type PricingSettingsRecord, type SeatCharacteristic } from './model.js';
 
 /**
  * Catálogo: identificadores, conexiones, precios y mapa de asientos. Copiado de `MockGdsService`, `gds-ids.ts` y `network.ts`
@@ -70,6 +70,19 @@ export const FARE_BRANDS: readonly FareBrandDefinition[] = [
 ];
 
 export const findFare = (cabinClass: string, fareBrand: string) => FARE_BRANDS.find((fare) => fare.cabinClass === cabinClass && fare.fareBrand === fareBrand);
+
+/** Todo lo que define el precio de un paquete (P-1): su multiplicador, la tarifa base y los precios exactos por ruta. */
+export interface PriceRule {
+  fareBrand: string;
+  multiplier: number;
+  pricing: PricingSettingsRecord;
+}
+
+export const priceRuleOf = (fare: FareBrandDefinition, prices: FarePriceRecord[], pricing: PricingSettingsRecord = DEFAULT_PRICING_SETTINGS): PriceRule => ({
+  fareBrand: fare.fareBrand,
+  multiplier: multiplierOf(fare, prices),
+  pricing,
+});
 
 /** Multiplicador vigente: el publicado por Schedule o, si no hay, el de referencia. */
 export function multiplierOf(fare: FareBrandDefinition, prices: FarePriceRecord[]): number {
@@ -142,18 +155,28 @@ export function findItineraries(
 
 // ------------------------------------------------------------------------------------------------ precios
 
-/** Precio de un pasajero: base por distancia × multiplicador de la familia, 10 % menos con escala; impuestos 15 % + 12 por tramo. */
-export function priceFor(itinerary: Itinerary, multiplier: number, passengerType: PassengerType): MoneyAmount {
+/**
+ * Precio de un pasajero: por cada vuelo, (cargo fijo + precio por km × km) × multiplicador del paquete, o el precio exacto del
+ * paquete en esa ruta si lo hay (P-1, D-T12); 10 % menos con escala; impuestos 15 % + 12 por tramo. Con la tarifa base por
+ * defecto (35 y 0,085) y sin precios por ruta, el cálculo es el mismo que antes, operación por operación.
+ */
+export function priceFor(itinerary: Itinerary, rule: PriceRule, passengerType: PassengerType): MoneyAmount {
   const connectionDiscount = itinerary.flights.length > 1 ? 0.9 : 1;
-  const routeBase = itinerary.flights.reduce((total, flight) => total + 35 + flightDistance(flight) * 0.085, 0);
-  const adultBaseCents = Math.round(routeBase * connectionDiscount * multiplier) * 100;
+  let routeBase = 0;
+  let exact = 0;
+  for (const flight of itinerary.flights) {
+    const fixed = rule.pricing.routePrices[flight.routeId]?.[rule.fareBrand];
+    if (fixed !== undefined) exact += fixed;
+    else routeBase += rule.pricing.fixedCharge + flightDistance(flight) * rule.pricing.perKm;
+  }
+  const adultBaseCents = Math.round(routeBase * connectionDiscount * rule.multiplier + exact * connectionDiscount) * 100;
   const baseCents = Math.round((adultBaseCents * PASSENGER_FARE_FACTOR[passengerType]) / 100) * 100;
   const taxesCents = passengerType === 'INFANT' ? 0 : Math.round(adultBaseCents * 0.15) + 1_200 * itinerary.flights.length;
   return moneyFromCents(baseCents, taxesCents);
 }
 
-export const priceItinerary = (itinerary: Itinerary, multiplier: number, counts: PassengerCounts): MoneyAmount =>
-  sumMoney(countsByType(counts).map(([type, count]) => scaleMoney(priceFor(itinerary, multiplier, type), count)));
+export const priceItinerary = (itinerary: Itinerary, rule: PriceRule, counts: PassengerCounts): MoneyAmount =>
+  sumMoney(countsByType(counts).map(([type, count]) => scaleMoney(priceFor(itinerary, rule, type), count)));
 
 export function extraBagPrice(itinerary: Itinerary): MoneyAmount {
   const usd = itinerary.distanceKm < 1_000 ? 35 : itinerary.distanceKm < 3_000 ? 45 : 60;
@@ -182,10 +205,10 @@ export function toFlightSegment(flight: FlightRecord, next?: FlightRecord): Flig
 export function toItineraryOption(
   itinerary: Itinerary,
   counts: PassengerCounts,
-  context: { prices: FarePriceRecord[]; availableSeats: (cabinClass: CabinClass) => number },
+  context: { prices: FarePriceRecord[]; pricing?: PricingSettingsRecord; availableSeats: (cabinClass: CabinClass) => number },
   only?: { cabinClass: string; fareBrand: string },
 ): ItineraryOption {
-  const cabins = new Set(itinerary.flights.flatMap((flight) => AIRCRAFT_LAYOUTS[flight.aircraftType].map((cabin) => cabin.cabinClass)));
+  const cabins = new Set(itinerary.flights.flatMap((flight) => (AIRCRAFT_LAYOUTS[flight.aircraftType] ?? []).map((cabin) => cabin.cabinClass)));
   const fares = FARE_BRANDS.filter((fare) => cabins.has(fare.cabinClass) && (!only || (fare.cabinClass === only.cabinClass && fare.fareBrand === only.fareBrand)));
   return {
     itineraryId: itinerary.itineraryId,
@@ -206,7 +229,7 @@ export function toItineraryOption(
         extraCheckedBaggagePrice: extraBagPrice(itinerary),
         pricePerPassengerType: countsByType(counts).map(([passengerType]) => ({
           passengerType,
-          price: priceFor(itinerary, multiplierOf(fare, context.prices), passengerType),
+          price: priceFor(itinerary, priceRuleOf(fare, context.prices, context.pricing), passengerType),
         })),
       }),
     ),
@@ -222,13 +245,15 @@ export interface SeatDefinition {
   characteristics: SeatCharacteristic[];
 }
 
-const layoutCache = new Map<AircraftType, SeatDefinition[]>();
+/** Por la ficha del tipo (no por su nombre): el catálogo la reemplaza al cambiar, y el mapa se vuelve a armar (M-2). */
+const layoutCache = new WeakMap<object, SeatDefinition[]>();
 
 /** Asientos de un tipo de avión, en orden de filas y letras (el primero libre es el que se asigna automáticamente). */
 export function seatsOf(aircraftType: AircraftType): SeatDefinition[] {
-  const cached = layoutCache.get(aircraftType);
+  const layouts = AIRCRAFT_LAYOUTS[aircraftType] ?? [];
+  const cached = layoutCache.get(layouts);
   if (cached) return cached;
-  const seats = AIRCRAFT_LAYOUTS[aircraftType].flatMap((cabin) => {
+  const seats = layouts.flatMap((cabin) => {
     const groups = cabin.layout.split('-');
     const windowLetters = new Set([groups[0]![0], groups.at(-1)!.at(-1)]);
     const aisleLetters = new Set(groups.flatMap((group, index) => [...(index > 0 ? [group[0]] : []), ...(index < groups.length - 1 ? [group.at(-1)] : [])]));
@@ -246,7 +271,7 @@ export function seatsOf(aircraftType: AircraftType): SeatDefinition[] {
     }
     return rows;
   });
-  layoutCache.set(aircraftType, seats);
+  layoutCache.set(layouts, seats);
   return seats;
 }
 

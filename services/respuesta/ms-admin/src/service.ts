@@ -44,10 +44,11 @@ const routeSaga =
     return status === 204 ? { status } : { status, body: (outcome.body as Any)['route'] };
   };
 
-/** Precios por clase + el acuerdo de promociones de cada partner que tenga uno. */
+/** Precios por clase, tarifa base y precios por ruta (P-1) + el acuerdo de promociones de cada partner que tenga uno. */
 async function pricesView(context: OperationContext, actorId: string) {
-  const [prices, partners] = await Promise.all([
+  const [prices, pricing, partners] = await Promise.all([
     context.esb({ method: 'GET', path: '/router/schedule/fare-prices', actorId }),
+    context.esb({ method: 'GET', path: '/router/schedule/pricing', actorId }),
     context.esb<{ items: { clientId: string }[] }>({ method: 'GET', path: '/router/identity/partners?limit=100', actorId }),
   ]);
   const agreements = await Promise.all(
@@ -62,7 +63,7 @@ async function pricesView(context: OperationContext, actorId: string) {
       ),
     ),
   );
-  return { prices: prices.body, promotions: agreements.filter((agreement) => agreement !== undefined) };
+  return { prices: prices.body, pricing: pricing.body, promotions: agreements.filter((agreement) => agreement !== undefined) };
 }
 
 /** Un saga del panel que no documenta `202`: su resultado, o `503` para reintentar. */
@@ -96,8 +97,10 @@ export const adminHandlers: Record<string, Handler> = {
   /** Un solo «Guardar»: la saga de precios y, si viene, la del acuerdo (cada una valida y publica en Offers). */
   savePrices: async (context) => {
     const actorId = actorOf(context);
-    const body = context.body as { prices?: unknown; promotion?: { partnerId: string; agreement: unknown } };
+    const body = context.body as { prices?: unknown; pricing?: unknown; promotion?: { partnerId: string; agreement: unknown } };
     if (body.prices) await saga(context, { method: 'PUT', path: '/sagas/fare-prices', json: body.prices, actorId }, actorId);
+    // P-1: tarifa base y/o el precio exacto de los paquetes de una ruta (misma saga "Guardar precios").
+    if (body.pricing) await saga(context, { method: 'PUT', path: '/sagas/pricing', json: body.pricing, actorId }, actorId);
     if (body.promotion) await saga(context, { method: 'PUT', path: `/sagas/promotion-agreements/${encodeURIComponent(body.promotion.partnerId)}`, json: body.promotion.agreement, actorId }, actorId);
     return { status: 200, body: await pricesView(context, actorId) };
   },
@@ -110,7 +113,15 @@ export const adminHandlers: Record<string, Handler> = {
   getRoute: esb('GET', (c) => `/router/schedule/routes/${p(c, 'routeId')}`),
   updateRoute: routeSaga('PUT', (c) => `/sagas/routes/${p(c, 'routeId')}`, 200),
   deleteRoute: routeSaga('DELETE', (c) => `/sagas/routes/${p(c, 'routeId')}`, 204),
+  // M-1: catálogo de aeropuertos (la lista la da la consulta pública de MS.Vuelos).
+  createAirport: esb('POST', () => '/router/schedule/airports', { body: true, status: 201 }),
+  updateAirport: esb('PUT', (c) => `/router/schedule/airports/${p(c, 'code')}`, { body: true }),
+  deleteAirport: esb('DELETE', (c) => `/router/schedule/airports/${p(c, 'code')}`, { status: 204 }),
   listAircraftTypes: esb('GET', () => '/router/schedule/aircraft-types'),
+  // M-2: catálogo de tipos de avión (el nombre va codificado en la ruta).
+  createAircraftType: esb('POST', () => '/router/schedule/aircraft-types', { body: true, status: 201 }),
+  updateAircraftType: esb('PUT', (c) => `/router/schedule/aircraft-types/${p(c, 'aircraftType')}`, { body: true }),
+  deleteAircraftType: esb('DELETE', (c) => `/router/schedule/aircraft-types/${p(c, 'aircraftType')}`, { status: 204 }),
   listAircraft: esb('GET', () => '/router/schedule/aircraft'),
   createAircraft: esb('POST', () => '/router/schedule/aircraft', { body: true, status: 201 }),
   getAircraft: esb('GET', (c) => `/router/schedule/aircraft/${p(c, 'registration')}`),
@@ -128,6 +139,7 @@ export const adminHandlers: Record<string, Handler> = {
 
   // asistencia por vuelo (dato de salud: solo el administrador; nunca en logs)
   listFlightAssistance: esb('GET', (c) => withQuery(`/composition/flights/${p(c, 'flightNumber')}/assistance`, c.query)),
+  getFlightDelayImpact: esb('GET', (c) => withQuery(`/composition/flights/${p(c, 'flightNumber')}/delay-impact`, c.query)),
   markAssistanceReady: async (context) => {
     const actorId = actorOf(context);
     return { status: 200, body: await saga(context, { method: 'PUT', path: `/sagas/bookings/${p(context, 'bookingId')}/assistance-ready`, json: context.body, actorId }, actorId) };
@@ -139,6 +151,13 @@ export const adminHandlers: Record<string, Handler> = {
   // Plataforma de observabilidad (V2.16, D50), por la composición del ESB. Si una pieza no responde: 503 del contrato.
   getLatency: esb('GET', (c) => withQuery('/composition/telemetry/latency', c.query)),
   getCorrelationTrace: esb('GET', (c) => withQuery(`/composition/telemetry/traces/${encodeURIComponent(c.params['correlationId'])}`, c.query)),
+  // T-4: vista «Recorrido» y mapa del sistema en vivo.
+  // El ESB consulta a Tempo con un plazo mayor (8 s): aquí se le espera hasta 12 s, por debajo de los 15 s del gateway.
+  getJourney: async (context) => {
+    const response = await context.esb({ method: 'GET', path: withQuery(`/composition/telemetry/journeys/${encodeURIComponent(context.params['correlationId'])}`, context.query), actorId: actorOf(context), timeoutMs: 12_000 });
+    return { status: response.status, body: response.body };
+  },
+  getSystemMap: esb('GET', () => '/composition/telemetry/system-map'),
   getQueues: esb('GET', () => '/composition/telemetry/queues'),
   getAlerts: esb('GET', () => '/composition/telemetry/alerts'),
   getBookingIntegration: esb('GET', () => '/composition/booking-integration'),

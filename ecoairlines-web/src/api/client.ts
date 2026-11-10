@@ -69,3 +69,71 @@ export async function graphql<T>(query: string, variables: Record<string, unknow
   if (!response.ok || !body?.data) throw new ApiError(response.status || 500, `Error ${response.status}`, undefined, undefined, correlationId);
   return body.data;
 }
+
+// ── Suscripciones por WebSocket (PLAN_Telemetria_Asientos T-5, D-T13) ──
+// Como el resto del acceso al gateway, el WebSocket del GraphQL también se abre solo aquí. Protocolo `graphql-transport-ws`:
+// `connection_init` con el token → `connection_ack` → `subscribe` → `next`… Cliente mínimo propio, sin dependencias.
+const ACK_TIMEOUT_MS = 8_000;
+
+/** `https://…/api/graphql` → `wss://…/api/graphql`. */
+export const wsUrl = (httpUrl: string) => httpUrl.replace(/^http/, 'ws');
+
+interface Handlers<T> {
+  next: (data: T) => void;
+  /** Error de la operación (p. ej. el token venció): la suscripción terminó. */
+  error: (message: string, code?: string) => void;
+  close: () => void;
+}
+
+/** Abre una conexión y una suscripción. Devuelve con qué cerrarla. */
+export function openSubscription<T>(token: string, query: string, variables: Record<string, unknown>, handlers: Handlers<T>, opened: () => void): () => void {
+  let socket: WebSocket;
+  try {
+    socket = new WebSocket(wsUrl(GRAPHQL_URL), 'graphql-transport-ws');
+  } catch {
+    queueMicrotask(handlers.close);
+    return () => undefined;
+  }
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    clearTimeout(ackTimer);
+    handlers.close();
+  };
+  // Si el servidor no confirma la conexión a tiempo (un proxy que no deja pasar WebSocket), se pasa al respaldo.
+  const ackTimer = setTimeout(() => socket.close(), ACK_TIMEOUT_MS);
+  socket.onopen = () => socket.send(JSON.stringify({ type: 'connection_init', payload: { authorization: `Bearer ${token}` } }));
+  socket.onmessage = (event) => {
+    let message: { type: string; id?: string; payload?: unknown };
+    try {
+      message = JSON.parse(String(event.data));
+    } catch {
+      return;
+    }
+    if (message.type === 'connection_ack') {
+      clearTimeout(ackTimer);
+      opened();
+      socket.send(JSON.stringify({ id: '1', type: 'subscribe', payload: { query, variables } }));
+    } else if (message.type === 'ping') {
+      socket.send(JSON.stringify({ type: 'pong' }));
+    } else if (message.type === 'next') {
+      const payload = message.payload as { data?: T; errors?: { message: string; extensions?: { code?: string } }[] };
+      if (payload.errors?.length) handlers.error(payload.errors[0]!.message, payload.errors[0]!.extensions?.code);
+      else if (payload.data) handlers.next(payload.data);
+    } else if (message.type === 'error') {
+      const errors = message.payload as { message: string; extensions?: { code?: string } }[];
+      handlers.error(errors?.[0]?.message ?? 'Error de la suscripción.', errors?.[0]?.extensions?.code);
+    } else if (message.type === 'complete') {
+      socket.close();
+    }
+  };
+  socket.onerror = () => socket.close();
+  socket.onclose = finish;
+  return () => {
+    done = true;
+    clearTimeout(ackTimer);
+    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ id: '1', type: 'complete' }));
+    socket.close();
+  };
+}

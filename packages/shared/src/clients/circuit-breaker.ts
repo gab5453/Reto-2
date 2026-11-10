@@ -24,6 +24,13 @@ export class CircuitBreaker {
     return Date.now() - this.openedAt >= this.openMs ? 'HALF_OPEN' : 'OPEN';
   }
 
+  /** Vuelve a CERRADO (lo usan las pruebas entre casos; en ejecución el circuito se cierra solo con una llamada que responde). */
+  reset(): void {
+    this.failures = 0;
+    this.openedAt = 0;
+    this.probing = false;
+  }
+
   async run<T>(call: () => Promise<T>): Promise<T> {
     const state = this.state;
     if (state === 'OPEN' || (state === 'HALF_OPEN' && this.probing)) {

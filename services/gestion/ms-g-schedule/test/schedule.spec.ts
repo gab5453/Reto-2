@@ -415,3 +415,172 @@ describe('red nacional: capitales de provincia (PLAN_Provincias)', () => {
   });
 });
 
+
+describe('precios: tarifa base y precio exacto por ruta (PLAN_Telemetria_Asientos P-1)', () => {
+  it('★ sin cambios: 35 + 0,085/km; guardar cargo, precio por km y los 4 paquetes de una ruta deja historial; quitarla vuelve a la fórmula', async () => {
+    const start = await esb('get', '/pricing');
+    expect(start.status).toBe(200);
+    expectContract('get', '/pricing', start);
+    expect(start.body).toMatchObject({ fixedCharge: 35, perKm: 0.085, routePrices: [] });
+
+    const routeId = (await esb('get', '/routes')).body[0].routeId as string;
+    const prices = [
+      { fareBrand: 'SEMILLA', amount: 70 },
+      { fareBrand: 'BROTE', amount: 95 },
+      { fareBrand: 'BOSQUE', amount: 125.5 },
+      { fareBrand: 'DOSEL', amount: 220 },
+    ];
+    const saved = await esb('put', '/pricing').send({ fixedCharge: 40, perKm: 0.09, routePrices: [{ routeId, prices }] });
+    expect(saved.status).toBe(200);
+    expectContract('put', '/pricing', saved);
+    expect(saved.body).toMatchObject({ fixedCharge: 40, perKm: 0.09, routePrices: [{ routeId, prices }], updatedBy: ACTOR });
+    // 2 de la tarifa base + 4 paquetes de la ruta.
+    expect(saved.body.history).toHaveLength(6);
+    expect(saved.body.history.find((h: { field: string }) => h.field === 'PER_KM')).toMatchObject({ oldValue: 0.085, newValue: 0.09 });
+
+    // Guardar lo mismo no deja historial nuevo; quitar la ruta deja 4 cambios (a null).
+    expect((await esb('put', '/pricing').send({ fixedCharge: 40, perKm: 0.09, routePrices: [{ routeId, prices }] })).body.history).toHaveLength(6);
+    const removed = await esb('put', '/pricing').send({ fixedCharge: 35, perKm: 0.085, routePrices: [] });
+    expect(removed.body).toMatchObject({ fixedCharge: 35, perKm: 0.085, routePrices: [] });
+    expect(removed.body.history.filter((h: { field: string; newValue: number | null }) => h.field === 'ROUTE_PRICE' && h.newValue === null)).toHaveLength(4);
+  });
+
+  it('validación: los 4 paquetes, ruta existente, rangos y X-Actor-Id', async () => {
+    const routeId = (await esb('get', '/routes')).body[0].routeId as string;
+    const three = [{ fareBrand: 'SEMILLA', amount: 70 }, { fareBrand: 'BROTE', amount: 95 }, { fareBrand: 'BOSQUE', amount: 125 }, { fareBrand: 'BOSQUE', amount: 130 }];
+    expect((await esb('put', '/pricing').send({ fixedCharge: 35, perKm: 0.085, routePrices: [{ routeId, prices: three }] })).status).toBe(400);
+    const four = [{ fareBrand: 'SEMILLA', amount: 70 }, { fareBrand: 'BROTE', amount: 95 }, { fareBrand: 'BOSQUE', amount: 125 }, { fareBrand: 'DOSEL', amount: 220 }];
+    expect((await esb('put', '/pricing').send({ fixedCharge: 35, perKm: 0.085, routePrices: [{ routeId: 'EA990-EA991', prices: four }] })).status).toBe(404);
+    expect((await esb('put', '/pricing').send({ fixedCharge: -1, perKm: 0.085, routePrices: [] })).status).toBe(400);
+    expect((await esb('put', '/pricing').send({ fixedCharge: 35, perKm: 0, routePrices: [] })).status).toBe(400);
+    expect((await esb('put', '/pricing', null).send({ fixedCharge: 35, perKm: 0.085, routePrices: [] })).status).toBe(400);
+  });
+});
+
+describe('catálogo de aeropuertos (PLAN_Telemetria_Asientos M-1)', () => {
+  const airport = { city: 'Jipijapa', name: 'Aeródromo de Jipijapa (prueba)', country: 'EC', province: 'Manabí', lat: -1.3486, lon: -80.5786, utcOffsetMinutes: -300 };
+
+  it('★ nace con los 34 de siempre, iguales a la constante', async () => {
+    const response = await esb('get', '/airports');
+    expectContract('get', '/airports', response);
+    expect(response.body).toHaveLength(34);
+    expect(response.body.find((item: { code: string }) => item.code === 'UIO')).toMatchObject({ city: 'Quito', country: 'EC', province: 'Pichincha', utcOffsetMinutes: -300, active: true });
+    expectContract('get', '/airports/{code}', await esb('get', '/airports/SCY'));
+    expect((await esb('get', '/airports/ZZZ')).status).toBe(404);
+  });
+
+  it('★ crear uno nuevo, hacerle una ruta desde Quito; en uso no cambia su geografía ni se borra; desactivado no admite rutas nuevas', async () => {
+    const created = await esb('post', '/airports').send({ code: 'JPJ', ...airport });
+    expect(created.status).toBe(201);
+    expectContract('post', '/airports', created);
+    expect(created.headers['location']).toBe('/airports/JPJ');
+    const duplicated = await esb('post', '/airports').send({ code: 'JPJ', ...airport });
+    expect([duplicated.status, duplicated.body.code]).toEqual([409, 'AIRPORT_ALREADY_EXISTS']);
+
+    const route = await esb('post', '/routes').send(routeBody({ destination: 'JPJ', outboundDepartureLocal: '13:05', inboundDepartureLocal: '15:00' }));
+    expect(route.status).toBe(201);
+    expect(route.body.distanceKm).toBeGreaterThan(200);
+
+    const moved = await esb('put', '/airports/JPJ').send({ ...airport, lat: -1.2 });
+    expect([moved.status, moved.body.code]).toEqual([409, 'AIRPORT_IN_USE']);
+    expectContract('put', '/airports/{code}', moved);
+    expect(moved.body.detail).toContain(route.body.routeId);
+    const renamed = await esb('put', '/airports/JPJ').send({ ...airport, name: 'Aeródromo Jipijapa' });
+    expect([renamed.status, renamed.body.name]).toEqual([200, 'Aeródromo Jipijapa']);
+    const inUse = await esb('delete', '/airports/JPJ');
+    expect([inUse.status, inUse.body.code]).toEqual([409, 'AIRPORT_IN_USE']);
+
+    expect((await esb('put', '/airports/JPJ').send({ ...airport, active: false })).body.active).toBe(false);
+    const inactive = await esb('post', '/routes').send(routeBody({ destination: 'JPJ', outboundDepartureLocal: '17:05', inboundDepartureLocal: '19:00' }));
+    expect([inactive.status, inactive.body.code]).toEqual([422, 'AIRPORT_INACTIVE']);
+    // La ruta existente sigue en el horario.
+    const timetable = await esb('get', `/timetable?from=${today}&to=${addDays(today, 6)}&routeId=${route.body.routeId}`);
+    expect(timetable.body.flights.length).toBeGreaterThan(0);
+
+    // Sin rutas ni aviones se borra, y ya no se puede usar.
+    expect((await esb('delete', `/routes/${route.body.routeId}?soldSeats=0`)).status).toBe(204);
+    for (const plane of (await esb('get', '/aircraft')).body.filter((item: { base: string }) => item.base === 'JPJ')) await esb('delete', `/aircraft/${plane.registration}`);
+    expect((await esb('delete', '/airports/JPJ')).status).toBe(204);
+    expect((await esb('get', '/airports')).body).toHaveLength(34);
+    const gone = await esb('post', '/routes').send(routeBody({ destination: 'JPJ', outboundDepartureLocal: '17:05', inboundDepartureLocal: '19:00' }));
+    expect([gone.status, gone.body.code]).toEqual([422, 'UNKNOWN_AIRPORT']);
+  });
+
+  it('validaciones: código de 3 letras, país de 2, huso en múltiplos de 15', async () => {
+    expect((await esb('post', '/airports').send({ code: 'jp1', ...airport })).status).toBe(400);
+    expect((await esb('post', '/airports').send({ code: 'JPK', ...airport, country: 'Ecuador' })).status).toBe(400);
+    const offset = await esb('post', '/airports').send({ code: 'JPK', ...airport, utcOffsetMinutes: -301 });
+    expect(offset.status).toBe(400);
+    expectContract('post', '/airports', offset);
+    expect((await esb('put', '/airports/ZZZ').send(airport)).status).toBe(404);
+  });
+});
+
+describe('catálogo de tipos de avión (PLAN_Telemetria_Asientos M-2)', () => {
+  const embraer = { aircraftType: 'Embraer E195-E2', registrationPrefix: 'HC-E', maxRouteKm: 1_000, turnaroundMinutes: 30, business: { seats: 12, configuration: '2-2' }, economy: { seats: 112, configuration: '2-4-2' } };
+  const typeUrl = (name: string) => `/aircraft-types/${encodeURIComponent(name)}`;
+  const { aircraftType: _name, ...embraerInput } = embraer;
+
+  it('★ nace con los 3 de siempre, con la misma distribución de asientos', async () => {
+    const response = await esb('get', '/aircraft-types');
+    expectContract('get', '/aircraft-types', response);
+    expect(response.body.map((type: { aircraftType: string }) => type.aircraftType)).toEqual(['Airbus A220-300', 'Airbus A320neo', 'Boeing 787-9']);
+    const a320 = response.body.find((type: { aircraftType: string }) => type.aircraftType === 'Airbus A320neo');
+    expect(a320).toMatchObject({ registrationPrefix: 'HC-N', totalSeats: 174, maxRouteKm: 4_500, turnaroundMinutes: 45, source: 'NETWORK' });
+    expect(a320.cabins).toEqual([
+      { cabinClass: 'BUSINESS', seats: 12, configuration: '2-2', layout: 'AC-DF', firstRow: 1, lastRow: 3, exitRows: [], extraLegroomRows: [] },
+      { cabinClass: 'ECONOMY', seats: 162, configuration: '3-3', layout: 'ABC-DEF', firstRow: 4, lastRow: 30, exitRows: [12, 13], extraLegroomRows: [4, 12, 13] },
+    ]);
+  });
+
+  it('★ crear uno nuevo: filas = asientos ÷ asientos por fila; con su menor alcance lo elige una ruta corta y le agrega aviones HC-E', async () => {
+    const created = await esb('post', '/aircraft-types').send(embraer);
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expectContract('post', '/aircraft-types', created);
+    expect(created.body).toMatchObject({ aircraftType: 'Embraer E195-E2', totalSeats: 124, inFleet: 0, source: 'ADMIN' });
+    expect(created.body.cabins).toEqual([
+      { cabinClass: 'BUSINESS', seats: 12, configuration: '2-2', layout: 'AC-DF', firstRow: 1, lastRow: 3, exitRows: [], extraLegroomRows: [] },
+      { cabinClass: 'ECONOMY', seats: 112, configuration: '2-4-2', layout: 'AC-DEFG-HK', firstRow: 4, lastRow: 17, exitRows: [11], extraLegroomRows: [4, 11] },
+    ]);
+    expect((await esb('post', '/aircraft-types').send(embraer)).body.code).toBe('AIRCRAFT_TYPE_ALREADY_EXISTS');
+    expect((await esb('post', '/aircraft-types').send({ ...embraer, aircraftType: 'Otro modelo', registrationPrefix: 'HC-N' })).body.code).toBe('AIRCRAFT_TYPE_ALREADY_EXISTS');
+
+    // Quito → Guayaquil (~270 km): el de menor alcance que la cubre es ahora el Embraer (1 000 km).
+    const route = await esb('post', '/routes').send(routeBody({ outboundDepartureLocal: '14:10', inboundDepartureLocal: '16:20' }));
+    expect(route.status).toBe(201);
+    expect(route.body.aircraftType).toBe('Embraer E195-E2');
+    expect(route.body.aircraft[0]).toMatch(/^HC-E\d{2}$/);
+    const flights = await esb('get', `/timetable?from=${today}&to=${addDays(today, 6)}&routeId=${route.body.routeId}`);
+    expectContract('get', '/timetable', flights);
+    expect(flights.body.flights[0]).toMatchObject({ aircraftType: 'Embraer E195-E2', turnaroundMinutes: 30 });
+
+    // D-T7: con aviones no cambia ni se borra.
+    const changed = await esb('put', typeUrl('Embraer E195-E2')).send({ ...embraerInput, turnaroundMinutes: 40 });
+    expect([changed.status, changed.body.code]).toEqual([409, 'AIRCRAFT_TYPE_IN_USE']);
+    expectContract('put', '/aircraft-types/{aircraftType}', changed);
+    expect((await esb('delete', typeUrl('Embraer E195-E2'))).body.code).toBe('AIRCRAFT_TYPE_IN_USE');
+
+    // Sin rutas ni aviones se edita y se borra; Quito → Guayaquil vuelve a elegir el A220.
+    expect((await esb('delete', `/routes/${route.body.routeId}?soldSeats=0`)).status).toBe(204);
+    for (const registration of route.body.aircraft) expect((await esb('delete', `/aircraft/${registration}`)).status).toBe(204);
+    const edited = await esb('put', typeUrl('Embraer E195-E2')).send({ ...embraerInput, turnaroundMinutes: 40 });
+    expect([edited.status, edited.body.turnaroundMinutes]).toEqual([200, 40]);
+    expect((await esb('delete', typeUrl('Embraer E195-E2'))).status).toBe(204);
+    expect((await esb('get', '/aircraft-types')).body).toHaveLength(3);
+    const again = await esb('post', '/routes').send(routeBody({ outboundDepartureLocal: '14:10', inboundDepartureLocal: '16:20' }));
+    expect(again.body.aircraftType).toBe('Airbus A220-300');
+    await esb('delete', `/routes/${again.body.routeId}?soldSeats=0`);
+  });
+
+  it('validaciones: filas completas, configuración conocida, prefijo HC- + letra; un avión de un tipo desconocido → 422', async () => {
+    const uneven = await esb('post', '/aircraft-types').send({ ...embraer, aircraftType: 'Raro 1', registrationPrefix: 'HC-R', economy: { seats: 100, configuration: '3-3' } });
+    expect(uneven.status, JSON.stringify(uneven.body)).toBe(400);
+    expectContract('post', '/aircraft-types', uneven);
+    expect(uneven.body.invalidParams).toEqual([{ name: 'economy.seats', reason: 'múltiplo de 6 (asientos por fila en 3-3)' }]);
+    expect((await esb('post', '/aircraft-types').send({ ...embraer, aircraftType: 'Raro 2', registrationPrefix: 'HC-R', business: { seats: 12, configuration: '4-4' } })).status).toBe(400);
+    expect((await esb('post', '/aircraft-types').send({ ...embraer, aircraftType: 'Raro 3', registrationPrefix: 'HC-RR' })).status).toBe(400);
+    expect((await esb('post', '/aircraft-types').send({ ...embraer, aircraftType: 'Raro 4', registrationPrefix: 'HC-R', economy: undefined })).status).toBe(400);
+    const unknown = await esb('post', '/aircraft').send({ aircraftType: 'Concorde', base: 'UIO' });
+    expect([unknown.status, unknown.body.code]).toEqual([422, 'UNKNOWN_AIRCRAFT_TYPE']);
+  });
+});

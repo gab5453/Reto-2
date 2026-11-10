@@ -5,6 +5,7 @@ import {
   ArrayUnique,
   IsArray,
   IsBoolean,
+  IsDefined,
   IsIn,
   IsInt,
   IsNumber,
@@ -16,7 +17,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
-import { AIRCRAFT_TYPES, type AircraftType } from '@ecoairlines/shared';
+import type { AircraftType } from '@ecoairlines/shared';
 import { type CabinClass, type FareBrand, WEEKDAY_CODES, type WeekdayCode } from '../domain/model.js';
 
 /**
@@ -49,7 +50,7 @@ export class ScheduledRouteRequestDto {
   @IsArray() @ArrayMinSize(1) @ArrayMaxSize(7) @ArrayUnique() @IsIn([...WEEKDAY_CODES], { each: true })
   weekdays!: WeekdayCode[];
 
-  @IsOptional() @IsIn([...AIRCRAFT_TYPES])
+  @IsOptional() @IsString() @MaxLength(60)
   aircraftType?: AircraftType;
 
   @IsOptional() @IsArray() @ArrayMinSize(1) @ArrayMaxSize(7) @ArrayUnique() @Matches(REGISTRATION, { each: true })
@@ -75,7 +76,7 @@ export class SoldSeatsQuery {
 }
 
 export class AircraftRequestDto {
-  @IsIn([...AIRCRAFT_TYPES])
+  @IsString() @MaxLength(60)
   aircraftType!: AircraftType;
 
   @Matches(IATA)
@@ -114,6 +115,34 @@ export class FarePriceItemDto {
 
   @IsNumber({ allowNaN: false, allowInfinity: false })
   multiplier!: number;
+}
+
+class RoutePriceItemDto {
+  @IsIn(BRANDS)
+  fareBrand!: FareBrand;
+
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(1) @Max(20_000)
+  amount!: number;
+}
+
+class RoutePricesDto {
+  @IsString() @Matches(/^EA\d{3,4}-EA\d{3,4}$/)
+  routeId!: string;
+
+  @IsArray() @ArrayMinSize(4) @ArrayMaxSize(4) @ValidateNested({ each: true }) @Type(() => RoutePriceItemDto)
+  prices!: RoutePriceItemDto[];
+}
+
+/** P-1: estado completo de la tarifa base (cargo fijo y precio por km) y de los precios exactos por ruta. */
+export class SavePricingDto {
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(500)
+  fixedCharge!: number;
+
+  @IsNumber({ maxDecimalPlaces: 4 }) @Min(0.001) @Max(5)
+  perKm!: number;
+
+  @IsArray() @ArrayMaxSize(500) @ValidateNested({ each: true }) @Type(() => RoutePricesDto)
+  routePrices!: RoutePricesDto[];
 }
 
 export class SaveFarePricesDto {
@@ -156,3 +185,74 @@ export class PromotionAgreementDto {
     return !dto.vigencia_hasta || isCalendarDate(dto.vigencia_hasta);
   }
 }
+
+const COUNTRY = /^[A-Z]{2}$/;
+
+/** M-1: un aeropuerto del catálogo (el código va solo al crearlo y no se edita). */
+export class AirportRequestDto {
+  @IsString() @MaxLength(80) @Matches(/\S/)
+  city!: string;
+
+  @IsString() @MaxLength(120) @Matches(/\S/)
+  name!: string;
+
+  /** ISO 3166-1 alfa-2 (EC, CO, US…). */
+  @Matches(COUNTRY)
+  country!: string;
+
+  @IsOptional() @IsString() @MaxLength(80)
+  province?: string | null;
+
+  @IsNumber({ maxDecimalPlaces: 6 }) @Min(-90) @Max(90)
+  lat!: number;
+
+  @IsNumber({ maxDecimalPlaces: 6 }) @Min(-180) @Max(180)
+  lon!: number;
+
+  /** Desfase fijo respecto de UTC, en minutos (−300 es UTC−5), múltiplo de 15. */
+  @IsInt() @Min(-720) @Max(840)
+  utcOffsetMinutes!: number;
+
+  @IsOptional() @IsBoolean()
+  active?: boolean;
+}
+
+export class CreateAirportRequestDto extends AirportRequestDto {
+  @Matches(IATA)
+  code!: string;
+}
+
+class CabinSeatsDto {
+  @IsInt() @Min(1) @Max(600)
+  seats!: number;
+
+  @IsString() @MaxLength(10)
+  configuration!: string;
+}
+
+/** M-2: un tipo de avión (el nombre va solo al crearlo y no se edita). */
+export class AircraftTypeRequestDto {
+  /** `HC-` + una letra. */
+  @Matches(/^HC-[A-Z]$/)
+  registrationPrefix!: string;
+
+  /** Sin límite: `null`. */
+  @IsOptional() @IsInt() @Min(100) @Max(20_000)
+  maxRouteKm!: number | null;
+
+  @IsInt() @Min(15) @Max(300)
+  turnaroundMinutes!: number;
+
+  @IsDefined() @ValidateNested() @Type(() => CabinSeatsDto)
+  business!: CabinSeatsDto;
+
+  @IsDefined() @ValidateNested() @Type(() => CabinSeatsDto)
+  economy!: CabinSeatsDto;
+}
+
+export class CreateAircraftTypeRequestDto extends AircraftTypeRequestDto {
+  @IsString() @MaxLength(60) @Matches(/^[A-Za-z0-9][A-Za-z0-9 .-]{2,59}$/)
+  aircraftType!: string;
+}
+
+

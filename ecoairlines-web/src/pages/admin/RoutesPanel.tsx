@@ -6,7 +6,9 @@ import {
   listRoutes,
   updateRoute,
   type Aircraft,
+  type AircraftTypeInfo,
   type AircraftTypeName,
+  listAircraftTypes,
   type ScheduledRoute,
   type ScheduledRouteRequest,
   type WeekdayCode,
@@ -25,11 +27,15 @@ const WEEKDAYS: [WeekdayCode, string][] = [
   ['SAT', 'Sáb'],
   ['SUN', 'Dom'],
 ];
-const AIRCRAFT: AircraftTypeName[] = ['Airbus A220-300', 'Airbus A320neo', 'Boeing 787-9'];
-
-/** Tipo que la API asigna por distancia (mismos límites que `GET /admin/aircraft-types`: 1 500 y 4 500 km). */
-function autoType(origin: string, destination: string): AircraftTypeName {
+/**
+ * Tipo que la API asigna por distancia: el de menor alcance que cubre la ruta, entre los del catálogo (M-2). Sin el catálogo
+ * cargado, los límites de siempre (1 500 y 4 500 km).
+ */
+function autoType(origin: string, destination: string, types: AircraftTypeInfo[]): AircraftTypeName {
   const distance = distanceKm(origin, destination);
+  const reach = (type: AircraftTypeInfo) => type.maxRouteKm ?? Number.POSITIVE_INFINITY;
+  const chosen = [...types].sort((a, b) => reach(a) - reach(b) || a.aircraftType.localeCompare(b.aircraftType)).find((type) => distance < reach(type));
+  if (chosen) return chosen.aircraftType;
   if (distance < 1_500) return 'Airbus A220-300';
   if (distance < 4_500) return 'Airbus A320neo';
   return 'Boeing 787-9';
@@ -82,6 +88,8 @@ export function RoutesPanel({ onChanged }: { onChanged?: () => void }) {
   const [form, setForm] = useState<ScheduledRouteRequest>(EMPTY_FORM);
   /** Aviones con base en el origen elegido, para asignarlos a la ruta. */
   const [fleet, setFleet] = useState<Aircraft[]>([]);
+  /** Catálogo de tipos de avión (M-2). */
+  const [types, setTypes] = useState<AircraftTypeInfo[]>([]);
   /** Aviones que ya tenía la ruta en edición. */
   const [currentAircraft, setCurrentAircraft] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -107,6 +115,17 @@ export function RoutesPanel({ onChanged }: { onChanged?: () => void }) {
       active = false;
     };
   }, [token, airport]);
+
+  useEffect(() => {
+    if (!token) return;
+    let active = true;
+    listAircraftTypes(token)
+      .then((data) => active && setTypes(data))
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [token]);
 
   useEffect(() => {
     if (!token || !editing) return;
@@ -152,7 +171,7 @@ export function RoutesPanel({ onChanged }: { onChanged?: () => void }) {
       return { ...current, aircraft: next.length ? next : undefined };
     });
 
-  const effectiveType = form.aircraftType ?? autoType(form.origin, form.destination);
+  const effectiveType = form.aircraftType ?? autoType(form.origin, form.destination, types);
   const candidates = fleet.filter((plane) => plane.aircraftType === effectiveType && plane.base === form.origin);
 
   const toggleDay = (code: WeekdayCode) =>
@@ -234,13 +253,13 @@ export function RoutesPanel({ onChanged }: { onChanged?: () => void }) {
             <label className="field">
               Origen (base de los aviones)
               <select value={form.origin} onChange={(event) => changeRoute({ origin: event.target.value })}>
-                <AirportOptions />
+                <AirportOptions keep={form.origin} />
               </select>
             </label>
             <label className="field">
               Destino
               <select value={form.destination} onChange={(event) => changeRoute({ destination: event.target.value })}>
-                <AirportOptions />
+                <AirportOptions keep={form.destination} />
               </select>
             </label>
             <label className="field">
@@ -257,8 +276,8 @@ export function RoutesPanel({ onChanged }: { onChanged?: () => void }) {
                 value={form.aircraftType ?? ''}
                 onChange={(event) => changeRoute({ aircraftType: (event.target.value || undefined) as AircraftTypeName | undefined })}
               >
-                <option value="">Automático según la distancia ({autoType(form.origin, form.destination)})</option>
-                {AIRCRAFT.map((type) => (
+                <option value="">Automático según la distancia ({autoType(form.origin, form.destination, types)})</option>
+                {[...new Set([...types.map((info) => info.aircraftType), ...(form.aircraftType ? [form.aircraftType] : [])])].map((type) => (
                   <option key={type} value={type}>{type}</option>
                 ))}
               </select>

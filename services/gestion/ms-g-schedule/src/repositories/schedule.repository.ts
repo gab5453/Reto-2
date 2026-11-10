@@ -1,6 +1,12 @@
 import type {
+  AircraftTypeChanges,
+  AircraftTypeRecord,
+  AirportChanges,
+  AirportRecord,
   FarePriceRecord,
   PriceChangeRecord,
+  PricingChangeRecord,
+  PricingSettings,
   PromotionAgreementRecord,
   ScheduleChanges,
   ScheduleState,
@@ -20,6 +26,10 @@ export interface Page<T> {
 /** Decide los cambios a partir del estado leído. Es síncrona: entre leer y escribir no hay `await`. */
 export type ScheduleWork<T> = (state: ScheduleState) => { changes: ScheduleChanges; result: T };
 export type PriceWork = (current: FarePriceRecord[]) => { updated: FarePriceRecord[]; history: PriceChangeRecord[] };
+/** Decide los cambios de aeropuertos con el catálogo y las rutas y la flota leídos (para saber si uno está en uso). */
+export type AirportWork<T> = (airports: AirportRecord[], state: ScheduleState) => { changes: AirportChanges; result: T };
+export type AircraftTypeWork<T> = (types: AircraftTypeRecord[], state: ScheduleState) => { changes: AircraftTypeChanges; result: T };
+export type PricingWork = (current: PricingSettings) => { next: PricingSettings; history: PricingChangeRecord[] };
 
 export interface ScheduleRepository {
   readonly kind: 'memory' | 'postgres';
@@ -45,6 +55,26 @@ export interface ScheduleRepository {
   changePrices(work: PriceWork): Promise<FarePriceRecord[]>;
   /** Del más reciente al más antiguo. */
   listPriceChanges(limit: number, offset: number): Promise<Page<PriceChangeRecord>>;
+
+  /** Tarifa base y precios por ruta (P-1); los valores por defecto si nunca se guardaron. */
+  getPricing(): Promise<PricingSettings>;
+  /** Igual que changePrices: leer, decidir y guardar con su historial, uno tras otro. */
+  changePricing(work: PricingWork): Promise<PricingSettings>;
+  listPricingChanges(limit: number): Promise<PricingChangeRecord[]>;
+
+  /** Catálogo de aeropuertos (M-1), ordenado por código. */
+  listAirports(): Promise<AirportRecord[]>;
+  /** Siembra el catálogo solo si está vacío (así un aeropuerto borrado no vuelve). Devuelve `true` si sembró. */
+  seedAirports(airports: AirportRecord[]): Promise<boolean>;
+  /** Con el mismo candado que rutas y flota: una ruta nueva no usa un aeropuerto que se está borrando. */
+  changeAirports<T>(work: AirportWork<T>): Promise<T>;
+
+  /** Catálogo de tipos de avión (M-2), por nombre. */
+  listAircraftTypes(): Promise<AircraftTypeRecord[]>;
+  /** Solo si está vacío (un tipo borrado no vuelve). */
+  seedAircraftTypes(types: AircraftTypeRecord[]): Promise<boolean>;
+  /** Con el candado de rutas y flota: un avión nuevo no usa un tipo que se está borrando. */
+  changeAircraftTypes<T>(work: AircraftTypeWork<T>): Promise<T>;
 
   getAgreement(partnerId: string): Promise<PromotionAgreementRecord | undefined>;
   saveAgreement(agreement: PromotionAgreementRecord): Promise<void>;

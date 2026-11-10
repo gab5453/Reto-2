@@ -16,12 +16,15 @@ export interface Airport {
   lat: number;
   lon: number;
   utcOffsetMinutes: number;
+  /** `false`: desactivado por el administrador (M-1): no se ofrece para rutas nuevas; las que ya tiene siguen. */
+  active?: boolean;
 }
 
 /** Los 10 aeropuertos con los que nació la red: la red «todos con todos» de las pruebas del motor de horarios usa solo estos. */
 export const BASE_NETWORK_AIRPORTS = ['UIO', 'GYE', 'CUE', 'BOG', 'MDE', 'LIM', 'SCL', 'MIA', 'MEX', 'MAD'] as const;
 
-export const AIRPORTS: Readonly<Record<string, Airport>> = {
+/** Los 34 aeropuertos con los que nace el catálogo (semilla de la tabla `airports` de MS.G.Schedule, M-1). */
+export const SEED_AIRPORTS: Readonly<Record<string, Airport>> = {
   UIO: { code: 'UIO', city: 'Quito', name: 'Aeropuerto Internacional Mariscal Sucre', country: 'EC', province: 'Pichincha', lat: -0.1292, lon: -78.3575, utcOffsetMinutes: -300 },
   GYE: { code: 'GYE', city: 'Guayaquil', name: 'Aeropuerto Internacional José Joaquín de Olmedo', country: 'EC', province: 'Guayas', lat: -2.1574, lon: -79.8836, utcOffsetMinutes: -300 },
   CUE: { code: 'CUE', city: 'Cuenca', name: 'Aeropuerto Mariscal Lamar', country: 'EC', province: 'Azuay', lat: -2.8895, lon: -78.9844, utcOffsetMinutes: -300 },
@@ -57,6 +60,25 @@ export const AIRPORTS: Readonly<Record<string, Airport>> = {
   MEX: { code: 'MEX', city: 'Ciudad de México', name: 'Aeropuerto Internacional Benito Juárez', country: 'MX', lat: 19.4361, lon: -99.0719, utcOffsetMinutes: -360 },
   MAD: { code: 'MAD', city: 'Madrid', name: 'Aeropuerto Adolfo Suárez Madrid-Barajas', country: 'ES', lat: 40.4983, lon: -3.5676, utcOffsetMinutes: 60 },
 };
+
+const catalog: Record<string, Airport> = Object.fromEntries(Object.entries(SEED_AIRPORTS).map(([code, airport]) => [code, { ...airport }]));
+
+/**
+ * Catálogo de aeropuertos de ESTE proceso (M-1). Su dueño es MS.G.Schedule (tabla `airports`, editable desde el panel); cada
+ * proceso arranca con la semilla y lo actualiza con lo que le llega: Schedule de su base, el ESB de Schedule (con caché) y Offers
+ * de la publicación del horario. Se lee como siempre (`AIRPORTS[code]`).
+ */
+export const AIRPORTS: Readonly<Record<string, Airport>> = catalog;
+
+/** Agrega o reemplaza aeropuertos del catálogo de este proceso. */
+export function registerAirports(airports: readonly Airport[]): void {
+  for (const airport of airports) catalog[airport.code] = { ...airport };
+}
+
+/** Quita un aeropuerto del catálogo de este proceso (lo borró el administrador). */
+export function removeAirport(code: string): void {
+  delete catalog[code];
+}
 
 /** Distancia ortodrómica (haversine) en kilómetros. */
 export function distanceKm(from: Airport, to: Airport): number {

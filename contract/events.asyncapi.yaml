@@ -1025,6 +1025,9 @@ components:
           type: string
         registration:
           type: string
+        turnaroundMinutes:
+          type: integer
+          description: Tiempo mínimo en tierra del tipo (M-2); FlightStatus lo usa para los retrasos
     DeferredTask:
       type: object
       required:

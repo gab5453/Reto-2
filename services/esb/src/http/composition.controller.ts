@@ -46,6 +46,11 @@ export class CompositionController {
     return this.composition.indicators(caller, { ...(from ? { from } : {}), ...(to ? { to } : {}) });
   }
 
+  @Get('flights/:flightNumber/delay-impact')
+  delayImpact(@Param('flightNumber') flightNumber: string, @Query('date') date: string | undefined, @Query('delayMinutes') delayMinutes: string | undefined, @CallerContext() caller: Caller) {
+    return this.composition.delayImpact(flightNumber, date, delayMinutes, caller);
+  }
+
   @Get('flights/:flightNumber/assistance')
   flightAssistance(@Param('flightNumber') flightNumber: string, @Query('date') date: string | undefined, @CallerContext() caller: Caller) {
     return this.composition.flightAssistance(flightNumber, date, caller);
@@ -80,6 +85,24 @@ export class CompositionController {
       if (value !== undefined && Number.isNaN(Date.parse(value))) throw new ProblemDetailsException({ status: 400, code: 'VALIDATION_FAILED', title: 'La petición no es válida.', invalidParams: [{ name, reason: 'fecha y hora RFC 3339' }] });
     }
     return this.composition.correlationTrace(correlationId, caller, { ...(from ? { from } : {}), ...(to ? { to } : {}) });
+  }
+
+  /** Vista «Recorrido» (T-4): los saltos de un proceso de servicio en servicio, desde Tempo (solo ADMIN). */
+  @Get('telemetry/journeys/:correlationId')
+  journey(@Param('correlationId') correlationId: string, @Query('from') from: string | undefined, @Query('to') to: string | undefined, @CallerContext() caller: Caller) {
+    requireActor(caller);
+    if (!isValidId(correlationId)) throw new ProblemDetailsException({ status: 400, code: 'VALIDATION_FAILED', title: 'La petición no es válida.', invalidParams: [{ name: 'correlationId', reason: 'hasta 100 caracteres visibles' }] });
+    for (const [name, value] of [['from', from], ['to', to]] as const) {
+      if (value !== undefined && Number.isNaN(Date.parse(value))) throw new ProblemDetailsException({ status: 400, code: 'VALIDATION_FAILED', title: 'La petición no es válida.', invalidParams: [{ name, reason: 'fecha y hora RFC 3339' }] });
+    }
+    return this.composition.journey(correlationId, caller, { ...(from ? { from } : {}), ...(to ? { to } : {}) });
+  }
+
+  /** Mapa del sistema en vivo (T-4, solo ADMIN). */
+  @Get('telemetry/system-map')
+  systemMap(@CallerContext() caller: Caller) {
+    requireActor(caller);
+    return this.composition.systemMap();
   }
 
   /** Panel O-2: sagas y eventos de una reserva (solo ADMIN). */

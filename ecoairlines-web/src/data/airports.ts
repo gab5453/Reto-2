@@ -1,7 +1,10 @@
+import { useSyncExternalStore } from 'react';
+import { graphql } from '../api/client';
+
 /**
- * Aeropuertos que opera la red (los mismos del GDS simulado de la API). El contrato no expone un
- * catálogo de aeropuertos, así que el frontend mantiene esta lista para los selectores y para
- * estimar distancias (CO₂). Si la red cambia, esta lista debe actualizarse.
+ * Aeropuertos de la red. Desde M-1 (PLAN_Telemetria_Asientos) el catálogo lo administra el panel («Aeropuertos») y la web lo
+ * pide al arrancar (`airports`, consulta pública del GraphQL); esta lista es la de respaldo si la API no responde. Se usa en
+ * los selectores y para estimar distancias (CO₂).
  */
 export interface AirportInfo {
   code: string;
@@ -11,6 +14,8 @@ export interface AirportInfo {
   province?: string;
   lat: number;
   lon: number;
+  /** `false`: desactivado por el administrador; no se ofrece en los selectores. */
+  active?: boolean;
 }
 
 export const AIRPORTS: AirportInfo[] = [
@@ -53,3 +58,50 @@ export const AIRPORTS: AirportInfo[] = [
 export const airportByCode = (code: string): AirportInfo | undefined => AIRPORTS.find((airport) => airport.code === code);
 
 export const cityOf = (code: string): string => airportByCode(code)?.city ?? code;
+
+// ── Catálogo vivo (M-1) ──
+
+const countryName = (() => {
+  try {
+    const names = new Intl.DisplayNames(['es'], { type: 'region' });
+    return (code: string) => names.of(code) ?? code;
+  } catch {
+    return (code: string) => code;
+  }
+})();
+
+let version = 0;
+const listeners = new Set<() => void>();
+const subscribe = (listener: () => void) => {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+};
+
+/** Reemplaza la lista por la de la API. El país llega como código ISO (EC) y se muestra con su nombre (Ecuador). */
+export async function loadAirports(): Promise<void> {
+  const data = await graphql<{ airports: { code: string; city: string; country: string; province: string | null; lat: number; lon: number; active: boolean }[] }>(
+    'query Aeropuertos { airports { code city country province lat lon active } }',
+  );
+  if (!data.airports.length) return;
+  AIRPORTS.splice(
+    0,
+    AIRPORTS.length,
+    ...data.airports.map((airport) => ({
+      code: airport.code,
+      city: airport.city,
+      country: countryName(airport.country),
+      ...(airport.province ? { province: airport.province } : {}),
+      lat: airport.lat,
+      lon: airport.lon,
+      active: airport.active,
+    })),
+  );
+  version++;
+  // Marca que el catálogo ya es el de la API (no el de respaldo); la usan los recorridos de prueba.
+  document.documentElement.dataset['airports'] = 'api';
+  for (const listener of listeners) listener();
+}
+
+/** Para los componentes que listan aeropuertos: se vuelven a pintar cuando llega o cambia el catálogo. */
+export const useAirportsVersion = () => useSyncExternalStore(subscribe, () => version);
+

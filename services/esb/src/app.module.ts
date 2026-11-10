@@ -1,4 +1,5 @@
 import { type DynamicModule, Inject, Injectable, Logger, Module, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
+import { AirportCatalogSync } from './clients/airport-catalog.js';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ACCEPTED_SERVICE_SCOPES, configureService, EcoServiceModule, ESB_CALLER_SCOPE, type HealthCheck, INTERNAL_SCOPE, JwksTokenVerifier, ServiceTokenGuard, TOKEN_VERIFIER, type TokenVerifier } from '@ecoairlines/shared';
 import { EventBus } from '@ecoairlines/shared/bus/amqp.js';
@@ -55,8 +56,12 @@ export class EsbLifecycle implements OnModuleInit, OnModuleDestroy {
     @Inject(SagasService) private readonly _sagas: SagasService,
   ) {}
 
+  private airports?: AirportCatalogSync;
+
   async onModuleInit(): Promise<void> {
     await this.store.init();
+    this.airports = new AirportCatalogSync(this.upstreams.rest.schedule, this.config.airportSyncMs);
+    this.airports.start();
     if (this.config.busUrl) {
       const bus = await EventBus.connect(this.config.busUrl);
       this.buses.internal = bus;
@@ -89,6 +94,7 @@ export class EsbLifecycle implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
+    this.airports?.stop();
     this.buses.relay?.stop();
     await this.buses.booking?.close();
     await this.buses.internal?.close();

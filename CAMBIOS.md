@@ -2690,3 +2690,352 @@ UTC−6); la prueba de la red «todos con todos» ahora se arma con los 10 origi
 typecheck y lint limpios. **Recorrido en Edge `recorrido_p1` contra la nube: todo OK** (buscador agrupado con 27 + 7 ciudades;
 «Guaranda (GDA) · Bolívar»; búsquedas Quito → Galápagos y Quito → Guaranda con vuelo directo; panel con las 24 rutas, Quito ⇄
 Zamora diaria y del mismo día). `recorrido_c1` sigue todo OK.
+
+### PLAN_Telemetria_Asientos · T-1 — Asiento tomado: SEAT_TAKEN antes de cobrar (pedido de Booking) — ✅ HECHA (09/11), pendiente de auditoría
+
+Pedido de Booking: (a) en `POST /vuelos/bookings`, si un asiento de `assignedSeats` ya está tomado, `409`
+`application/problem+json` con `"code": "SEAT_TAKEN"`, sin crear la reserva, y lo mismo en nuestro e-commerce **antes de cobrar**;
+(b) en el mapa de asientos, todo lo vendido con su estado e `isAvailable: false`.
+
+**Lo que ya cumplía (verificado en la nube antes de cambiar nada):** el 409 `SEAT_TAKEN` problem+json sin crear la reserva para
+Booking (`seat_taken_booking.mjs`), y el mapa de asientos por REST (15A del EA304 del 11/11 `TICKETED`/`false`, 320 `AVAILABLE`).
+**Lo que no:** en el canal web la saga capturaba el cobro antes de validar el asiento y luego lo reembolsaba.
+
+**Cambios:**
+- **`ms-g-offers.proto` (propio, aditivo):** `ValidateHoldRequest.requested_seats`.
+- **MS.G.Offers:** `validate()` revisa cada asiento pedido: que el segmento sea del hold, que el asiento exista, que sea de la
+  cabina comprada (`SEAT_CABIN_MISMATCH`), que no esté repetido y que **no esté tomado** (`SEAT_TAKEN`). No ocupa nada: la toma
+  atómica sigue al consumir el hold. `SEAT_TAKEN` ahora con el formato que sugiere Booking: `title: "Asiento no disponible"`,
+  `detail: "El asiento 15A del segmento EA304-20261111 ya fue tomado."` (y `invalidParams` como antes).
+- **ESB:** la saga «Crear reserva» pasa los asientos pedidos a `ValidateHold`, su primer paso, **antes** del pago y del reclamo de
+  la referencia.
+- **Web:** ante `SEAT_TAKEN`, el pago quita ese asiento de la selección, vuelve a pedir el mapa (`refreshKey` en `SeatMapPicker`)
+  y conserva el cupo retenido. Mensaje: «Ese asiento ya lo tomó otro viajero. Lo quitamos de tu selección y actualizamos el
+  mapa: elige otro y vuelve a confirmar».
+
+**Verificación:** pruebas nuevas en Offers (tomado → `SEAT_TAKEN` con título y detalle; libre pasa y la revisión no lo ocupa;
+otra cabina, repetido e inexistente se rechazan; el mapa muestra el vendido `BOOKED`/`false`) y en el ESB (con el asiento tomado la
+saga se detiene en `offers ValidateHold`: ni captura, ni reembolso, ni reclamo de la referencia de Booking); suite completa **662
+pasan**, 41 omitidas; typecheck y lint limpios. Desplegado en la VM. **Contra la nube:**
+- **Booking (REST):** `409`, `application/problem+json`, `"title":"Asiento no disponible"`, `"code":"SEAT_TAKEN"`, `"detail":"El
+  asiento 15A del segmento EA304-20261111 ya fue tomado."`; el hold se liberó (204).
+- **Web (`seat_taken_web.mjs`):** el pago `pay_W0Fz5TO5cmbATCIFl045` quedó `AUTHORIZED` (**nunca capturado**) y `createBooking`
+  respondió `SEAT_TAKEN`. La autorización vence sola.
+- **Recorrido en Edge `recorrido_t1`: todo OK** (con `SEAT_TAKEN` simulado en el navegador para no ocupar un asiento real): el
+  mensaje, el 21A quitado de la selección, el mapa pedido de nuevo y la página sigue en el pago.
+
+**Nota de operación:** el primer despliegue falló por SSH: la regla `allow-ssh-2222` del NSG solo permitía 157.100.190.27 y la IP
+de hoy era 157.100.143.28. Con autorización del responsable se **agregó** la IP (la regla admite las dos; SSH sigue cerrado al
+resto de internet).
+
+### PLAN_Telemetria_Asientos · R-1 — Retrasos de un vuelo (pedido de Booking) — ✅ HECHA (09/11), pendiente de auditoría
+
+Pedido: el administrador indica **cuánto** se atrasa un vuelo y eso se ve en su estado y su nueva hora; solo cambia **ese vuelo de
+esa fecha**. Decisiones D-T9 (en minutos), D-T10 (avisar y «retrasar también» opcional, nunca en cadena) y D-T11 (check-in hasta la
+salida estimada).
+
+**Cambios:**
+- **MS.G.FlightStatus 1.1.0:**
+  - con una salida estimada nueva, la **llegada estimada se corre lo mismo** (antes quedaba la programada);
+  - `DELAYED → SCHEDULED` **quita el retraso** y borra las horas estimadas;
+  - `GET /flights/{n}/delay-impact?date&delayMinutes` (solo consulta): nueva salida y llegada, y el **siguiente vuelo del mismo
+    avión** (por matrícula, ese día o los 2 siguientes; el 787 a Madrid vuelve 2 días después). Con el tiempo en tierra de su tipo,
+    dice si llega (`conflict`) y cuántos minutos habría que atrasar ese otro vuelo (`suggestedDelayMinutes`).
+- **Arreglo de paso: las horas estimadas y reales salían en UTC** (`…T14:40:00Z`). La web y Booking mostraban 14:40 en vez de
+  09:40, porque el contrato usa la hora local del aeropuerto (`…-05:00`). Ahora FlightStatus las devuelve siempre con el desfase
+  del aeropuerto (`atOffsetOf`), también las ya guardadas.
+- **ESB 1.5.0:** composición `GET /composition/flights/{n}/delay-impact`: el impacto del avión más las **reservas afectadas** y
+  quiénes quedan con menos margen que el de la búsqueda (conexión 60 min, vuelta 120 min). La saga de **check-in** deja abierto un
+  vuelo `DELAYED` hasta su salida estimada; pasada la hora programada, solo abre los retrasados (la ida ya volada no bloquea la
+  vuelta).
+- **MS.Admin 1.7.0** `getFlightDelayImpact` · **GraphQL** `flightDelayImpact`.
+- **Web:**
+  - **Operaciones → «Retrasado»** pide los **minutos** (15 min a 2 h u otro) y muestra la **vista previa**: nueva salida y
+    llegada (con el día cuando cambia), si el avión llega a su siguiente vuelo (si no, la casilla **opcional** «Retrasar también
+    EA325 40 min»), cuántas reservas y pasajeros afecta y quiénes quedan con poco margen. «Quitar el retraso» vuelve a la hora
+    programada. El detalle del vuelo muestra el retraso vigente.
+  - El **cliente** ve «Tu vuelo EA304 está retrasado 30 min. Nueva salida 19:30 (era 19:00) · nueva llegada jue, 12 nov 12:55»
+    en su reserva; el **administrador**, en el detalle de la reserva (`FlightDelayNotice`).
+  - El texto del check-in decía «cierra 60 minutos antes»; la saga cierra a la hora de salida: corregido.
+
+**Verificación:** pruebas nuevas en FlightStatus (impacto con y sin conflicto, siguiente vuelo al día siguiente, llegada
+recalculada, quitar el retraso, hora UTC devuelta en local), ESB (composición con conexión justa y vuelta holgada; check-in de un
+retrasado abierto hasta la estimada y cerrado sin retraso), MS.Admin y gateway; suite completa **668 pasan**, 41 omitidas;
+typecheck y lint limpios. Desplegado en la VM. **Recorrido en Edge `recorrido_r1` contra la nube: todo OK:**
+- EA324 Quito → Loja, 1 h: el avión llega a EA325; 2 h: avisa que HC-J13 estaría listo a las 12:20 y ofrece «retrasar también».
+- **Retraso real** del EA304 del 11/11 (30 min, reserva demo X3J2U7): Booking lo ve por REST (`DELAYED`, `delayMinutes: 30`,
+  `19:30:00-05:00`, llegada `12:55:00+01:00`); la vuelta EA305 sigue a tiempo; el cliente ve el aviso en su reserva.
+- Al final se **quitó** el retraso: el vuelo quedó `SCHEDULED`, como estaba.
+
+El recorrido encontró dos errores, ya corregidos: las horas en UTC y el campo de minutos con `step=5`, que hacía que el navegador
+rechazara 30.
+
+**Booking:** ve el retraso consultando `GET /vuelos/flights/{n}/status`. Los webhooks `flight.status_changed` y
+`flight.schedule_changed` ya se publican, pero su endpoint los rechaza con HTTP 400 (BKG-16): hay que pedirles que lo revisen.
+
+### PLAN_Telemetria_Asientos · P-1 — Precios editables: tarifa base y precio exacto por ruta — ✅ HECHA (09/11), pendiente de auditoría
+
+Pedido del responsable: poder corregir precios desde «Precios y promociones», con el **dato de referencia del precio por km**, y
+escribir el **precio exacto de los 4 paquetes** (Semilla, Brote, Bosque, Dosel) de una ruta (D-T12). Antes, la tarifa de un adulto
+en un vuelo era `(35 + 0,085 × km) × multiplicador`, con 35 y 0,085 **fijos en el código** de Offers; solo se editaban los
+multiplicadores.
+
+**Cambios:**
+- **MS.G.Schedule 1.3.0** (dueño de los precios):
+  - tablas `pricing_settings` (cargo fijo, precio por km, precios por ruta) y `pricing_changes` (historial: quién, cuándo, de cuánto
+    a cuánto);
+  - `GET /pricing` y `PUT /pricing` (estado completo, todo o nada). Una ruta con precio exacto lleva los 4 paquetes; una ruta que
+    se agrega o cambia debe existir en el horario. Por defecto 35 y 0,085: nada cambió hasta editar.
+- **ESB 1.6.0:**
+  - la saga **«Guardar precios»** suma el tipo `pricing` (`PUT /sagas/pricing`): mezcla lo vigente con lo que cambia, guarda en
+    Schedule y publica a Offers; si Offers falla, **compensa** volviendo al estado anterior. Ruta de lectura nueva
+    `GET /router/schedule/pricing` (49 rutas).
+  - `PublishFarePrices` lleva la tarifa base y los precios por ruta.
+- **MS.G.Offers** (`ms-g-offers.proto`, aditivo: `pricing`, `route_prices`):
+  - guarda la copia (`pricing_settings`);
+  - cotiza cada vuelo con `(cargo fijo + precio por km × km) × multiplicador`, o con el precio exacto del paquete en esa ruta (ida
+    y vuelta de la misma ruta);
+  - con los valores por defecto el cálculo es el mismo de antes, operación por operación;
+  - los holds y las reservas ya creados conservan su precio.
+- **MS.Admin 1.8.0** y **GraphQL:** `PricesView.pricing` y `SavePricesInput.pricing` (tarifa base y/o una ruta; `prices` vacío
+  quita el precio exacto).
+- **Web «Precios y promociones»:** panel **«Tarifa base y precio por ruta»** con:
+  - el cargo fijo y el precio por km;
+  - una ruta a elegir que muestra **cuánto cuesta cada paquete en dólares** por fórmula, con su cabina (Semilla, Brote y Bosque en
+    Economy; Dosel en Business);
+  - el precio exacto de los 4 paquetes, con un aviso si se aleja mucho de la fórmula, y «Quitar precio exacto»;
+  - los últimos cambios.
+
+**Verificación:** pruebas nuevas en Schedule (valores por defecto, guardar con historial, guardar lo mismo no deja historial,
+quitar la ruta, validaciones), Offers (fórmula con otro cargo y precio por km; el precio exacto solo para ese paquete; un
+publicador sin `pricing` conserva la copia; volver a 35/0,085 da lo de antes), ESB (estado completo a Schedule, copia a Offers,
+quitar una ruta, compensación si Offers falla), MS.Admin y gateway; suite completa **673 pasan**, 41 omitidas; typecheck y lint
+limpios. Desplegado. **Recorrido en Edge `recorrido_p1p` contra la nube: todo OK:**
+- la pantalla mostró Quito ⇄ Loja por fórmula US$73 / 98 / 131 / 233, **igual** que la búsqueda real;
+- con el precio exacto 70 / 95 / 125 / 220, la búsqueda pública (la de Booking) cobró eso en Quito → Loja y Loja → Quito; Quito →
+  Guayaquil siguió con la fórmula;
+- subir el precio por km a 0,10 subió Semilla Quito → Guayaquil de 59 a 63 sin mover Loja;
+- al final se volvió a 0,085 y se quitó el precio exacto: **todos los precios quedaron como antes**.
+
+**Error encontrado por el recorrido (corregido):** el panel tenía sus propios `<form>` dentro del `<form>` de la página. HTML no los
+admite anidados: los botones enviaban el «Guardar» de los multiplicadores y no se guardaba nada. Ahora son botones normales.
+
+### PLAN_Telemetria_Asientos · T-2 — Búsqueda por correlation ID con ventana automática — ✅ HECHA (09/11), pendiente de auditoría
+
+Problema: Loki no indexa el `correlation_id`; filtra línea por línea todo el rango (1 día ~7 s, 7 días ~24 s en la VM) y el ESB le
+da 3 s. Buscar sin acotar fallaba con «Loki no está disponible», aunque las sagas y los eventos del proceso sí existían.
+
+**Cambios:**
+- **ESB 1.7.0** (`composeCorrelationTrace`): primero busca lo rápido —sagas (`saga_log`) y eventos (Webhooks), por índice— y con sus
+  horas arma la ventana de Loki: del primero al último **±10 min** (máx. 24 h). Sin sagas ni eventos, las **últimas 3 h**. Un
+  rango explícito (`from`/`to`, el del historial de una reserva) se respeta.
+- **Si Loki tarda**, ya no se pierde todo: vienen las sagas y los eventos con `stepsError` («La búsqueda tardó demasiado: prueba
+  con un rango más corto.»). Sin nada más, `503` con ese mismo detalle. No abre ningún circuito: el ESB responde con su
+  ProblemDetails (el `EsbClient` de MS.Admin no lo cuenta como falla) y el ESB no pone circuito ante Loki.
+- **MS.Admin 1.9.0 y GraphQL:** `CorrelationTrace.window { from to source }` (`RECORDS`, `RANGE`, `DEFAULT`) y `stepsError`.
+- **Web «Telemetría»:** se quitó el selector de 3 h / 24 h / 7 días; la página dice dónde buscó («según sus sagas y eventos») y
+  avisa si faltan los pasos.
+
+**Verificación:** pruebas nuevas en el ESB (ventana de sagas y eventos ±10 min; sin registros, 3 h y el 404 lo dice; Loki lento →
+sagas con el aviso, y 503 si no hay nada más), MS.Admin y gateway; suite **675 pasan**, 41 omitidas; typecheck y lint limpios
+(se corrigió además un tipo en una prueba de Offers de P-1). Desplegado. **Recorrido en Edge `recorrido_t2` contra la nube:**
+`corr-f488627d-…` encontró sus **9 pasos sin elegir rango** en una ventana de 20 min, en **282–378 ms**. Justo después del
+despliegue (VM cargada) Loki tardó más de 3 s y la página mostró el aviso con las sagas: el comportamiento esperado.
+
+### PLAN_Telemetria_Asientos · M-1 — Aeropuertos administrables — ✅ HECHA (10/11), pendiente de auditoría
+
+Pedido del responsable: agregar aeropuertos desde el panel. Antes eran una **constante del código** (`AIRPORTS` de
+`packages/shared`): sumar uno exigía cambiar el código y desplegar todo.
+
+**Diseño:** el dueño es **MS.G.Schedule** (tabla `airports`, sembrada con los 34 de siempre solo si está vacía: un aeropuerto
+borrado no vuelve). `AIRPORTS` pasa a ser el **catálogo de cada proceso**: arranca con la semilla y se actualiza con lo que le
+llega, así las ~20 lecturas `AIRPORTS[code]` (reglas de rutas, motor del horario, distancias, «¿es internacional?») no cambiaron.
+Se respeta «un MS.G no llama a otro»: el catálogo viaja por el ESB.
+- **Schedule 1.4.0:** `GET/POST /airports`, `GET/PUT/DELETE /airports/{code}`. El código (3 letras) no se edita (D-T6). Con rutas
+  o aviones con base ahí: no se borra y no cambian país, coordenadas ni huso (`409 AIRPORT_IN_USE`, el detalle dice qué lo usa);
+  se **desactiva** y una ruta nueva hacia él da `422 AIRPORT_INACTIVE` (las que ya tiene siguen; la compensación que restaura una
+  ruta borrada sí puede usarlo). Huso en múltiplos de 15 min; país ISO de 2 letras.
+- **ESB 1.8.0:** 5 rutas nuevas del enrutador (54). Su catálogo se mantiene al día: lo pide a Schedule al arrancar y cada 60 s
+  (`AIRPORT_SYNC_MS`), lo actualiza en el acto cuando pasa una escritura de aeropuerto que salió bien, y la saga «Publicar horario»
+  lo vuelve a pedir y se lo manda a Offers. Si Schedule no responde, se queda con el que tenía: nunca falla una operación por esto.
+- **Offers** (`ms-g-offers.proto`, aditivo: `PublishTimetableRequest.airports`): guarda la copia (`airport_catalog`) y la carga al
+  arrancar, para las distancias de cada vuelo y de las conexiones.
+- **MS.Vuelos 1.1.0:** operación propia pública `GET /ecoairlines/airports` (no es del contrato del grupo: allí los aeropuertos son
+  solo códigos). **MS.Admin 1.10.0:** alta, cambio y baja. **GraphQL:** `airports` (pública), `createAirport`, `updateAirport`,
+  `deleteAirport` y los códigos `AIRPORT_IN_USE`, `AIRPORT_ALREADY_EXISTS`, `AIRPORT_INACTIVE`, `AIRPORT_NOT_FOUND`.
+- **Web:** pide el catálogo al arrancar (espera hasta 1,5 s; si tarda, arranca con la lista de respaldo y los selectores se
+  actualizan solos). Los selectores muestran solo los activos (en una ruta o un avión que ya usa uno desactivado, se conserva).
+  Pestaña nueva **«Aeropuertos»** en el panel: catálogo con buscador y su uso (rutas y aviones), agregar, editar (con rutas o
+  aviones, país, coordenadas y huso bloqueados), activar/desactivar y borrar (solo si no se usa).
+
+**Verificación:** pruebas nuevas en Schedule (los 34; crear, ruta desde Quito, en uso no se mueve ni se borra, desactivado no admite
+rutas nuevas y su ruta sigue en el horario, borrar sin uso; validaciones), ESB (el enrutador actualiza el catálogo en alta, cambio
+y baja; un rechazo no lo cambia; la saga manda los 35 a Offers), Offers (un vuelo a un aeropuerto nuevo se cotiza con su
+distancia), MS.Vuelos, MS.Admin y gateway; suite **690 pasan**, 41 omitidas; typecheck y lint limpios. Desplegado. **Recorrido en
+Edge `recorrido_m1` contra la nube: todo OK:**
+- los 34 aeropuertos siguen activos y Quito → Loja cuesta lo mismo (73 / 98 / 131 / 233);
+- se creó «Jipijapa (JPJ)» desde el panel y una ruta Quito ⇄ Jipijapa (EA356/EA357, con un A220 nuevo HC-J29);
+- la búsqueda pública (la de Booking) y el buscador de la web la encuentran (Semilla US$59);
+- en uso, cambiar su latitud dio `AIRPORT_IN_USE` y no aparece «Borrar»; desactivado salió del buscador y su ruta siguió a la venta;
+- al final se dio de baja la ruta, se retiró HC-J29 y se borró JPJ: **34 aeropuertos y 33 aviones, como antes**.
+
+**Errores del recorrido (corregidos en el script, no en la aplicación):** selectores ambiguos («Destino» también coincidía con
+«Salida de la vuelta») y revisar el buscador antes de que llegara el catálogo de la API; la web ahora marca
+`<html data-airports="api">` cuando lo tiene. Una primera corrida dejó la ruta, el avión y el aeropuerto de prueba en la nube: se
+quitaron a mano por GraphQL.
+
+### PLAN_Telemetria_Asientos · M-2 — Tipos de avión administrables — ✅ HECHA (10/11), pendiente de auditoría
+
+Pedido del responsable: agregar tipos de avión desde el panel. Antes eran 3 tipos **fijos del código** (`AIRCRAFT_TYPES` y sus
+tablas de asientos, alcance, tiempo en tierra y prefijo en `packages/shared`).
+
+**Diseño (como M-1):** el dueño es **MS.G.Schedule** (tabla `aircraft_types`, sembrada con los 3 de siempre solo si está vacía).
+Lo de `shared` pasa a ser el **catálogo de cada proceso** (semilla + `registerAircraftTypes`), así las lecturas de siempre
+(`AIRCRAFT_LAYOUTS[tipo]`, `TURNAROUND_MINUTES[tipo]`, `aircraftFor(km)`) no cambiaron.
+- **Ficha de un tipo:** nombre (clave, no se edita), prefijo `HC-` + una letra (único), alcance en km o sin límite, tiempo en tierra
+  y **Business y Economy siempre (D-T8)**, cada una con sus asientos y su configuración por fila: Business 2-2, 1-2-1 o 2-2-2;
+  Economy 2-3, 3-3, 2-4-2 o 3-3-3 (las de los 3 tipos de siempre están incluidas). Filas = asientos ÷ asientos por fila
+  (exacto, si no `400`); Business desde la fila 1, Economy a continuación, con la primera fila de más espacio y la del medio de
+  emergencia.
+- **D-T7:** un tipo con aviones o rutas no cambia ni se borra (`409 AIRCRAFT_TYPE_IN_USE`); sin ellos se edita y se borra.
+- **Elección por distancia:** el de menor alcance que cubre la ruta, entre todos los del catálogo (antes, los 3 fijos).
+- **Schedule 1.5.0:** `POST /aircraft-types`, `PUT/DELETE /aircraft-types/{aircraftType}` (nombre codificado en la ruta);
+  `AircraftTypeInfo.cabins` (distribución de cada cabina); `AircraftType` ya no es un enum; un tipo desconocido da
+  `422 UNKNOWN_AIRCRAFT_TYPE`; cada vuelo del horario lleva su `turnaroundMinutes`.
+- **ESB 1.9.0:** 3 rutas nuevas del enrutador (57). La saga «Publicar horario» pide los tipos a Schedule y se los manda a Offers.
+- **Offers** (`ms-g-offers.proto`, aditivo: `PublishTimetableRequest.aircraft_types`): guarda una copia **acumulada** (nunca quita un
+  tipo: un vuelo con ventas de un tipo ya borrado sigue teniendo su mapa) y la carga al arrancar. El mapa de asientos se guarda en
+  caché por la ficha del tipo, no por su nombre.
+- **FlightStatus:** cada vuelo guarda su tiempo en tierra (columna nueva, llega en `schedule.published`); el impacto de un retraso
+  lo usa (los vuelos publicados antes de M-2 usan el de la semilla).
+- **MS.Admin 1.11.0 y GraphQL:** `createAircraftType`, `updateAircraftType`, `deleteAircraftType`, `AircraftTypeInfo.cabins` y los
+  códigos `AIRCRAFT_TYPE_IN_USE`, `AIRCRAFT_TYPE_ALREADY_EXISTS`, `AIRCRAFT_TYPE_NOT_FOUND`, `UNKNOWN_AIRCRAFT_TYPE`.
+- **Web:** pestaña nueva **«Tipos de avión»** (agregar con aviso de filas incompletas y total de asientos; editar y borrar solo sin
+  aviones). «Rutas programadas» calcula el tipo automático con el catálogo (antes con 1 500 y 4 500 km fijos).
+
+**Verificación:** pruebas nuevas en Schedule (los 3 de siempre con su distribución; crear, la ruta corta lo elige y le agrega
+aviones HC-E, el horario lleva su tiempo en tierra; con aviones no cambia ni se borra; validaciones), Offers (cupos y mapa de un
+tipo nuevo, 1-2-1 en Business), FlightStatus (el retraso usa el tiempo en tierra del vuelo), ESB (la saga manda los tipos; el
+enrutador reenvía el nombre codificado), MS.Admin y gateway; suite **701 pasan**, 41 omitidas; typecheck y lint limpios.
+Desplegado. **Recorrido en Edge `recorrido_m2` contra la nube: todo OK:**
+- los 3 tipos siguen iguales (122 / 174 / 321 asientos);
+- se creó «Embraer E195-E2» desde el panel (avisó que 110 en 2-4-2 no son filas completas; con 112, «14 filas de 8»);
+- una ruta nueva Quito ⇄ Esmeraldas lo eligió sola (menor alcance) con un avión nuevo HC-E01;
+- la búsqueda pública (la de Booking) vendió los 4 paquetes con 112 cupos en Economy y 12 en Business, y su mapa de asientos tiene
+  las filas 4–17 con 8 por fila (A C D E F G H K);
+- con aviones, cambiarlo dio `AIRCRAFT_TYPE_IN_USE`; el impacto de un retraso usó sus 30 min en tierra;
+- al final se dio de baja la ruta, se retiró HC-E01 y se borró el tipo: **3 tipos, 33 aviones y 30 rutas, como antes**.
+
+**Incidente del despliegue:** la VM (2 núcleos, 4 GB) se saturó al reconstruir todas las imágenes (cambió `shared`): carga de 46,
+sin SSH ni API unos minutos y el script terminó con `esb unhealthy`. Los contenedores se recuperaron solos (todos sanos) y la carga
+volvió a menos de 3 en ~20 min; no hizo falta reiniciar nada.
+
+### PLAN_Telemetria_Asientos · T-3 — Grafana en tiempo real: el mapa del sistema — ✅ HECHA (10/11), pendiente de auditoría
+
+Pedido del responsable: ver en un grafo cómo se llaman los servicios y cómo viaja un proceso (D-T1: Tempo + Grafana, sin Jaeger).
+
+**Cambios (solo infraestructura de observabilidad; ningún servicio cambió):**
+- **Tempo 3.1:** `metrics_generator` con los procesadores `service-graphs` (aristas cliente → servidor emparejando los spans de
+  cada llamada) y `span-metrics` (peticiones, errores y duración por servicio y operación), escritos en Prometheus por remote write.
+  En modo monolítico el distribuidor se los pasa en el mismo proceso (Tempo 3: sin Kafka). La configuración se probó antes en un
+  contenedor descartable en la VM (arrancó con el módulo `metrics-generator`).
+- **Prometheus:** `--web.enable-remote-write-receiver` (recibe en `/api/v1/write`).
+- **Grafana:** el origen de datos Tempo con `serviceMap` (Prometheus), `nodeGraph` y el filtro `correlation_id` en la búsqueda.
+- **Tablero nuevo «EcoAirlines — Mapa del sistema en vivo»** (se refresca cada 15 s):
+  - grafo de servicios: cada nodo con su latencia promedio y peticiones/s, cada flecha una dependencia; en rojo la proporción de
+    errores;
+  - tabla de aristas (desde, hacia, peticiones/min, errores/min, p95);
+  - peticiones por segundo que recibe cada servicio;
+  - **trazas de un correlation ID** (caja `X-Correlation-Id`, TraceQL `{ span.correlation_id = "…" }`): al abrir una traza se ven su
+    cascada y su grafo de nodos.
+
+**Verificación en la nube:** una compra de prueba real con el cliente demo (`compra_t3.mjs`: reserva GLTP3W confirmada y luego
+cancelada) generó **18 aristas reales** en Prometheus (`traces_service_graph_request_total`), entre ellas
+gateway → ms-reservas → esb → ms-g-bookings / ms-g-offers / payment-api / ms-g-post-sale. **Recorrido en Edge `recorrido_t3`
+(Grafana): todo OK** — el grafo dibuja gateway, ms-reservas, esb, ms-g-bookings, ms-g-offers y payment-api; la tabla de aristas
+tiene tasas reales; la búsqueda por el correlation ID de la compra encontró su traza en Tempo (gateway POST, 2,28 s).
+
+**Lo que mostró el mapa (para saber leerlo):**
+- Los errores que marcó justo después del despliegue eran los chequeos de salud del ESB a los MS.G que se estaban reiniciando y el
+  feed `/vuelos/eventos` con 503 en esos minutos: ruido del reinicio, no fallas.
+- Las flechas MS.G → ms-g-identity son la descarga de la JWKS para validar tokens (infraestructura, no una llamada de negocio entre
+  MS.G).
+- PostgreSQL y RabbitMQ no aparecen como nodos: sus llamadas no tienen spans propios.
+
+**Errores del recorrido (corregidos en el script):** los nombres de los nodos del grafo de Grafana son texto HTML, no SVG; la consulta
+a Tempo tardaba más que la espera con la VM cargada; y una revisión «pasaba» porque el título del panel ya tenía el correlation ID.
+`compra_c2.mjs` tenía una fecha fija ya pasada: se hizo `compra_t3.mjs`.
+
+### PLAN_Telemetria_Asientos · T-4 — Vista «Recorrido» y mapa del sistema en vivo — ✅ HECHA (10/11), pendiente de auditoría
+
+Pedido del responsable (D-T2): ver en el panel propio, en un grafo, cómo viaja un proceso de servicio en servicio, con un punto que
+avanza nodo a nodo, y un mapa del sistema en vivo.
+
+**Cambios:**
+- **ESB 1.10.0:**
+  - `GET /composition/telemetry/journeys/{correlationId}`: busca en **Tempo** con TraceQL (`{ span.correlation_id = "…" }`) dentro de
+    la ventana de sus sagas y eventos (como T-2), trae hasta 20 trazas y las convierte en el **recorrido** (`composition/journey.ts`,
+    función pura): nodos por capa (cliente, gateway, MS de respuesta, ESB, MS de gestión, externos) y **saltos** en orden de tiempo
+    (el span cliente de quien llama con el span servidor que provocó en el otro servicio; lo que entra desde fuera sale del nodo
+    «cliente»).
+  - **Sin datos personales:** solo servicio, operación, estado y tiempos. La operación es método + ruta sin query y con los
+    identificadores cambiados por `{id}` (el recorrido dice QUÉ se llamó, nunca A QUÉ registro: la referencia de un pago o el id de
+    una reserva no salen). Los atributos de los spans (IP del cliente, agente…) no se copian.
+  - `GET /composition/telemetry/system-map`: aristas de los últimos 5 min (peticiones y errores por minuto, p95) de las métricas del
+    grafo de servicios de T-3.
+  - Tempo con plazo propio de 8 s para esta consulta (solo del panel); MS.Admin espera 12 s al ESB para ella (el gateway, 15 s).
+- **MS.Admin 1.12.0 y GraphQL:** `telemetry.journey(correlationId, from, to)` (sin trazas: `null`) y `telemetry.systemMap`.
+- **Web (SVG propio, sin librerías nuevas):**
+  - **«Recorrido»** en «Telemetría» (al buscar un correlation ID) y en el **historial de la reserva** («Ver el recorrido» en cada
+    saga; se pide recién al abrirlo). Reproductor: Reproducir/Pausa, al inicio, barra de pasos y velocidad (0,5× a 4×); el punto
+    recorre cada arista en el orden real; la lista de saltos dice +tiempo desde el inicio, servicio → servicio, operación, duración y
+    si falló; elegir un salto lleva el reproductor ahí.
+  - **«Mapa del sistema en vivo»** en «Telemetría»: el grafo por capas con el grosor según el tráfico y en rojo las conexiones con
+    errores; se actualiza cada 15 s con la pestaña visible (en T-5, empujado por el servidor); también como tabla.
+
+**Verificación:** pruebas nuevas — `journey.spec` (saltos en orden con su capa, cliente → gateway, gRPC, servicio sin trazas, sin la
+IP ni el correo; ids enmascarados), ESB (búsqueda en Tempo con la ventana de las sagas, 404 sin trazas, 403 sin administrador; mapa
+con peticiones, errores y p95), MS.Admin y gateway; suite **709 pasan**, 41 omitidas; typecheck y lint limpios. Desplegado.
+**Recorrido en Edge `recorrido_t4` contra la nube** con una compra de prueba (RSUR2B, luego cancelada):
+- el recorrido dibuja cliente, gateway, MS.Reservas, ESB, MS.G.Bookings, MS.G.Offers, MS.G.Identity y la Payment API; 13 saltos en
+  una traza (512 ms); al reproducir, el punto se mueve y avanza los 13 saltos en orden; elegir uno en la lista lleva ahí; las
+  operaciones salen como `POST /payments/{id}/capture`, `GET /bookings/{id}`;
+- el mapa en vivo dibuja las conexiones activas y se actualiza cada 15 s (5 consultas seguidas, todas 200);
+- el historial de la reserva muestra el recorrido de su saga.
+
+**Lo que se corrigió en el camino:**
+- **Datos de pago en las operaciones** (encontrado en la nube): la primera versión mostraba `/payments/pay_…/capture` y el UUID de la
+  reserva. Ahora se enmascaran (`maskIds`, con prueba).
+- **Tempo lento con la VM cargada** (recién desplegada): el recorrido de la reserva dio 503 con el plazo de 3 s; ahora 8 s / 12 s.
+- **Traza recién hecha:** Tempo tarda un minuto o dos en dejarla buscable; el aviso lo dice («vuelve a buscarlo»).
+- Del script: en SVG no hay `innerText` (se usa `textContent`); a 4× el recorrido termina antes de pulsar «Pausa».
+
+### PLAN_Telemetria_Asientos · T-5 — Telemetría en tiempo real por WebSocket — 🔶 IMPLEMENTADA (10/11), falta el recorrido en la nube
+
+Decisión del responsable (D-T13): además del refresco cada 15 s, el panel recibe los cambios empujados por el servidor.
+
+**Cambios:**
+- **Gateway** (GraphQL, sin protocolo nuevo: las suscripciones `graphql-ws` que ya existían):
+  - `traceProgress(correlationId)`: al suscribirse llega lo que ya hay; después, cada vez que hay pasos nuevos, el recorrido completo
+    y cuáles son los nuevos. `liveSystemMap`: el mapa cada vez que cambia. Solo `ECOAIRLINES_ADMIN`.
+  - `graphql/live-topics.ts`: un **tema** por clave (`journey:<id>`, `system-map`) que consulta a MS.Admin **solo mientras hay
+    suscriptores** (cada 2 s el recorrido, cada 10 s el mapa; `LIVE_TRACE_POLL_MS`, `LIVE_MAP_POLL_MS`), **una sola vez para todos**
+    los suscriptores del tema, y se detiene al irse el último. Un **token vencido** termina esa suscripción con `UNAUTHENTICATED`;
+    MS.Admin caído se reintenta; un proceso sin trazas todavía (404) sigue esperando.
+- **Web:** cliente mínimo propio del protocolo `graphql-transport-ws` en `api/client.ts` (el único punto de acceso al gateway; sin
+  dependencias nuevas) y el hook `useLiveSubscription`. «Recorrido» y «Mapa del sistema en vivo» muestran «● En vivo»; los pasos
+  nuevos aparecen sin recargar (aunque el proceso no existiera al abrir la vista) y sin reiniciar el reproductor. **Respaldo:** si
+  el WebSocket no conecta o se corta, vuelven al refresco cada 15 s, lo avisan («Actualización cada 15 s: sin conexión en vivo») y
+  reintentan conectar cada 30 s.
+- **Atraso de origen (medido):** Tempo 3 tardaba **31 s** en dejar buscar una traza nueva (excluye los últimos 30 s,
+  `query_end_cutoff`, y espera 5 s sin spans, `max_trace_idle`). Con `query_end_cutoff: 1s`, `max_trace_idle: 2s`,
+  `flush_check_period: 1s` y un lote propio de trazas de 0,5 s en el Collector (`batch/trazas`; métricas y logs siguen cada 2 s):
+  **~4 s** (tres mediciones de 4,0 a 4,2 s). No son los «~1–2 s» que estimaba el plan.
+
+**Verificación hasta ahora:** pruebas nuevas del gateway (`live-topics.spec`: sin suscriptores no consulta; dos suscriptores comparten
+una consulta por vuelta; al irse el último se detiene; solo los saltos nuevos; 404 sigue esperando y 503 se reintenta; el mapa solo
+si cambia; token vencido → `UNAUTHENTICATED` y los demás siguen; por WebSocket real: el recorrido y el mapa llegan, la consulta va con
+el token del administrador, un cliente recibe `FORBIDDEN` sin que se consulte nada); los documentos de suscripción de la web validados
+contra `gateway.graphql`; la regla de arquitectura (ningún acceso a la red fuera de `api/client.ts`) se cumple; suite **715 pasan**,
+41 omitidas; typecheck y lint limpios. **Pendiente:** el recorrido en Edge contra la nube (`recorrido_t5`: abrir el recorrido de un ID
+nuevo, comprar con ese ID y ver llegar los pasos; el mapa empujado; cortar el WebSocket y ver el respaldo).

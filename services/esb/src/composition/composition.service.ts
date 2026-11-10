@@ -1,6 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ProblemDetailsException } from '@ecoairlines/shared';
 import type { Caller } from '../clients/rest.client.js';
+import type { TraceStep } from '../clients/observability.client.js';
+import { buildJourney } from './journey.js';
 import { UPSTREAMS, type Upstreams } from '../clients/upstreams.js';
 import { ESB_STORE, type EsbStore } from '../repositories/esb.store.js';
 import type { BookingView } from '../sagas/support.js';
@@ -154,6 +156,49 @@ export class CompositionService {
    * FlightStatus confirma que el vuelo existe en esa fecha (404 si no); Bookings da los pasajeros. CheckIn no se consulta: el
    * esquema del panel (`FlightAssistanceItem`) no lleva datos de check-in y el asiento ya está en la reserva.
    */
+  /**
+   * Impacto de un retraso (R-1, solo lectura, panel de operaciones). Del avión, FlightStatus (`delay-impact`): nueva salida y
+   * llegada y si llega a su siguiente vuelo. De los pasajeros, Bookings: las reservas del vuelo y quiénes quedan con menos
+   * margen que el que exige la búsqueda para su vuelo siguiente (conexión: 60 min; vuelta: 120 min). No cambia nada.
+   */
+  async delayImpact(flightNumber: string, date: string | undefined, delayMinutes: string | undefined, caller: Caller) {
+    if (!FLIGHT_NUMBER.test(flightNumber)) throw invalid('flightNumber', 'p. ej. EA100');
+    if (!date || !DATE.test(date)) throw invalid('date', 'obligatoria, AAAA-MM-DD');
+    const minutes = Number(delayMinutes);
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) throw invalid('delayMinutes', 'entero entre 1 y 1440');
+    if (!caller.actorId) throw invalid('X-Actor-Id', 'obligatorio: sub del administrador');
+    const [impact, affected] = await Promise.all([
+      this.upstreams.rest['flight-status'].json<Record<string, any>>('GET', `/flights/${flightNumber}/delay-impact?date=${date}&delayMinutes=${minutes}`), // eslint-disable-line @typescript-eslint/no-explicit-any
+      this.upstreams.rest.bookings.json<{ items: { bookingId: string; pnr: string; channel: string; passengers: number }[] }>('GET', `/flights/${flightNumber}/${date}/bookings`, { caller }),
+    ]);
+    const segmentId = `${flightNumber}-${date.replaceAll('-', '')}`;
+    const arrival = Date.parse(impact['estimatedArrivalAt']);
+    const tight: Record<string, unknown>[] = [];
+    // Hasta 50 reservas (un vuelo de la red simulada rara vez tiene más); cada una con su itinerario completo.
+    for (const item of affected.items.slice(0, 50)) {
+      const booking = await this.upstreams.rest.bookings.json<{ itineraries: { segments: { segmentId: string; flightNumber: string; departure: { at: string } }[] }[] }>('GET', `/bookings/${item.bookingId}`, { caller });
+      const legs = booking.itineraries.map((itinerary) => itinerary.segments);
+      const itineraryIndex = legs.findIndex((segments) => segments.some((segment) => segment.segmentId === segmentId));
+      if (itineraryIndex < 0) continue;
+      const segments = legs[itineraryIndex]!;
+      const position = segments.findIndex((segment) => segment.segmentId === segmentId);
+      const connection = segments[position + 1];
+      const next = connection ?? legs[itineraryIndex + 1]?.[0];
+      if (!next) continue;
+      const required = connection ? 60 : 120;
+      const available = Math.round((Date.parse(next.departure.at) - arrival) / 60_000);
+      if (available < required) {
+        tight.push({ bookingId: item.bookingId, pnr: item.pnr, channel: item.channel, kind: connection ? 'CONNECTION' : 'RETURN', nextFlightNumber: next.flightNumber, nextDepartureAt: next.departure.at, availableMinutes: available, requiredMinutes: required });
+      }
+    }
+    return {
+      ...impact,
+      bookings: affected.items.length,
+      passengers: affected.items.reduce((sum, item) => sum + item.passengers, 0),
+      tightConnections: tight,
+    };
+  }
+
   async flightAssistance(flightNumber: string, date: string | undefined, caller: Caller) {
     if (!FLIGHT_NUMBER.test(flightNumber)) throw invalid('flightNumber', 'p. ej. EA100');
     if (!date || !DATE.test(date)) throw invalid('date', 'obligatoria, AAAA-MM-DD');
@@ -239,14 +284,58 @@ export class CompositionService {
    * Todo lo que generó un proceso, por su X-Correlation-Id: los pasos (logs `api_request` de cada servicio, en Loki), sus sagas
    * (`saga_log`) y sus eventos (historial de Webhooks). `404` si no hay rastro.
    */
+  /**
+   * Todo lo que generó un proceso por su `X-Correlation-Id` (T-2). Primero lo rápido —sus sagas (`saga_log`) y sus eventos
+   * (Webhooks), por índice— y con sus horas la ventana de Loki: del primero al último ±10 min (máx. 24 h). Sin sagas ni eventos,
+   * las últimas 3 h. Un rango explícito (`from`/`to`) se respeta. Si Loki no responde a tiempo, se devuelve lo demás con el aviso
+   * en `stepsError`: nunca se pierde lo que sí se encontró.
+   */
   async correlationTrace(correlationId: string, caller: Caller, range: { from?: string; to?: string } = {}) {
-    const [steps, sagas, events] = await Promise.all([
-      this.upstreams.observability.correlationSteps(correlationId, range),
+    const [sagas, events] = await Promise.all([
       this.store.listSagas({ correlationId, limit: 50 }),
-      this.upstreams.rest.webhooks.json<{ items: unknown[]; nextCursor?: string }>('GET', `/history?correlationId=${encodeURIComponent(correlationId)}&limit=100`, { caller }),
+      this.upstreams.rest.webhooks.json<{ items: { time?: string }[]; nextCursor?: string }>('GET', `/history?correlationId=${encodeURIComponent(correlationId)}&limit=100`, { caller }),
     ]);
-    if (!steps.length && !sagas.length && !events.items.length) throw ProblemDetailsException.notFound('No hay rastro de ese X-Correlation-Id en los últimos 7 días.');
-    return { correlationId, steps, sagas: sagas.map((saga) => ({ sagaId: saga.sagaId, type: saga.type, status: saga.status })), events };
+    const window = traceWindow(range, [...sagas.flatMap((saga) => [saga.createdAt, saga.updatedAt]), ...events.items.map((item) => item.time)]);
+    let steps: TraceStep[] = [];
+    let stepsError: string | undefined;
+    try {
+      steps = await this.upstreams.observability.correlationSteps(correlationId, window);
+    } catch (error) {
+      if (!(error instanceof ProblemDetailsException) || error.problem.status !== 503) throw error;
+      stepsError = error.problem.detail ?? 'Loki no está disponible: los pasos no se pudieron buscar.';
+    }
+    if (!steps.length && !sagas.length && !events.items.length) {
+      if (stepsError) throw new ProblemDetailsException({ status: 503, code: 'PROVIDER_UNAVAILABLE', title: 'No se pudo buscar en Loki.', detail: stepsError, retryAfterSeconds: 5 });
+      throw ProblemDetailsException.notFound(window.source === 'DEFAULT' ? 'No hay rastro de ese X-Correlation-Id en las últimas 3 horas.' : 'No hay rastro de ese X-Correlation-Id en ese rango.');
+    }
+    return {
+      correlationId,
+      window: { from: window.from.toISOString(), to: window.to.toISOString(), source: window.source },
+      steps,
+      ...(stepsError ? { stepsError } : {}),
+      sagas: sagas.map((saga) => ({ sagaId: saga.sagaId, type: saga.type, status: saga.status })),
+      events,
+    };
+  }
+
+  /**
+   * Vista «Recorrido» (T-4): los saltos de servicio en servicio de un proceso, desde sus spans en Tempo. La ventana sale de sus
+   * sagas y eventos como en la búsqueda por correlation ID (T-2). Sin rastro: 404.
+   */
+  async journey(correlationId: string, caller: Caller, range: { from?: string; to?: string } = {}) {
+    const [sagas, events] = await Promise.all([
+      this.store.listSagas({ correlationId, limit: 50 }),
+      this.upstreams.rest.webhooks.json<{ items: { time?: string }[] }>('GET', `/history?correlationId=${encodeURIComponent(correlationId)}&limit=100`, { caller }),
+    ]);
+    const window = traceWindow(range, [...sagas.flatMap((saga) => [saga.createdAt, saga.updatedAt]), ...events.items.map((item) => item.time)]);
+    const journey = buildJourney(correlationId, await this.upstreams.observability.journeySpans(correlationId, window));
+    if (!journey.hops.length) throw ProblemDetailsException.notFound(window.source === 'DEFAULT' ? 'No hay trazas de ese X-Correlation-Id en las últimas 3 horas.' : 'No hay trazas de ese X-Correlation-Id en ese rango.');
+    return { ...journey, window: { from: window.from.toISOString(), to: window.to.toISOString(), source: window.source } };
+  }
+
+  /** Mapa del sistema en vivo (T-4): aristas de los últimos 5 minutos (Prometheus, del metrics-generator de Tempo). */
+  systemMap() {
+    return this.upstreams.observability.systemMap();
   }
 
   /**
@@ -284,4 +373,22 @@ function decodeCursor(cursor: string): number {
   const match = /^o:(\d{1,6})$/.exec(Buffer.from(cursor, 'base64url').toString('utf8'));
   if (!match) throw invalid('cursor', 'el valor de nextCursor de la página anterior');
   return Number(match[1]);
+}
+
+const MINUTE = 60_000;
+
+/**
+ * Ventana de Loki para una traza (T-2): un rango explícito se respeta (sin `from`, 3 h antes de `to`); si no, del primer al
+ * último registro conocido ±10 min, como mucho 24 h desde el primero; sin registros, las últimas 3 h.
+ */
+export function traceWindow(range: { from?: string; to?: string }, times: (string | undefined)[], now = Date.now()): { from: Date; to: Date; source: 'RANGE' | 'RECORDS' | 'DEFAULT' } {
+  if (range.from || range.to) {
+    const to = range.to ? Date.parse(range.to) : now;
+    return { from: new Date(range.from ? Date.parse(range.from) : to - 180 * MINUTE), to: new Date(to), source: 'RANGE' };
+  }
+  const known = times.map((time) => (time ? Date.parse(time) : NaN)).filter(Number.isFinite);
+  if (!known.length) return { from: new Date(now - 180 * MINUTE), to: new Date(now), source: 'DEFAULT' };
+  const from = Math.min(...known) - 10 * MINUTE;
+  const to = Math.min(Math.max(...known) + 10 * MINUTE, from + 24 * 60 * MINUTE, now);
+  return { from: new Date(from), to: new Date(Math.max(to, from + MINUTE)), source: 'RECORDS' };
 }

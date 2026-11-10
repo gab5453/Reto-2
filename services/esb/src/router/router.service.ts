@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { applyAirportWrite } from '../clients/airport-catalog.js';
 import { completeProblem, ProblemDetailsException } from '@ecoairlines/shared';
 import type { Caller } from '../clients/rest.client.js';
 import { FORWARDED_RESPONSE_HEADERS } from '../clients/rest.client.js';
@@ -61,7 +62,9 @@ export class RouterService {
         return undefined;
       }
     };
-    const event = routeEvent({ operationId, params, request: parse(request.body.toString('utf8')), response: parse(response.body), caller: request.caller });
+    const body = parse(response.body);
+    applyAirportWrite(operationId, params, body);
+    const event = routeEvent({ operationId, params, request: parse(request.body.toString('utf8')), response: body, caller: request.caller });
     if (!event) return;
     await this.events.publish(event.event, event.ownerId).catch((error: unknown) => this.logger.error(`No se guardó ${event.event.type} en el outbox: ${error instanceof Error ? error.message : String(error)}`));
   }

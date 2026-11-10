@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: MS.G.FlightStatus — estado operativo de los vuelos (interno)
-  version: 1.0.0
+  version: 1.1.0
   license:
     name: Uso académico — Integración de Sistemas (sin licencia de distribución)
   description: |
@@ -28,7 +28,7 @@ info:
     | Desde | Hacia |
     |-------|-------|
     | `SCHEDULED` | `DELAYED`, `BOARDING`, `CANCELLED` |
-    | `DELAYED` | `DELAYED` (nueva hora estimada), `BOARDING`, `CANCELLED` |
+    | `DELAYED` | `DELAYED` (nueva hora estimada), `SCHEDULED` (quitar el retraso, 1.1.0), `BOARDING`, `CANCELLED` |
     | `BOARDING` | `DEPARTED`, `DELAYED`, `CANCELLED` |
     | `DEPARTED` | `ARRIVED`, `DIVERTED` |
     | `DIVERTED` | `ARRIVED` |
@@ -39,6 +39,8 @@ info:
 
     ### Reglas
     - `DELAYED` exige `estimatedDepartureAt` posterior a la hora programada; `delayMinutes` se calcula.
+    - Si llega `estimatedDepartureAt` sin `estimatedArrivalAt`, la llegada estimada se corre lo mismo que la salida (1.1.0).
+    - `DELAYED → SCHEDULED` quita el retraso: borra las horas estimadas (1.1.0).
     - `DEPARTED` y `ARRIVED` guardan la hora real (`actualAt`) del momento del cambio si no se envía.
     - `CANCELLED` exige `reason`.
     - El autor del cambio es `X-Actor-Id` (`updated_by`, `changed_by`).
@@ -219,6 +221,41 @@ paths:
         '404':
           $ref: '#/components/responses/FlightNotFound'
 
+  /flights/{flightNumber}/delay-impact:
+    parameters:
+      - $ref: '#/components/parameters/FlightNumber'
+      - $ref: '#/components/parameters/CorrelationId'
+    get:
+      tags: [Estado]
+      operationId: getDelayImpact
+      summary: Qué pasaría con un retraso (solo consulta, 1.1.0)
+      description: |
+        Nueva salida y llegada con `delayMinutes`, y el siguiente vuelo del mismo avión (por matrícula, ese día o los 2 siguientes):
+        con el tiempo en tierra de su tipo, si no llega a tiempo `conflict: true` y `suggestedDelayMinutes` para ese vuelo.
+        No cambia nada: atrasar el otro vuelo es una acción aparte.
+      parameters:
+        - $ref: '#/components/parameters/Date'
+        - name: delayMinutes
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1440
+      responses:
+        '200':
+          description: Impacto del retraso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DelayImpact'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/FlightNotFound'
+
   /status-changes/{changeId}/revert:
     parameters:
       - name: changeId
@@ -333,6 +370,40 @@ components:
             timestamp: '2026-10-25T10:00:00Z'
 
   schemas:
+    DelayImpact:
+      type: object
+      required: [flightNumber, date, delayMinutes, scheduledDepartureAt, scheduledArrivalAt, estimatedDepartureAt, estimatedArrivalAt, aircraft, nextFlight]
+      properties:
+        flightNumber: { type: string }
+        date: { type: string, format: date }
+        delayMinutes: { type: integer }
+        scheduledDepartureAt: { type: string, format: date-time }
+        scheduledArrivalAt: { type: string, format: date-time }
+        estimatedDepartureAt: { type: string, format: date-time }
+        estimatedArrivalAt: { type: string, format: date-time }
+        aircraft:
+          type: object
+          required: [registration, aircraftType, turnaroundMinutes]
+          properties:
+            registration: { type: string }
+            aircraftType: { type: string }
+            turnaroundMinutes: { type: integer }
+        nextFlight:
+          type: object
+          nullable: true
+          description: Siguiente vuelo del mismo avión (ese día o los 2 siguientes); null si no tiene.
+          required: [flightNumber, date, origin, destination, scheduledDepartureAt, departureAt, status, readyAt, conflict, suggestedDelayMinutes]
+          properties:
+            flightNumber: { type: string }
+            date: { type: string, format: date }
+            origin: { type: string }
+            destination: { type: string }
+            scheduledDepartureAt: { type: string, format: date-time }
+            departureAt: { type: string, format: date-time, description: Salida vigente (estimada si ya está retrasado) }
+            status: { type: string }
+            readyAt: { type: string, format: date-time, description: Cuándo estaría listo el avión con el retraso }
+            conflict: { type: boolean }
+            suggestedDelayMinutes: { type: integer, nullable: true }
     StatusChangeResult:
       type: object
       additionalProperties: false

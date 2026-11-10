@@ -25,6 +25,7 @@ export function SeatMapPicker({
   companions = {},
   onCompanionClick,
   showSummary = true,
+  refreshKey = 0,
   onSelect,
 }: {
   offerId: string;
@@ -35,9 +36,11 @@ export function SeatMapPicker({
   companions?: Record<string, string>;
   onCompanionClick?: (seat: string) => void;
   showSummary?: boolean;
+  /** Cambiarlo vuelve a pedir el mapa (los asientos que otro tomó salen en gris). */
+  refreshKey?: number;
   onSelect: (seat: string | undefined) => void;
 }) {
-  const requestKey = `${offerId}|${segmentId}`;
+  const requestKey = `${offerId}|${segmentId}|${refreshKey}`;
   const [loaded, setLoaded] = useState<{ key: string; seatMap?: SeatMapResponse; error?: unknown }>({ key: '' });
 
   useEffect(() => {

@@ -4,7 +4,7 @@ import * as grpc from '@grpc/grpc-js';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
-import { signWebhook } from '@ecoairlines/shared';
+import { AIRPORTS, removeAirport, SEED_AIRPORTS, signWebhook } from '@ecoairlines/shared';
 import { contractValidator } from '../../../tests/support/openapi-contract.js';
 import { EsbModule, setupApp } from '../src/app.module.js';
 import { Upstreams } from '../src/clients/upstreams.js';
@@ -411,6 +411,23 @@ describe('Crear reserva', () => {
     expect(JSON.parse(msg.calls('bookings', 'POST', '/payment-references/claim')[0]!.body).provider).toBe('AIRLINE_DIRECT');
   });
 
+  it('★ T-1: el asiento pedido se revisa ANTES del pago: tomado → SEAT_TAKEN sin capturar (web) ni reclamar la referencia (Booking)', async () => {
+    const seated = { ...passenger, assignedSeats: [{ segmentId: SEG, seatNumber: '12A' }] };
+    const web = { ...bookingRequest({ paymentReference: 'pay_7Hq2mX9cLk4Z', provider: 'AIRLINE_DIRECT' }), passengers: [seated], salesChannel: undefined };
+    failure = { key: 'offers ValidateHold', status: 409, code: 'SEAT_TAKEN' };
+    const response = await createBooking(web, { owner: WEB_OWNER });
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe('SEAT_TAKEN');
+    expect(log).toEqual(['offers ValidateHold']); // ni captura, ni reembolso, ni anulación: no se cobró
+    expect(offers.calls.find((c) => c.rpc === 'ValidateHold')!.request['requestedSeats']).toEqual([{ passengerId: 'PAX-1', segmentId: SEG, seatNumber: '12A' }]);
+
+    log.length = 0;
+    failure = { key: 'offers ValidateHold', status: 409, code: 'SEAT_TAKEN' };
+    const partner = await createBooking({ ...bookingRequest(), passengers: [seated] });
+    expect(partner.body.code).toBe('SEAT_TAKEN');
+    expect(log).toEqual(['offers ValidateHold']); // canal Booking: la referencia de pago ni se reclama
+  });
+
   it('★ V2.15: una referencia ya capturada por OTRA orden (ALREADY_CAPTURED) no se reembolsa al compensar (era el dinero de otra compra)', async () => {
     const web = { ...bookingRequest({ paymentReference: 'pay_7Hq2mX9cLk4Z', provider: 'AIRLINE_DIRECT' }), salesChannel: undefined };
     capturedBy = 'saga-de-otra-compra';
@@ -559,6 +576,24 @@ describe('Check-in', () => {
     msg.on('flight-status', 'GET', /^\/flights\/EA100\/status\?date=/, () => ({ status: 200, body: { status: 'CANCELLED' } }));
     expect((await checkIn()).body.code).toBe('FLIGHT_CANCELLED');
     booking = view(B, { itineraries: [itinerary(ITI, SEG, new Date(Date.now() + 5 * 86_400_000))] });
+    expect((await checkIn()).body.code).toBe('CHECK_IN_NOT_AVAILABLE');
+  });
+
+  it('★ R-1 (D-T11): pasada la hora programada, un vuelo DELAYED sigue abierto hasta su salida estimada; sin retraso, cerrado', async () => {
+    const passed = new Date(Date.now() - 30 * 60_000); // salía hace 30 min
+    noSeat();
+    booking = { ...booking, itineraries: [itinerary(ITI, SEG, passed)] };
+    const delayed = (estimatedAt: Date) => ({ status: 200, body: { flightNumber: 'EA100', date: localDate(passed), status: 'DELAYED', departure: { iataCode: 'UIO', scheduledAt: passed.toISOString(), estimatedAt: estimatedAt.toISOString(), gate: 'B4' }, arrival: { iataCode: 'GYE', scheduledAt: passed.toISOString() } } });
+    msg.on('flight-status', 'GET', /^\/flights\/EA100\/status\?date=/, () => delayed(new Date(Date.now() + 60 * 60_000)));
+    const open = await checkIn();
+    expect(open.status, JSON.stringify(open.body)).toBe(200);
+    expect(JSON.parse(msg.calls('check-in', 'POST')[0]!.body).passengers[0].segments[0].gate).toBe('B4');
+
+    // Ya pasó también la salida estimada → cerrado.
+    msg.on('flight-status', 'GET', /^\/flights\/EA100\/status\?date=/, () => delayed(new Date(Date.now() - 5 * 60_000)));
+    expect((await checkIn()).body.code).toBe('CHECK_IN_NOT_AVAILABLE');
+    // A tiempo (sin retraso) y ya pasó su hora → cerrado, como antes.
+    msg.on('flight-status', 'GET', /^\/flights\/EA100\/status\?date=/, () => ({ status: 200, body: { status: 'SCHEDULED', departure: { iataCode: 'UIO', scheduledAt: passed.toISOString(), estimatedAt: null } } }));
     expect((await checkIn()).body.code).toBe('CHECK_IN_NOT_AVAILABLE');
   });
 });
@@ -799,6 +834,39 @@ describe('Guardar precios y descuento máximo', () => {
     expect(response.body.code).toBe('PROMOTION_DISCOUNT_OUT_OF_RANGE');
     expect(offers.calls.filter((c) => c.rpc === 'PublishFarePrices')).toHaveLength(0);
   });
+
+  it('★ P-1: tarifa base y precio exacto por ruta: Schedule recibe el estado completo, Offers la copia; quitar la ruta; si Offers falla, Schedule vuelve atrás', async () => {
+    const four = (base: number) => ['SEMILLA', 'BROTE', 'BOSQUE', 'DOSEL'].map((fareBrand, i) => ({ fareBrand, amount: base + i * 10 }));
+    const existing = { routeId: 'EA100-EA101', prices: four(60) };
+    let stored: Any = { fixedCharge: 35, perKm: 0.085, routePrices: [existing], updatedAt: null, updatedBy: null, history: [] };
+    msg.on('schedule', 'GET', '/pricing', () => ({ status: 200, body: stored }));
+    msg.on('schedule', 'PUT', '/pricing', (r) => {
+      stored = { ...JSON.parse(r.body), updatedAt: new Date().toISOString(), updatedBy: ADMIN, history: [] };
+      return { status: 200, body: stored };
+    });
+    const pricing = (body: Any) => as(http().put('/sagas/pricing'), { actor: ADMIN }).send(body);
+
+    const loja = { routeId: 'EA324-EA325', prices: four(70) };
+    const saved = await pricing({ perKm: 0.09, route: loja });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(JSON.parse(msg.calls('schedule', 'PUT', '/pricing')[0]!.body)).toEqual({ fixedCharge: 35, perKm: 0.09, routePrices: [existing, loja] });
+    const published = offers.calls.filter((c) => c.rpc === 'PublishFarePrices').at(-1)!.request;
+    expect(published['pricing']).toEqual({ fixedCharge: 35, perKm: 0.09 });
+    expect(published['routePrices']).toHaveLength(8);
+    expect(published['routePrices']).toContainEqual({ routeId: 'EA324-EA325', fareBrand: 'DOSEL', amount: 100 });
+    expect(publisher.published.at(-1)!.event).toMatchObject({ data: { pricingUpdated: true } });
+
+    // Quitar el precio exacto de una ruta (prices vacío) conserva las demás.
+    await pricing({ route: { routeId: 'EA100-EA101', prices: [] } });
+    expect(JSON.parse(msg.calls('schedule', 'PUT', '/pricing').at(-1)!.body).routePrices).toEqual([loja]);
+
+    // Si Offers no recibe la copia, Schedule vuelve exactamente al estado anterior.
+    const before = { fixedCharge: stored.fixedCharge, perKm: stored.perKm, routePrices: stored.routePrices };
+    failure = { key: 'offers PublishFarePrices', status: 422, code: 'VALIDATION_FAILED' };
+    expect((await pricing({ fixedCharge: 50 })).status).toBe(422);
+    expect(JSON.parse(msg.calls('schedule', 'PUT', '/pricing').at(-1)!.body)).toEqual(before);
+    expect((await pricing({})).status).toBe(400);
+  });
 });
 
 describe('Publicar horario', () => {
@@ -820,6 +888,24 @@ describe('Publicar horario', () => {
     const del = () => as(http().delete('/sagas/routes/EA300-EA301'), { actor: ADMIN }).send();
     await failEachStep([{ key: 'schedule GET route' }, { key: 'offers CountSoldSeats' }, { key: 'schedule DELETE route', undo: ['schedule POST route'] }, { key: 'schedule GET timetable' }, { key: 'offers PublishTimetable' }], del);
     expect(msg.calls('schedule', 'POST').at(-1)!.path).toBe('/routes?restoreRouteId=EA300-EA301');
+  });
+
+  it('★ M-1: antes de publicar, el ESB pide el catálogo a Schedule y Offers lo recibe con el horario (si Schedule no responde, va el que tiene)', async () => {
+    const jipijapa = { code: 'JPJ', city: 'Jipijapa', name: 'Aeródromo de Jipijapa', country: 'EC', province: 'Manabí', lat: -1.3486, lon: -80.5786, utcOffsetMinutes: -300, active: true };
+    try {
+      msg.on('schedule', 'GET', '/airports', () => ({ status: 200, body: [...Object.values(SEED_AIRPORTS).map((item) => ({ ...item, active: true })), jipijapa] }));
+      expect((await as(http().post('/sagas/routes'), { actor: ADMIN }).send(route)).status).toBe(201);
+      const airports = offers.calls.find((c) => c.rpc === 'PublishTimetable')!.request['airports'] as { code: string; utcOffsetMinutes: number }[];
+      expect(airports).toHaveLength(35);
+      expect(airports.find((item) => item.code === 'JPJ')).toMatchObject({ city: 'Jipijapa', country: 'EC', utcOffsetMinutes: -300 });
+      expect(AIRPORTS['JPJ']).toBeDefined();
+      // M-2: también los tipos de avión con su mapa de cabinas; los vuelos a Offers no llevan el tiempo en tierra (va aparte).
+      const request = offers.calls.find((c) => c.rpc === 'PublishTimetable')!.request;
+      expect((request['aircraftTypes'] as { name: string }[]).map((type) => type.name)).toEqual(['Airbus A220-300', 'Airbus A320neo', 'Boeing 787-9']);
+      expect((request['aircraftTypes'] as { name: string; turnaroundMinutes: number; cabins: { layout: string }[] }[])[1]).toMatchObject({ turnaroundMinutes: 45, cabins: [{ layout: 'AC-DF' }, { layout: 'ABC-DEF' }] });
+    } finally {
+      removeAirport('JPJ');
+    }
   });
 
   it('publicar todo: la ventana completa y los precios (reemplaza al script de desarrollo)', async () => {

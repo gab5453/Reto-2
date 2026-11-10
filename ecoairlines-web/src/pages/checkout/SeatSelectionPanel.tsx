@@ -28,6 +28,7 @@ export function SeatSelectionPanel({
   passengers,
   seats,
   note = 'Elegir asiento es opcional y sin costo: si no eliges, te asignamos uno al confirmar. Puedes cambiarlo hasta hacer el check-in.',
+  mapVersion = 0,
   onChange,
 }: {
   offerId: string;
@@ -36,6 +37,8 @@ export function SeatSelectionPanel({
   seats: SeatSelection;
   /** Nota bajo la lista de pasajeros. */
   note?: string;
+  /** Sube cuando hay que volver a pedir el mapa (un asiento elegido ya lo tomó otro). */
+  mapVersion?: number;
   onChange: (passengerId: string, segmentId: string, seat: string | undefined) => void;
 }) {
   const [segmentIndex, setSegmentIndex] = useState(0);
@@ -139,6 +142,7 @@ export function SeatSelectionPanel({
             companions={companions}
             onCompanionClick={selectByCompanionSeat}
             showSummary={false}
+            refreshKey={mapVersion}
             onSelect={select}
           />
         </div>

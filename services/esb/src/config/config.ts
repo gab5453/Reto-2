@@ -51,6 +51,8 @@ export interface EsbConfig {
   sagaDeadlineMs: number;
   /** Cada cuánto el trabajador de recuperación busca sagas abandonadas o pendientes de reintento. */
   sagaRecoveryMs: number;
+  /** Cada cuánto se lee el catálogo de aeropuertos de Schedule (M-1); 0 lo apaga. */
+  airportSyncMs: number;
   /** Cada cuánto el relé publica los eventos pendientes del outbox (además de hacerlo apenas se guarda uno). */
   outboxIntervalMs: number;
 }
@@ -87,7 +89,7 @@ function observabilityUrls(value: (name: string) => string | undefined): Observa
   const user = value('RABBITMQ_MANAGEMENT_USER') ?? (bus ? decodeURIComponent(bus.username) : undefined);
   const password = value('RABBITMQ_MANAGEMENT_PASSWORD') ?? (bus ? decodeURIComponent(bus.password) : undefined);
   if (management && user && password) rabbitmq = { url: management, user, password };
-  return { ...(trim(value('PROMETHEUS_URL')) ? { prometheus: trim(value('PROMETHEUS_URL'))! } : {}), ...(trim(value('LOKI_URL')) ? { loki: trim(value('LOKI_URL'))! } : {}), ...(trim(value('ALERTMANAGER_URL')) ? { alertmanager: trim(value('ALERTMANAGER_URL'))! } : {}), ...(rabbitmq ? { rabbitmq } : {}) };
+  return { ...(trim(value('PROMETHEUS_URL')) ? { prometheus: trim(value('PROMETHEUS_URL'))! } : {}), ...(trim(value('LOKI_URL')) ? { loki: trim(value('LOKI_URL'))! } : {}), ...(trim(value('ALERTMANAGER_URL')) ? { alertmanager: trim(value('ALERTMANAGER_URL'))! } : {}), ...(trim(value('TEMPO_URL')) ? { tempo: trim(value('TEMPO_URL'))! } : {}), ...(rabbitmq ? { rabbitmq } : {}) };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): EsbConfig {
@@ -136,6 +138,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EsbConfig {
     // (EsbClient). Con 4,5 s aquí el 202 llegaba tarde y el cliente veía 503 (V2.17, tarjeta pendiente).
     sagaDeadlineMs: Number(env['SAGA_DEADLINE_MS'] ?? 3_500),
     sagaRecoveryMs: Number(env['SAGA_RECOVERY_MS'] ?? 5_000),
+    airportSyncMs: Number(env['AIRPORT_SYNC_MS'] ?? 60_000),
     outboxIntervalMs: Number(env['OUTBOX_INTERVAL_MS'] ?? 1_000),
   };
 }

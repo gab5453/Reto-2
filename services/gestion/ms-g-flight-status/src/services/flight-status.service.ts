@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
-import { type CloudEvent, ProblemDetailsException } from '@ecoairlines/shared';
-import { applyUpdate, type FlightOperationalStatus, INITIAL_STATE, type ScheduledFlightRecord, type StatusChangeRecord, type StatusUpdate, toFlightStatus } from '../domain/status.js';
+import { type AircraftType, type CloudEvent, ProblemDetailsException, TURNAROUND_MINUTES } from '@ecoairlines/shared';
+import { applyUpdate, atOffsetOf, type FlightOperationalStatus, INITIAL_STATE, type ScheduledFlightRecord, type StatusChangeRecord, type StatusUpdate, toFlightStatus } from '../domain/status.js';
 import { FLIGHT_STATUS_STORE, type FlightStatusStore, type FlightStatusTx } from '../repositories/flight-status.store.js';
 
 const notFound = () => new ProblemDetailsException({ status: 404, code: 'NOT_FOUND', title: 'El vuelo no opera en esa fecha.' });
@@ -67,15 +67,69 @@ export class FlightStatusService {
     });
   }
 
+  /**
+   * Qué pasaría con un retraso de `delayMinutes` (R-1, solo consulta: no cambia nada). Nueva salida y llegada, y el siguiente
+   * vuelo del MISMO avión (por matrícula, ese día o los 2 siguientes: un 787 a Madrid vuelve 2 días después): si con el tiempo en tierra de su tipo el avión no llega a
+   * tiempo, `conflict` y los minutos que habría que atrasar ese otro vuelo. Atrasarlo es una acción aparte y opcional (D-T10).
+   */
+  delayImpact(flightNumber: string, date: string, delayMinutes: number) {
+    return this.store.transaction(async (tx) => {
+      const flight = await this.flight(tx, flightNumber, date);
+      // Horas locales de cada aeropuerto (con su desfase), como el resto del contrato.
+      const shift = (iso: string) => atOffsetOf(iso, Date.parse(iso) + delayMinutes * 60_000);
+      const estimatedDepartureAt = shift(flight.departureAt);
+      const estimatedArrivalAt = shift(flight.arrivalAt);
+      // M-2: el del vuelo (publicado por Schedule); un vuelo publicado antes de M-2 usa el de la semilla.
+      const turnaround = flight.turnaroundMinutes ?? TURNAROUND_MINUTES[flight.aircraftType as AircraftType] ?? 45;
+      const readyAt = Date.parse(estimatedArrivalAt) + turnaround * 60_000;
+      const day = (offset: number) => new Date(Date.parse(`${date}T12:00:00Z`) + offset * 86_400_000).toISOString().slice(0, 10);
+      const candidates = [...(await tx.flightsOn(date)), ...(await tx.flightsOn(day(1))), ...(await tx.flightsOn(day(2)))]
+        .filter((other) => other.registration === flight.registration && Date.parse(other.departureAt) > Date.parse(flight.departureAt))
+        .sort((a, b) => Date.parse(a.departureAt) - Date.parse(b.departureAt));
+      const next = candidates[0];
+      let nextFlight = null;
+      if (next) {
+        const state = (await tx.state(next.flightNumber, next.date)) ?? INITIAL_STATE;
+        const departsAt = state.estimatedDepartureAt ?? next.departureAt;
+        const conflict = readyAt > Date.parse(departsAt);
+        // Retraso mínimo (en múltiplos de 5 min, contado desde su hora programada) para que el avión llegue a tiempo.
+        const needed = Math.ceil((readyAt - Date.parse(next.departureAt)) / 60_000 / 5) * 5;
+        nextFlight = {
+          flightNumber: next.flightNumber,
+          date: next.date,
+          origin: next.origin,
+          destination: next.destination,
+          scheduledDepartureAt: next.departureAt,
+          departureAt: atOffsetOf(next.departureAt, Date.parse(departsAt)),
+          status: state.status,
+          readyAt: atOffsetOf(flight.arrivalAt, readyAt),
+          conflict,
+          suggestedDelayMinutes: conflict ? Math.max(needed, 5) : null,
+        };
+      }
+      return {
+        flightNumber,
+        date,
+        delayMinutes,
+        scheduledDepartureAt: flight.departureAt,
+        scheduledArrivalAt: flight.arrivalAt,
+        estimatedDepartureAt,
+        estimatedArrivalAt,
+        aircraft: { registration: flight.registration, aircraftType: flight.aircraftType, turnaroundMinutes: turnaround },
+        nextFlight,
+      };
+    });
+  }
+
   history(flightNumber: string, date: string) {
     return this.store.transaction(async (tx) => {
-      await this.flight(tx, flightNumber, date);
+      const flight = await this.flight(tx, flightNumber, date);
       return (await tx.changes(flightNumber, date)).map((change) => ({
         changeId: change.changeId,
         previousStatus: change.previous.status,
         newStatus: change.next.status,
         departureGate: change.next.departureGate,
-        estimatedDepartureAt: change.next.estimatedDepartureAt,
+        estimatedDepartureAt: change.next.estimatedDepartureAt ? atOffsetOf(flight.departureAt, Date.parse(change.next.estimatedDepartureAt)) : null,
         reason: change.reason,
         changedBy: change.changedBy,
         changedAt: change.changedAt,

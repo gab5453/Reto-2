@@ -1,3 +1,5 @@
+import type { AircraftTypeSpec } from '@ecoairlines/shared';
+import type { Airport } from '@ecoairlines/shared';
 import type { CloudEvent } from '@ecoairlines/shared';
 import type {
   BookingSeatRecord,
@@ -8,6 +10,7 @@ import type {
   HoldStatus,
   InventoryRecord,
   OutboxRecord,
+  PricingSettingsRecord,
   PromotionRuleRecord,
   StockSyncRecord,
   TakenStatus,
@@ -72,6 +75,15 @@ export interface OffersTx {
   // ---------------------------------------------------------------- precios y promociones (copias de Schedule)
   farePrices(): Promise<FarePriceRecord[]>;
   replaceFarePrices(prices: FarePriceRecord[]): Promise<void>;
+  /** Tarifa base y precios por ruta (P-1); los de siempre si Schedule aún no publicó. */
+  pricingSettings(): Promise<PricingSettingsRecord>;
+  replacePricingSettings(settings: PricingSettingsRecord): Promise<void>;
+  /** Copia del catálogo de aeropuertos de Schedule (M-1); vacía hasta la primera publicación del horario. */
+  airportCatalog(): Promise<Airport[]>;
+  replaceAirportCatalog(airports: Airport[]): Promise<void>;
+  /** Copia del catálogo de tipos de avión (M-2), acumulada: nunca se quita un tipo. */
+  aircraftTypeCatalog(): Promise<AircraftTypeSpec[]>;
+  saveAircraftTypeCatalog(types: AircraftTypeSpec[]): Promise<void>;
   promotionRule(partnerId: string): Promise<PromotionRuleRecord | undefined>;
   replacePromotionRules(rules: PromotionRuleRecord[]): Promise<void>;
 

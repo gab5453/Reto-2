@@ -4,7 +4,7 @@ import * as grpc from '@grpc/grpc-js';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
-import { signWebhook } from '@ecoairlines/shared';
+import { AIRPORTS, removeAirport, SEED_AIRPORTS, signWebhook } from '@ecoairlines/shared';
 import { contractValidator } from '../../../tests/support/openapi-contract.js';
 import { EsbModule, setupApp } from '../src/app.module.js';
 import { Upstreams } from '../src/clients/upstreams.js';
@@ -34,12 +34,14 @@ const CORR = 'corr-prueba-esb-v29';
 const http = () => request(app.getHttpServer());
 const svc = (call: request.Test) => call.set('Authorization', 'Bearer svc').set('X-Correlation-Id', CORR);
 
+let upstreams: Upstreams;
+
 beforeAll(async () => {
   const base = await msg.start();
   const address = await offers.start();
   // V2.16: la plataforma de observabilidad también la imita el servidor de MS.G falsos (bajo su propio prefijo).
-  const config = testConfig(base, address, { PROMETHEUS_URL: `${base}/prometheus`, LOKI_URL: `${base}/loki`, ALERTMANAGER_URL: `${base}/alertmanager`, RABBITMQ_MANAGEMENT_URL: `${base}/rabbitmq`, RABBITMQ_MANAGEMENT_USER: 'eco', RABBITMQ_MANAGEMENT_PASSWORD: 'clave-rabbit' });
-  const upstreams = new Upstreams(config, new FixedToken());
+  const config = testConfig(base, address, { PROMETHEUS_URL: `${base}/prometheus`, LOKI_URL: `${base}/loki`, ALERTMANAGER_URL: `${base}/alertmanager`, TEMPO_URL: `${base}/tempo`, RABBITMQ_MANAGEMENT_URL: `${base}/rabbitmq`, RABBITMQ_MANAGEMENT_USER: 'eco', RABBITMQ_MANAGEMENT_PASSWORD: 'clave-rabbit' });
+  upstreams = new Upstreams(config, new FixedToken());
   const moduleRef = await Test.createTestingModule({ imports: [EsbModule.register(config, { store, verifier: testVerifier, upstreams, publisher })] }).compile();
   app = moduleRef.createNestApplication<NestExpressApplication>({ logger: false, rawBody: true, bodyParser: false });
   setupApp(app);
@@ -330,6 +332,37 @@ describe('composición', () => {
     expect(missing.body.code).toBe('FLIGHT_STATUS_NOT_AVAILABLE');
   });
 
+  it('★ R-1 impacto de un retraso: el avión (FlightStatus) y los pasajeros con poco margen para su siguiente vuelo (Bookings)', async () => {
+    const at = (time: string) => `${today}T${time}:00-05:00`;
+    const segment = (flightNumber: string, time: string) => ({ segmentId: `${flightNumber}-${today.replaceAll('-', '')}`, flightNumber, departure: { iataCode: 'UIO', at: at(time) } });
+    const [conexion, idaVuelta, soloIda] = [randomUUID(), randomUUID(), randomUUID()];
+    msg.on('flight-status', 'GET', /^\/flights\/EA100\/delay-impact\?/, () => ({
+      status: 200,
+      body: {
+        flightNumber: 'EA100', date: today, delayMinutes: 60, scheduledDepartureAt: at('07:00'), scheduledArrivalAt: at('07:50'),
+        estimatedDepartureAt: new Date(at('08:00')).toISOString(), estimatedArrivalAt: new Date(at('08:50')).toISOString(),
+        aircraft: { registration: 'HC-N01', aircraftType: 'Airbus A320neo', turnaroundMinutes: 45 },
+        nextFlight: { flightNumber: 'EA101', date: today, origin: 'GYE', destination: 'UIO', scheduledDepartureAt: at('09:00'), departureAt: at('09:00'), status: 'SCHEDULED', readyAt: new Date(at('09:35')).toISOString(), conflict: true, suggestedDelayMinutes: 35 },
+      },
+    }));
+    msg.on('bookings', 'GET', `/flights/EA100/${today}/bookings`, () => ({
+      status: 200,
+      body: { flightNumber: 'EA100', date: today, total: 3, items: [conexion, idaVuelta, soloIda].map((bookingId, i) => ({ bookingId, pnr: `PNR00${i}`, status: 'CONFIRMED', channel: i === 1 ? 'WEB' : 'BOOKING', passengers: i + 1 })) },
+    }));
+    msg.on('bookings', 'GET', `/bookings/${conexion}`, () => ({ status: 200, body: { itineraries: [{ segments: [segment('EA100', '07:00'), segment('EA102', '09:30')] }] } }));
+    msg.on('bookings', 'GET', `/bookings/${idaVuelta}`, () => ({ status: 200, body: { itineraries: [{ segments: [segment('EA100', '07:00')] }, { segments: [segment('EA101', '12:00')] }] } }));
+    msg.on('bookings', 'GET', `/bookings/${soloIda}`, () => ({ status: 200, body: { itineraries: [{ segments: [segment('EA100', '07:00')] }] } }));
+
+    expect((await svc(http().get(`/composition/flights/EA100/delay-impact?date=${today}&delayMinutes=60`))).status).toBe(400); // sin X-Actor-Id
+    expect((await svc(http().get(`/composition/flights/EA100/delay-impact?date=${today}&delayMinutes=0`)).set('X-Actor-Id', ADMIN)).status).toBe(400);
+    const ok = await svc(http().get(`/composition/flights/EA100/delay-impact?date=${today}&delayMinutes=60`)).set('X-Actor-Id', ADMIN);
+    expect(ok.status).toBe(200);
+    expectContract('GET', '/composition/flights/{flightNumber}/delay-impact', ok);
+    expect(ok.body).toMatchObject({ delayMinutes: 60, bookings: 3, passengers: 6, nextFlight: { flightNumber: 'EA101', conflict: true, suggestedDelayMinutes: 35 } });
+    // Conexión: llega 08:50 y su escala sale 09:30 → 40 min < 60. La vuelta de las 12:00 tiene margen (190 ≥ 120).
+    expect(ok.body.tightConnections).toEqual([{ bookingId: conexion, pnr: 'PNR000', channel: 'BOOKING', kind: 'CONNECTION', nextFlightNumber: 'EA102', nextDepartureAt: at('09:30'), availableMinutes: 40, requiredMinutes: 60 }]);
+  });
+
   it('integración con Booking: último token (Identity), webhooks, stock (Offers) y último evento entrante', async () => {
     msg.on('identity', 'GET', '/partners/BOOKING_PROTOTIPO', () => ({ status: 200, body: { clientId: 'BOOKING_PROTOTIPO', lastTokenAt: '2026-10-25T10:00:00.000Z' } }));
     msg.on('webhooks', 'GET', '/stats', () => ({ status: 200, body: { subscriptions: 1, pending: 0, retrying: 0, exhaustedLast24h: 0, deliveredLast24h: 5, lastDeliveredAt: null } }));
@@ -569,6 +602,45 @@ describe('telemetría del panel (V2.16, D50)', () => {
     await admin(http().get(`/composition/telemetry/traces/${corr}`).query({ from: 'ayer' })).expect(400);
   });
 
+  it('★ T-2: sin rango, la ventana de Loki sale de las sagas y eventos del proceso (±10 min); sin ellos, las últimas 3 h', async () => {
+    const corr = 'corr-ventana-automatica';
+    msg.on('loki', 'GET', /^\/loki\/api\/v1\/query_range\?/, () => ({ status: 200, body: { data: { result: [] } } }));
+    const createdAt = '2026-11-05T14:00:00.000Z';
+    const updatedAt = '2026-11-05T14:00:03.000Z';
+    msg.on('webhooks', 'GET', /^\/history\?/, () => ({ status: 200, body: { items: [] } }));
+    msg.on('webhooks', 'GET', /^\/history\?correlationId=corr-ventana-automatica/, () => ({ status: 200, body: { items: [{ seq: 1, id: 'e1', type: 'ec.edu.epn.booking.vuelos.booking.confirmed', subject: 'b1', time: '2026-11-05T14:00:05.000Z', correlationId: corr, public: true, data: null, deliveries: [] }] } }));
+    await store.insertSaga({ sagaId: randomUUID(), type: 'CREATE_BOOKING', status: 'COMPLETED', input: {}, steps: [], result: null, error: null, ownerId: OWNER, actorId: null, correlationId: corr, parentSagaId: null, attempts: 0, leaseUntil: createdAt, nextAttemptAt: createdAt, createdAt, updatedAt });
+    const response = await admin(http().get(`/composition/telemetry/traces/${corr}`)).expect(200);
+    expectContract('GET', '/composition/telemetry/traces/{correlationId}', response);
+    expect(response.body.window).toEqual({ from: '2026-11-05T13:50:00.000Z', to: '2026-11-05T14:10:05.000Z', source: 'RECORDS' });
+    const loki = new URL(msg.calls('loki').at(-1)!.path, 'http://x').searchParams;
+    expect([loki.get('start'), loki.get('end')]).toEqual([String(Date.parse('2026-11-05T13:50:00.000Z') * 1_000_000), String(Date.parse('2026-11-05T14:10:05.000Z') * 1_000_000)]);
+
+    // Sin sagas ni eventos: las últimas 3 h, y el 404 lo dice.
+    const before = Date.now();
+    const missing = await admin(http().get('/composition/telemetry/traces/corr-nada')).expect(404);
+    expect(missing.body.title).toContain('últimas 3 horas');
+    const last = new URL(msg.calls('loki').at(-1)!.path, 'http://x').searchParams;
+    expect(Number(last.get('end')) / 1_000_000 - Number(last.get('start')) / 1_000_000).toBe(3 * 3_600_000);
+    expect(Number(last.get('end')) / 1_000_000).toBeGreaterThanOrEqual(before);
+  });
+
+  it('★ T-2: si Loki tarda, vienen las sagas y los eventos con el aviso honesto; sin nada más, 503 con el mismo aviso', async () => {
+    const corr = 'corr-loki-lento';
+    msg.on('loki', 'GET', /^\/loki\/api\/v1\/query_range\?/, () => ({ status: 200, delayMs: 3_500, body: { data: { result: [] } } }));
+    msg.on('webhooks', 'GET', /^\/history\?/, () => ({ status: 200, body: { items: [] } }));
+    const now = new Date().toISOString();
+    await store.insertSaga({ sagaId: randomUUID(), type: 'CHANGE_SEAT', status: 'COMPLETED', input: {}, steps: [], result: null, error: null, ownerId: OWNER, actorId: null, correlationId: corr, parentSagaId: null, attempts: 0, leaseUntil: now, nextAttemptAt: now, createdAt: now, updatedAt: now });
+    const response = await admin(http().get(`/composition/telemetry/traces/${corr}`)).expect(200);
+    expectContract('GET', '/composition/telemetry/traces/{correlationId}', response);
+    expect(response.body.steps).toEqual([]);
+    expect(response.body.sagas).toEqual([expect.objectContaining({ type: 'CHANGE_SEAT' })]);
+    expect(response.body.stepsError).toBe('La búsqueda tardó demasiado: prueba con un rango más corto.');
+
+    const alone = await admin(http().get('/composition/telemetry/traces/corr-sin-sagas-lento')).expect(503);
+    expect(alone.body.detail).toBe('La búsqueda tardó demasiado: prueba con un rango más corto.');
+  }, 15_000);
+
   it('★ panel O-2: historial de una reserva — sus sagas con los pasos (sin entrada ni resultado) y sus eventos por `subject`', async () => {
     const bookingId = randomUUID();
     const earlier = new Date(Date.now() - 60_000).toISOString();
@@ -618,3 +690,81 @@ describe('telemetría del panel (V2.16, D50)', () => {
     expect(down.body.code).toBe('PROVIDER_UNAVAILABLE');
   });
 });
+
+describe('catálogo de aeropuertos (PLAN_Telemetria_Asientos M-1)', () => {
+  const airport = { code: 'JPJ', city: 'Jipijapa', name: 'Aeródromo de Jipijapa', country: 'EC', province: 'Manabí', lat: -1.3486, lon: -80.5786, utcOffsetMinutes: -300, active: true, updatedAt: '2026-11-10T00:00:00Z' };
+  // La prueba de «MS.G caído» deja abierto el circuito de Schedule.
+  beforeEach(() => upstreams.rest.schedule.breaker.reset());
+  afterEach(() => removeAirport('JPJ'));
+
+  it('★ el enrutador pasa las escrituras a Schedule y el catálogo del ESB se actualiza en el acto (alta, cambio y baja)', async () => {
+    msg.on('schedule', 'POST', '/airports', () => ({ status: 201, body: airport }));
+    msg.on('schedule', 'PUT', '/airports/JPJ', () => ({ status: 200, body: { ...airport, country: 'CO' } }));
+    msg.on('schedule', 'DELETE', '/airports/JPJ', () => ({ status: 204 }));
+    const created = await svc(http().post('/router/schedule/airports')).set('X-Actor-Id', ADMIN).send({ code: 'JPJ', city: 'Jipijapa', name: 'Aeródromo de Jipijapa', country: 'EC', lat: -1.3486, lon: -80.5786, utcOffsetMinutes: -300 });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(msg.calls('schedule', 'POST', '/airports')[0]!.headers['x-actor-id']).toBe(ADMIN);
+    expect(AIRPORTS['JPJ']).toMatchObject({ city: 'Jipijapa', country: 'EC', active: true });
+    expect((await svc(http().put('/router/schedule/airports/JPJ')).set('X-Actor-Id', ADMIN).send({ ...airport })).status).toBe(200);
+    expect(AIRPORTS['JPJ']!.country).toBe('CO'); // ahora sería internacional desde Quito
+    expect((await svc(http().delete('/router/schedule/airports/JPJ')).set('X-Actor-Id', ADMIN)).status).toBe(204);
+    expect(AIRPORTS['JPJ']).toBeUndefined();
+  });
+
+  it('una escritura que Schedule rechaza no cambia el catálogo', async () => {
+    msg.on('schedule', 'DELETE', '/airports/UIO', () => ({ status: 409, body: { type: 'about:blank', title: 'UIO está en uso: no se puede borrar.', status: 409, code: 'AIRPORT_IN_USE' } }));
+    expect((await svc(http().delete('/router/schedule/airports/UIO')).set('X-Actor-Id', ADMIN)).status).toBe(409);
+    expect(AIRPORTS['UIO']).toEqual(SEED_AIRPORTS['UIO']);
+  });
+});
+
+describe('catálogo de tipos de avión (PLAN_Telemetria_Asientos M-2)', () => {
+  beforeEach(() => upstreams.rest.schedule.breaker.reset());
+  it('el enrutador reenvía el nombre del tipo codificado en la ruta (con espacios)', async () => {
+    msg.on('schedule', 'PUT', /^\/aircraft-types\//, () => ({ status: 409, body: { type: 'about:blank', title: 'El Embraer E195-E2 tiene aviones: no se cambia.', status: 409, code: 'AIRCRAFT_TYPE_IN_USE' } }));
+    msg.on('schedule', 'DELETE', /^\/aircraft-types\//, () => ({ status: 204 }));
+    const changed = await svc(http().put('/router/schedule/aircraft-types/Embraer%20E195-E2')).set('X-Actor-Id', ADMIN).send({ registrationPrefix: 'HC-E', maxRouteKm: 1000, turnaroundMinutes: 30, business: { seats: 12, configuration: '2-2' }, economy: { seats: 112, configuration: '2-4-2' } });
+    expect([changed.status, changed.body.code]).toEqual([409, 'AIRCRAFT_TYPE_IN_USE']);
+    expect(msg.calls('schedule', 'PUT').at(-1)!.path).toBe('/aircraft-types/Embraer%20E195-E2');
+    expect((await svc(http().delete('/router/schedule/aircraft-types/Embraer%20E195-E2')).set('X-Actor-Id', ADMIN)).status).toBe(204);
+  });
+});
+
+describe('vista «Recorrido» y mapa en vivo (PLAN_Telemetria_Asientos T-4)', () => {
+  const admin = (call: request.Test) => svc(call).set('X-Actor-Id', ADMIN);
+  const otlp = (spans: unknown[]) => ({ trace: { resourceSpans: [{ resource: { attributes: [{ key: 'service.name', value: { stringValue: 'gateway' } }] }, scopeSpans: [{ spans }] }] } });
+
+  it('★ recorrido: busca en Tempo por correlation_id dentro de la ventana de sus sagas, trae cada traza y arma los saltos', async () => {
+    const corr = 'corr-recorrido-1';
+    const at = '2026-11-05T14:00:00.000Z';
+    msg.on('webhooks', 'GET', /^\/history\?/, () => ({ status: 200, body: { items: [] } }));
+    await store.insertSaga({ sagaId: randomUUID(), type: 'CREATE_BOOKING', status: 'COMPLETED', input: {}, steps: [], result: null, error: null, ownerId: OWNER, actorId: null, correlationId: corr, parentSagaId: null, attempts: 0, leaseUntil: at, nextAttemptAt: at, createdAt: at, updatedAt: at });
+    msg.on('tempo', 'GET', /^\/api\/search\?/, () => ({ status: 200, body: { traces: [{ traceID: 'abc' }] } }));
+    msg.on('tempo', 'GET', '/api/v2/traces/abc', () => ({ status: 200, body: otlp([{ traceId: 'abc', spanId: 's1', name: 'POST', kind: 'SPAN_KIND_SERVER', startTimeUnixNano: '1794297355000000000', endTimeUnixNano: '1794297355500000000', attributes: [{ key: 'http.request.method', value: { stringValue: 'POST' } }, { key: 'http.route', value: { stringValue: '/api/graphql' } }] }]) }));
+    const response = await admin(http().get(`/composition/telemetry/journeys/${corr}`)).expect(200);
+    expectContract('GET', '/composition/telemetry/journeys/{correlationId}', response);
+    expect(response.body).toMatchObject({ correlationId: corr, traces: 1, hops: [{ sequence: 1, from: 'cliente', to: 'gateway', operation: 'POST /api/graphql', durationMs: 500 }], window: { source: 'RECORDS' } });
+    const search = new URL(msg.calls('tempo', 'GET', /^\/api\/search/)[0]!.path, 'http://x').searchParams;
+    expect(search.get('q')).toBe(`{ span.correlation_id = "${corr}" }`);
+    expect([search.get('start'), search.get('end')]).toEqual([String(Date.parse('2026-11-05T13:50:00Z') / 1000), String(Date.parse('2026-11-05T14:10:00Z') / 1000)]);
+    // Sin trazas: 404; sin X-Actor-Id: 403.
+    msg.on('tempo', 'GET', /^\/api\/search\?/, () => ({ status: 200, body: { traces: [] } }));
+    expect((await admin(http().get('/composition/telemetry/journeys/corr-sin-trazas')).expect(404)).body.title).toContain('últimas 3 horas');
+    await svc(http().get(`/composition/telemetry/journeys/${corr}`)).expect(403);
+  });
+
+  it('★ mapa en vivo: aristas de los últimos 5 min con peticiones, errores por minuto y p95, de la más usada a la menos', async () => {
+    msg.on('prometheus', 'GET', /^\/api\/v1\/query\?/, (r) => {
+      const query = new URL(r.path, 'http://x').searchParams.get('query')!;
+      const value = query.includes('failed') ? ['0.5', '0'] : query.includes('histogram_quantile') ? ['120', '35.5'] : ['12', '3'];
+      return { status: 200, body: { status: 'success', data: { resultType: 'vector', result: [{ metric: { client: 'esb', server: 'ms-g-bookings' }, value: [1, value[1]] }, { metric: { client: 'gateway', server: 'ms-reservas' }, value: [1, value[0]] }] } } };
+    });
+    const response = await admin(http().get('/composition/telemetry/system-map')).expect(200);
+    expectContract('GET', '/composition/telemetry/system-map', response);
+    expect(response.body.edges).toEqual([
+      { from: 'gateway', to: 'ms-reservas', requestsPerMinute: 12, errorsPerMinute: 0.5, p95Ms: 120 },
+      { from: 'esb', to: 'ms-g-bookings', requestsPerMinute: 3, errorsPerMinute: 0, p95Ms: 35.5 },
+    ]);
+  });
+});
+

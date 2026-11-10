@@ -98,6 +98,48 @@ export interface FlightStatusChange {
   reason?: string;
 }
 
+/** Impacto de un retraso (R-1, solo consulta): el siguiente vuelo del mismo avión y los pasajeros con poco margen. */
+export interface FlightDelayImpact {
+  flightNumber: string;
+  date: string;
+  delayMinutes: number;
+  scheduledDepartureAt: string;
+  scheduledArrivalAt: string;
+  estimatedDepartureAt: string;
+  estimatedArrivalAt: string;
+  aircraft: { registration: string; aircraftType: string; turnaroundMinutes: number };
+  nextFlight: {
+    flightNumber: string;
+    date: string;
+    origin: string;
+    destination: string;
+    scheduledDepartureAt: string;
+    departureAt: string;
+    status: FlightOperationalStatus;
+    readyAt: string;
+    conflict: boolean;
+    suggestedDelayMinutes: number | null;
+  } | null;
+  bookings: number;
+  passengers: number;
+  tightConnections: { bookingId: string; pnr: string; channel: string; kind: 'CONNECTION' | 'RETURN'; nextFlightNumber: string; nextDepartureAt: string; availableMinutes: number; requiredMinutes: number }[];
+}
+
+export const getFlightDelayImpact = (token: string, flightNumber: string, date: string, delayMinutes: number) =>
+  graphql<{ flightDelayImpact: FlightDelayImpact }>(
+    `query ImpactoDelRetraso($flightNumber: String!, $date: Date!, $delayMinutes: Int!) {
+      flightDelayImpact(flightNumber: $flightNumber, date: $date, delayMinutes: $delayMinutes) {
+        flightNumber date delayMinutes scheduledDepartureAt scheduledArrivalAt estimatedDepartureAt estimatedArrivalAt
+        aircraft { registration aircraftType turnaroundMinutes }
+        nextFlight { flightNumber date origin destination scheduledDepartureAt departureAt status readyAt conflict suggestedDelayMinutes }
+        bookings passengers
+        tightConnections { bookingId pnr channel kind nextFlightNumber nextDepartureAt availableMinutes requiredMinutes }
+      }
+    }`,
+    { flightNumber, date, delayMinutes },
+    { token },
+  ).then((data) => data.flightDelayImpact);
+
 export const updateFlightStatus = (token: string, flightNumber: string, input: FlightStatusChange) =>
   graphql<{ updateFlightStatus: { previousStatus: FlightOperationalStatus; affectedBookings: number; flight: { status: FlightOperationalStatus } } }>(
     `mutation EstadoDeVuelo($flightNumber: String!, $input: FlightStatusUpdateInput!) {
@@ -147,6 +189,10 @@ export interface BookingIntegration {
 }
 export interface CorrelationTrace {
   correlationId: string;
+  /** Dónde se buscaron los pasos en Loki (T-2): RANGE el rango pedido, RECORDS sus sagas y eventos ±10 min, DEFAULT 3 h. */
+  window: { from: string; to: string; source: 'RANGE' | 'RECORDS' | 'DEFAULT' } | null;
+  /** Si Loki no respondió a tiempo: por qué faltan los pasos. */
+  stepsError: string | null;
   steps: { timestamp: string; service: string; operation: string; status: string; latencyMs: number; requestId: string | null; traceId: string | null }[];
   sagas: { sagaId: string; type: string; status: string }[];
   events: { id: string; type: string; time: string }[];
@@ -190,6 +236,8 @@ export const getCorrelationTrace = (token: string, correlationId: string, range:
       telemetry {
         trace(correlationId: $correlationId, from: $from, to: $to) {
           correlationId
+          window { from to source }
+          stepsError
           steps { timestamp service operation status latencyMs requestId traceId }
           sagas { sagaId type status }
           events { id type time }
@@ -199,6 +247,66 @@ export const getCorrelationTrace = (token: string, correlationId: string, range:
     { correlationId, ...range },
     { token },
   ).then((data) => data.telemetry.trace);
+
+// ── Vista «Recorrido» y mapa en vivo (PLAN_Telemetria_Asientos T-4) ──
+export type JourneyLayer = 'CLIENT' | 'GATEWAY' | 'RESPONSE' | 'ESB' | 'MANAGEMENT' | 'EXTERNAL';
+export interface JourneyHop {
+  sequence: number;
+  from: string;
+  to: string;
+  operation: string;
+  /** Milisegundos desde el inicio del proceso. */
+  startMs: number;
+  durationMs: number;
+  status: 'OK' | 'ERROR';
+  httpStatus: number | null;
+  traceId: string;
+}
+export interface Journey {
+  correlationId: string;
+  startedAt: string | null;
+  durationMs: number;
+  traces: number;
+  nodes: { id: string; layer: JourneyLayer }[];
+  hops: JourneyHop[];
+  truncated: boolean;
+}
+export interface SystemMapEdge {
+  from: string;
+  to: string;
+  requestsPerMinute: number;
+  errorsPerMinute: number;
+  p95Ms: number | null;
+}
+export interface SystemMap {
+  generatedAt: string;
+  windowMinutes: number;
+  edges: SystemMapEdge[];
+}
+
+/** Recorrido de un proceso de servicio en servicio (Tempo); `null` si no tiene trazas. */
+export const getJourney = (token: string, correlationId: string, range: { from?: string; to?: string } = {}) =>
+  graphql<{ telemetry: { journey: Journey | null } }>(
+    `query Recorrido($correlationId: String!, $from: DateTime, $to: DateTime) {
+      telemetry {
+        journey(correlationId: $correlationId, from: $from, to: $to) {
+          correlationId startedAt durationMs traces truncated
+          nodes { id layer }
+          hops { sequence from to operation startMs durationMs status httpStatus traceId }
+        }
+      }
+    }`,
+    { correlationId, ...range },
+    { token },
+  ).then((data) => data.telemetry.journey);
+
+/** Quién llama a quién en los últimos 5 minutos (grafo de servicios de Tempo, en Prometheus). */
+export const getSystemMap = (token: string) =>
+  graphql<{ telemetry: { systemMap: SystemMap } }>(
+    'query MapaEnVivo { telemetry { systemMap { generatedAt windowMinutes edges { from to requestsPerMinute errorsPerMinute p95Ms } } } }',
+    {},
+    { token },
+  ).then((data) => data.telemetry.systemMap);
 
 // ── Eventos de dominio y entregas de webhooks ──
 export interface EventDelivery {
@@ -271,7 +379,8 @@ export const getRecentEvents = (token: string, filter: EventFilter = {}) =>
 
 // ── Rutas programadas (saga "Publicar horario") ──
 export type WeekdayCode = 'SUN' | 'MON' | 'TUE' | 'WED' | 'THU' | 'FRI' | 'SAT';
-export type AircraftTypeName = 'Airbus A220-300' | 'Airbus A320neo' | 'Boeing 787-9';
+/** Nombre de un tipo del catálogo (M-2: ya no es una lista fija). */
+export type AircraftTypeName = string;
 
 export interface ScheduledRouteRequest {
   origin: string;
@@ -363,13 +472,41 @@ export interface AircraftTypeInfo {
   maxRouteKm: number | null;
   turnaroundMinutes: number;
   inFleet: number;
+  /** Distribución de cada cabina (M-2). */
+  cabins: { cabinClass: string; seats: number; configuration: string; layout: string; firstRow: number; lastRow: number; exitRows: number[]; extraLegroomRows: number[] }[];
+  source: string | null;
 }
+
+/** Lo que escribe el administrador de un tipo (M-2). */
+export interface AircraftTypeInput {
+  registrationPrefix: string;
+  maxRouteKm: number | null;
+  turnaroundMinutes: number;
+  business: { seats: number; configuration: string };
+  economy: { seats: number; configuration: string };
+}
+const AIRCRAFT_TYPE = 'aircraftType registrationPrefix seats { cabinClass seats } totalSeats maxRouteKm turnaroundMinutes inFleet source cabins { cabinClass seats configuration layout firstRow lastRow exitRows extraLegroomRows }';
+
+export const createAircraftType = (token: string, input: AircraftTypeInput & { aircraftType: string }) =>
+  graphql<{ createAircraftType: AircraftTypeInfo }>(`mutation AltaDeTipo($input: CreateAircraftTypeInput!) { createAircraftType(input: $input) { ${AIRCRAFT_TYPE} } }`, { input }, { token }).then(
+    (data) => data.createAircraftType,
+  );
+
+export const updateAircraftType = (token: string, aircraftType: string, input: AircraftTypeInput) =>
+  graphql<{ updateAircraftType: AircraftTypeInfo }>(
+    `mutation EditarTipo($aircraftType: String!, $input: AircraftTypeInput!) { updateAircraftType(aircraftType: $aircraftType, input: $input) { ${AIRCRAFT_TYPE} } }`,
+    { aircraftType, input },
+    { token },
+  ).then((data) => data.updateAircraftType);
+
+export const deleteAircraftType = (token: string, aircraftType: string) =>
+  graphql<{ deleteAircraftType: boolean }>('mutation BorrarTipo($aircraftType: String!) { deleteAircraftType(aircraftType: $aircraftType) }', { aircraftType }, { token }).then(() => undefined);
 
 const AIRCRAFT = 'registration aircraftType base status routes totalSeats source createdAt updatedAt';
 
 export const listAircraftTypes = (token: string) =>
   graphql<{ aircraftTypes: AircraftTypeInfo[] }>(
-    'query TiposDeAvion { aircraftTypes { aircraftType registrationPrefix seats { cabinClass seats } totalSeats maxRouteKm turnaroundMinutes inFleet } }',
+    `query TiposDeAvion { aircraftTypes { ${AIRCRAFT_TYPE} } }`,
     {},
     { token },
   ).then((data) => data.aircraftTypes);
@@ -396,6 +533,40 @@ export const retireAircraft = (token: string, registration: string) =>
   graphql<{ deleteAircraft: boolean }>('mutation RetirarAvion($registration: String!) { deleteAircraft(registration: $registration) }', { registration }, { token }).then(
     () => undefined,
   );
+
+// ── Catálogo de aeropuertos (M-1) ──
+export interface CatalogAirport {
+  code: string;
+  city: string;
+  name: string;
+  /** ISO 3166-1 alfa-2 (EC, CO, US…). */
+  country: string;
+  province: string | null;
+  lat: number;
+  lon: number;
+  /** Desfase fijo respecto de UTC en minutos (−300 = UTC−5). */
+  utcOffsetMinutes: number;
+  active: boolean;
+  updatedAt: string | null;
+}
+export type AirportInput = Omit<CatalogAirport, 'code' | 'updatedAt'>;
+const AIRPORT = 'code city name country province lat lon utcOffsetMinutes active updatedAt';
+
+export const listCatalogAirports = (token: string) =>
+  graphql<{ airports: CatalogAirport[] }>(`query CatalogoAeropuertos { airports { ${AIRPORT} } }`, {}, { token }).then((data) => data.airports);
+
+export const createAirport = (token: string, input: AirportInput & { code: string }) =>
+  graphql<{ createAirport: CatalogAirport }>(`mutation AltaDeAeropuerto($input: CreateAirportInput!) { createAirport(input: $input) { ${AIRPORT} } }`, { input }, { token }).then(
+    (data) => data.createAirport,
+  );
+
+export const updateAirport = (token: string, code: string, input: AirportInput) =>
+  graphql<{ updateAirport: CatalogAirport }>(`mutation EditarAeropuerto($code: IataCode!, $input: AirportInput!) { updateAirport(code: $code, input: $input) { ${AIRPORT} } }`, { code, input }, { token }).then(
+    (data) => data.updateAirport,
+  );
+
+export const deleteAirport = (token: string, code: string) =>
+  graphql<{ deleteAirport: boolean }>('mutation BorrarAeropuerto($code: IataCode!) { deleteAirport(code: $code) }', { code }, { token }).then(() => undefined);
 
 // ── Rotación de la flota en un día ──
 export interface FleetLeg {
@@ -552,7 +723,23 @@ export interface PromotionAgreement {
 export interface PricesView {
   prices: FareClassPrice[];
   updatedAt: string;
+  /** Tarifa base y precios exactos por ruta (P-1). */
+  pricing: PricingSettings;
   promotions: PromotionAgreement[];
+}
+
+export interface RoutePrices {
+  routeId: string;
+  prices: { fareBrand: string; amount: number }[];
+}
+
+export interface PricingSettings {
+  fixedCharge: number;
+  perKm: number;
+  routePrices: RoutePrices[];
+  updatedAt: string | null;
+  updatedBy: string | null;
+  history: { id: string; field: 'FIXED_CHARGE' | 'PER_KM' | 'ROUTE_PRICE'; routeId: string | null; fareBrand: string | null; oldValue: number | null; newValue: number | null; changedBy: string; changedAt: string }[];
 }
 
 export interface PriceChange {
@@ -565,6 +752,7 @@ export interface PriceChange {
 }
 
 const PRICES = `prices { cabinClass fareBrand referenceMultiplier multiplier updatedAt } updatedAt
+  pricing { fixedCharge perKm routePrices { routeId prices { fareBrand amount } } updatedAt updatedBy history { id field routeId fareBrand oldValue newValue changedBy changedAt } }
   promotions { partnerId allowsPromotions maxDiscountPercentage enabledDestinations enabledRoutes enabledCabins validUntil comboConditions }`;
 
 export const getPrices = (token: string) => graphql<{ prices: PricesView }>(`query Precios { prices { ${PRICES} } }`, {}, { token }).then((data) => data.prices);
@@ -584,7 +772,11 @@ export const getPriceHistory = (token: string, limit = 20) =>
 /** Un solo «Guardar»: los precios que cambiaron y el acuerdo de promociones. */
 export const savePrices = (
   token: string,
-  input: { prices?: { cabinClass: CabinClass; fareBrand: string; multiplier: number }[]; promotion?: Omit<PromotionAgreement, 'validUntil' | 'comboConditions'> & { validUntil?: string; comboConditions?: string } },
+  input: {
+    prices?: { cabinClass: CabinClass; fareBrand: string; multiplier: number }[];
+    pricing?: { fixedCharge?: number; perKm?: number; route?: RoutePrices };
+    promotion?: Omit<PromotionAgreement, 'validUntil' | 'comboConditions'> & { validUntil?: string; comboConditions?: string };
+  },
 ) => graphql<{ savePrices: PricesView }>(`mutation GuardarPrecios($input: SavePricesInput!) { savePrices(input: $input) { ${PRICES} } }`, { input }, { token }).then((data) => data.savePrices);
 
 // ── Asistencia por vuelo (dato de salud) ──

@@ -67,7 +67,7 @@ export function CheckInPanel({ booking, onChanged }: { booking: BookingDetail; o
 
   return (
     <div>
-      <p className="muted">El check-in abre 48 horas antes de la salida y cierra 60 minutos antes. Si no elegiste asiento, te asignamos uno.</p>
+      <p className="muted">El check-in abre 48 horas antes de la salida y cierra a la hora de salida (a la nueva hora, si el vuelo está retrasado). Si no elegiste asiento, te asignamos uno.</p>
       <button type="button" className="btn btn-primary" onClick={doCheckIn} disabled={busy}>
         {busy ? 'Procesando…' : passes?.length ? 'Actualizar check-in' : 'Hacer check-in'}
       </button>

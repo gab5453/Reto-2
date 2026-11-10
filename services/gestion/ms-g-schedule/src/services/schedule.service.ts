@@ -1,20 +1,18 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
-  AIRCRAFT_MAX_ROUTE_KM,
-  AIRCRAFT_TYPES,
   AIRPORTS,
   type AircraftType,
   distanceKm,
   nextRegistration,
   ProblemDetailsException,
-  REGISTRATION_PREFIX,
-  seatsByCabin,
   totalSeats,
   TURNAROUND_MINUTES,
 } from '@ecoairlines/shared';
 import { addDays, formatLocalIso, localToUtcMs } from '../domain/dates.js';
 import { type AircraftRecord, type RouteRecord, type ScheduleState, WEEKDAY_CODES } from '../domain/model.js';
 import {
+  assertActiveAirport,
+  assertAircraftType,
   assertAirport,
   assertNotDuplicated,
   assertWithoutSoldSeats,
@@ -66,6 +64,11 @@ export class ScheduleService {
     const route = await this.repository.changeSchedule((state) => {
       const [outbound, inbound] = restoreRouteId ? restoredFlightNumbers(restoreRouteId, state.routes) : nextFlightNumbers(state.routes);
       const now = new Date().toISOString();
+      // La compensación que restaura una ruta borrada la recrea aunque su aeropuerto se haya desactivado después.
+      if (!restoreRouteId) {
+        assertActiveAirport(request.origin, 'origin');
+        assertActiveAirport(request.destination, 'destination');
+      }
       const definition = toRouteDefinition(request, outbound, inbound, routeAircraftType(request, state.fleet));
       assertNotDuplicated(definition, state.routes);
       // Sin aviones elegidos: el horario agrega los que hagan falta (con base en el origen).
@@ -88,6 +91,8 @@ export class ScheduleService {
     const route = await this.repository.changeSchedule((state) => {
       const current = this.requireRoute(state, routeId);
       assertWithoutSoldSeats(routeId, soldSeats);
+      if (request.origin !== current.origin) assertActiveAirport(request.origin, 'origin');
+      if (request.destination !== current.destination) assertActiveAirport(request.destination, 'destination');
       const definition = toRouteDefinition(request, current.outbound.flightNumber, current.inbound.flightNumber, routeAircraftType(request, state.fleet));
       assertNotDuplicated(definition, state.routes);
       // Sin aviones elegidos: conserva los que ya tenía (si siguen sirviendo) y agrega los que falten.
@@ -121,19 +126,6 @@ export class ScheduleService {
   }
 
   // ------------------------------------------------------------------ flota
-  async listAircraftTypes() {
-    const { state } = await this.current();
-    return AIRCRAFT_TYPES.map((aircraftType) => ({
-      aircraftType,
-      registrationPrefix: REGISTRATION_PREFIX[aircraftType],
-      seats: seatsByCabin(aircraftType),
-      totalSeats: totalSeats(aircraftType),
-      maxRouteKm: AIRCRAFT_MAX_ROUTE_KM[aircraftType],
-      turnaroundMinutes: TURNAROUND_MINUTES[aircraftType],
-      inFleet: state.fleet.filter((plane) => plane.aircraftType === aircraftType).length,
-    }));
-  }
-
   async listAircraft() {
     const { state } = await this.current();
     const routes = routesByAircraft(state);
@@ -148,6 +140,7 @@ export class ScheduleService {
   /** La matrícula es la siguiente libre del tipo. Un avión nuevo sin rutas no cambia el horario. */
   async createAircraft(request: { aircraftType: AircraftType; base: string }, actor: string) {
     assertAirport(request.base, 'base');
+    assertAircraftType(request.aircraftType, 'aircraftType');
     const plane = await this.repository.changeSchedule((state) => {
       const used = new Set(state.fleet.map((candidate) => candidate.registration));
       let sequence = 1;
@@ -309,6 +302,8 @@ function datedFlights(timetable: Timetable, routeOf: Map<string, string>, date: 
         arrivalAt: formatLocalIso(arrival, destination.utcOffsetMinutes),
         aircraftType: flight.aircraft,
         registration: flight.aircraftByDay[weekday]!,
+        // M-2: viaja con el vuelo (FlightStatus lo usa para los retrasos y no conoce el catálogo de tipos).
+        turnaroundMinutes: TURNAROUND_MINUTES[flight.aircraft] ?? 45,
       };
       return { departure, dated };
     })

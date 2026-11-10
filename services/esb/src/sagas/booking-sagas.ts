@@ -115,8 +115,12 @@ export class CreateBookingSaga implements SagaDefinition<CreateBookingInput, { b
     // El descuento solo lo pide un partner (acuerdo B2B, D35); la web no tiene promociones de Booking.
     if (discount && !partnerId) throw problem(422, 'PROMOTION_DISCOUNT_OUT_OF_RANGE', 'Solo un partner con acuerdo de promociones aplica descuentos.');
 
+    // Los asientos pedidos se revisan aquí, ANTES del pago: si alguno ya está tomado, SEAT_TAKEN sin cobrar (T-1, pedido de Booking).
+    const requestedSeats = request.passengers.flatMap((p) =>
+      ((p['assignedSeats'] ?? []) as { segmentId: string; seatNumber: string }[]).map((seat) => ({ passengerId: p.passengerId, segmentId: seat.segmentId, seatNumber: seat.seatNumber })),
+    );
     const validated = await saga.step('offers.validate-hold', () =>
-      this.d.offers.call<Any>('ValidateHold', { holdId: request.holdId, ownerId, ...(discount ? { promotion: { partnerId, discountPercentage: discount } } : {}) }),
+      this.d.offers.call<Any>('ValidateHold', { holdId: request.holdId, ownerId, requestedSeats, ...(discount ? { promotion: { partnerId, discountPercentage: discount } } : {}) }),
     );
     const hold = validated['hold'];
     const expected = cleanMoney(validated['expectedAmount']);
@@ -382,19 +386,30 @@ export class CheckInSaga implements SagaDefinition<{ bookingId: string }, Any> {
       throw problem(409, 'CHECK_IN_NOT_AVAILABLE', 'El check-in exige la reserva confirmada con sus boletos emitidos.');
     }
     const now = Date.now();
-    const window = segmentsOf(booking).filter((s) => now >= Date.parse(s.departure.at) - CHECK_IN_OPENS_MS && now < Date.parse(s.departure.at));
-    if (!window.length) throw problem(409, 'CHECK_IN_NOT_AVAILABLE', 'El check-in abre 48 h antes de la salida y cierra a la hora de salida.');
+    const closed = () => problem(409, 'CHECK_IN_NOT_AVAILABLE', 'El check-in abre 48 h antes de la salida y cierra a la hora de salida (la estimada, si el vuelo está retrasado).');
+    // Candidatos: los que abrieron (48 h antes) y aún no salen; también los que ya pasaron su hora programada en las últimas 24 h,
+    // por si están retrasados (R-1, D-T11: el check-in de un vuelo DELAYED cierra a su salida ESTIMADA).
+    const candidates = segmentsOf(booking).filter((s) => now >= Date.parse(s.departure.at) - CHECK_IN_OPENS_MS && now < Date.parse(s.departure.at) + 24 * 3_600_000);
+    if (!candidates.length) throw closed();
 
     const flights = await saga.step('flight-status.check', async () => {
       const result: Record<string, { gate: string | null }> = {};
-      for (const segment of window) {
+      for (const segment of candidates) {
         const status = await this.d.upstreams.rest['flight-status'].json<Any>('GET', `/flights/${segment.flightNumber}/status?date=${localDate(new Date(segment.departure.at))}`);
+        if (now >= Date.parse(segment.departure.at)) {
+          // Pasó su hora programada: solo sigue abierto si está retrasado y su salida estimada no llegó. Si no, se ignora (p. ej. la
+          // ida que ya voló en un ida y vuelta no bloquea el check-in de la vuelta).
+          const estimated = status['departure']?.['estimatedAt'];
+          if (status['status'] !== 'DELAYED' || !estimated || now >= Date.parse(estimated)) continue;
+        }
         if (status['status'] === 'CANCELLED') throw problem(409, 'FLIGHT_CANCELLED', `El vuelo ${segment.flightNumber} está cancelado.`);
         if (['DEPARTED', 'ARRIVED', 'DIVERTED'].includes(status['status'])) throw problem(409, 'FLIGHT_ALREADY_DEPARTED', `El vuelo ${segment.flightNumber} ya salió.`);
         result[segment.segmentId] = { gate: status['departure']?.['gate'] ?? null };
       }
       return result;
     });
+    const window = candidates.filter((segment) => flights[segment.segmentId]);
+    if (!window.length) throw closed();
 
     const existing = await saga.step('check-in.current', () => this.d.upstreams.rest['check-in'].json<{ items?: Any[] }>('GET', `/check-ins/${bookingId}`).catch(notFoundIs(404)));
     const done = new Set((existing?.items ?? []).map((i) => `${i['passengerId']}|${i['segmentId']}`));

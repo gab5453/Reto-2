@@ -1,4 +1,4 @@
-import type { AircraftType, CabinClass } from '@ecoairlines/shared';
+import type { AircraftType, AircraftTypeSpec, Airport, CabinClass } from '@ecoairlines/shared';
 import type { FleetAircraft, RouteDefinition } from './timetable.js';
 
 /**
@@ -53,6 +53,35 @@ export interface FarePriceRecord {
   updatedBy: string | null;
 }
 
+/**
+ * Tarifa base y precios exactos por ruta (PLAN_Telemetria_Asientos P-1). La tarifa de un adulto en un vuelo, sin impuestos, es
+ * `(fixedCharge + perKm × km) × multiplicador del paquete`, salvo que la ruta tenga un precio exacto para ese paquete (D-T12).
+ */
+export interface PricingSettings {
+  fixedCharge: number;
+  perKm: number;
+  /** routeId → paquete → tarifa base de un adulto en US$, sin impuestos. */
+  routePrices: Record<string, Partial<Record<FareBrand, number>>>;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+/** Los valores con que nació la red (los que estaban fijos en Offers): nada cambia hasta que el administrador los edite. */
+export const DEFAULT_PRICING: Readonly<Pick<PricingSettings, 'fixedCharge' | 'perKm'>> = { fixedCharge: 35, perKm: 0.085 };
+export const FARE_BRANDS: readonly FareBrand[] = ['SEMILLA', 'BROTE', 'BOSQUE', 'DOSEL'];
+
+export interface PricingChangeRecord {
+  id: string;
+  field: 'FIXED_CHARGE' | 'PER_KM' | 'ROUTE_PRICE';
+  routeId: string | null;
+  fareBrand: FareBrand | null;
+  /** null: la ruta no tenía precio exacto (o se quitó). */
+  oldValue: number | null;
+  newValue: number | null;
+  changedBy: string;
+  changedAt: string;
+}
+
 export interface PriceChangeRecord {
   id: string;
   cabinClass: CabinClass;
@@ -82,3 +111,20 @@ export interface PromotionAgreementRecord extends PromotionTerms {
 }
 
 export type { AircraftType, CabinClass };
+
+/** Aeropuerto del catálogo (M-1): el código es la clave y no se edita; `active = false` no se ofrece para rutas nuevas. */
+export type AirportRecord = Airport & { active: boolean; createdAt: string; updatedAt: string; updatedBy: string | null };
+
+/** Cambios de una operación sobre el catálogo de aeropuertos. */
+export interface AirportChanges {
+  saveAirports?: AirportRecord[];
+  deleteAirports?: string[];
+}
+
+/** Tipo de avión del catálogo (M-2): el nombre es la clave. */
+export type AircraftTypeRecord = AircraftTypeSpec & Audit;
+
+export interface AircraftTypeChanges {
+  saveAircraftTypes?: AircraftTypeRecord[];
+  deleteAircraftTypes?: string[];
+}

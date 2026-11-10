@@ -1,3 +1,4 @@
+import { type AircraftTypeSpec, type Airport, registerAircraftTypes, registerAirports } from '@ecoairlines/shared';
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { seatsByCabin } from '@ecoairlines/shared';
@@ -8,6 +9,7 @@ import {
   type CabinClass,
   type FlightRecord,
   type InventoryRecord,
+  type PricingSettingsRecord,
   type PromotionRuleRecord,
   type SeatStatus,
   TAKEN_STATUSES,
@@ -222,8 +224,14 @@ export class InventoryService {
    * Saga "Publicar horario": reemplaza los vuelos a la venta del rango (o de una ruta). Un vuelo con cupos vendidos no se borra
    * ni cambia de tipo de avión (`keptWithSales`). Cada vuelo nuevo o cambiado deja pendiente su stock para Booking.
    */
-  publishTimetable(input: { publishId: string; from: string; to: string; routeId?: string; flights: Omit<FlightRecord, 'segmentId' | 'onSale' | 'closedReason'>[] }) {
+  publishTimetable(input: { publishId: string; from: string; to: string; routeId?: string; flights: Omit<FlightRecord, 'segmentId' | 'onSale' | 'closedReason'>[]; airports?: Airport[]; aircraftTypes?: AircraftTypeSpec[] }) {
+    // M-1 y M-2: con el horario llegan los catálogos de aeropuertos y de tipos de avión de Schedule (antes de armar cupos y
+    // mapas de asientos de un vuelo a un aeropuerto nuevo o con un tipo nuevo).
+    if (input.airports?.length) registerAirports(input.airports);
+    if (input.aircraftTypes?.length) registerAircraftTypes(input.aircraftTypes);
     return this.saga(`publish-timetable:${input.publishId}`, async (tx) => {
+      if (input.airports?.length) await tx.replaceAirportCatalog(input.airports);
+      if (input.aircraftTypes?.length) await tx.saveAircraftTypeCatalog(input.aircraftTypes);
       const existing = new Map((await tx.flightsInRange(input.from, input.to, input.routeId)).map((flight) => [flight.segmentId, flight]));
       const counters = { added: 0, updated: 0, removed: 0, keptWithSales: 0 };
       const touched: string[] = [];
@@ -280,7 +288,7 @@ export class InventoryService {
   }
 
   /** Saga "Guardar precios y descuento máximo": reemplaza la copia de precios y de reglas de promoción. */
-  publishFarePrices(input: { publishId: string; prices: { cabinClass: CabinClass; fareBrand: string; multiplier: number }[]; promotions: PromotionRuleRecord[] }) {
+  publishFarePrices(input: { publishId: string; prices: { cabinClass: CabinClass; fareBrand: string; multiplier: number }[]; promotions: PromotionRuleRecord[]; pricing?: PricingSettingsRecord }) {
     const outOfRange = input.prices.filter((price) => !(price.multiplier >= 0.5 && price.multiplier <= 10));
     if (outOfRange.length) throw validation('Multiplicador fuera de 0,5–10.', 'prices', outOfRange.map((price) => `${price.cabinClass}/${price.fareBrand}`).join(', '));
     const discount = input.promotions.find((rule) => !(rule.maxDiscountPercentage >= 0 && rule.maxDiscountPercentage <= 50));
@@ -289,6 +297,8 @@ export class InventoryService {
       const before = await tx.farePrices();
       await tx.replaceFarePrices(input.prices);
       await tx.replacePromotionRules(input.promotions);
+      // Sin `pricing` (un publicador anterior a P-1) se conserva la copia vigente.
+      if (input.pricing) await tx.replacePricingSettings(input.pricing);
       const updated = input.prices.filter((price) => before.some((old) => old.cabinClass === price.cabinClass && old.fareBrand === price.fareBrand)).length;
       return { publishId: input.publishId, added: input.prices.length - updated, updated, removed: Math.max(0, before.length - updated), keptWithSales: 0, publishedAt: new Date(this.now()).toISOString() };
     });

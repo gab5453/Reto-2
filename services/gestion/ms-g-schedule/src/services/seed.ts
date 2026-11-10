@@ -1,6 +1,8 @@
 import { Inject, Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { SEED_FLEET, SEED_ROUTES } from '../domain/seed-network.js';
 import { SCHEDULE_REPOSITORY, type ScheduleRepository } from '../repositories/schedule.repository.js';
+import { AircraftTypesService } from './aircraft-types.service.js';
+import { AirportsService } from './airports.service.js';
 import { PricingService } from './pricing.service.js';
 import { PromotionsService } from './promotions.service.js';
 
@@ -20,10 +22,16 @@ export class ScheduleSeed implements OnModuleInit, OnModuleDestroy {
     @Inject(SCHEDULE_REPOSITORY) private readonly repository: ScheduleRepository,
     @Inject(PricingService) private readonly pricing: PricingService,
     @Inject(PromotionsService) private readonly promotions: PromotionsService,
+    @Inject(AirportsService) private readonly airports: AirportsService,
+    @Inject(AircraftTypesService) private readonly aircraftTypes: AircraftTypesService,
   ) {}
 
   async onModuleInit(): Promise<void> {
     await this.repository.init();
+    // M-1: primero el catálogo de aeropuertos (las rutas y el horario lo leen).
+    if (await this.airports.seed()) this.logger.log('Catálogo de aeropuertos sembrado con los 34 de siempre.');
+    // M-2: y el de tipos de avión (asientos, alcance y tiempo en tierra).
+    if (await this.aircraftTypes.seed()) this.logger.log('Catálogo de tipos de avión sembrado con los 3 de siempre.');
     const now = new Date().toISOString();
     const audit = { source: 'NETWORK' as const, createdAt: now, updatedAt: now, updatedBy: null };
     const seeded = await this.repository.seedSchedule({

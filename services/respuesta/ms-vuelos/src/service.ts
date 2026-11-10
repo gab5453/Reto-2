@@ -68,6 +68,12 @@ export function vuelosHandlers(options: VuelosOptions): Record<string, Handler> 
       return { status: 200, body: response.body, headers: replayHeaders(response.replayed) };
     },
 
+    /** Propia (M-1): catálogo de aeropuertos de Schedule, por el enrutador del ESB. Público (los buscadores de la web). */
+    listAirports: async (context) => {
+      const response = await context.esb({ method: 'GET', path: '/router/schedule/airports' });
+      return { status: 200, body: response.body };
+    },
+
     searchFlights: async (context) => {
       const { itineraries, passengers } = context.body as { itineraries: unknown[]; passengers: unknown };
       const response = await context.esb({ method: 'POST', path: '/router/offers/Search', json: { itineraries, passengers } });

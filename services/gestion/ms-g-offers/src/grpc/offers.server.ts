@@ -211,7 +211,8 @@ export class OffersGrpcServer implements OnModuleDestroy {
       ReleaseHold: async (r, m) => ({ hold: codec.hold(await this.holds.release(r['holdId'], ownerFrom(r, m))) }),
       ValidateHold: async (r, m) => {
         const promotion = r['promotion'] ? { partnerId: r['promotion']['partnerId'], discountPercentage: Number(r['promotion']['discountPercentage']) } : undefined;
-        const result = await this.holds.validate(r['holdId'], ownerFrom(r, m) ?? '', promotion);
+        const requested = ((r['requestedSeats'] ?? []) as Request[]).map((seat) => ({ segmentId: seat['segmentId'], seatNumber: seat['seatNumber'] }));
+        const result = await this.holds.validate(r['holdId'], ownerFrom(r, m) ?? '', promotion, requested);
         return { hold: codec.hold(result.hold), expectedAmount: result.expectedAmount };
       },
       ConsumeHold: async (r, m) => {
@@ -303,6 +304,30 @@ export class OffersGrpcServer implements OnModuleDestroy {
             aircraftType: f['aircraftType'],
             registration: f['registration'],
           })),
+          airports: ((r['airports'] as Request[] | undefined) ?? []).map((a) => ({
+            code: a['code'],
+            city: a['city'],
+            name: a['city'],
+            country: a['country'],
+            lat: Number(a['lat']),
+            lon: Number(a['lon']),
+            utcOffsetMinutes: Number(a['utcOffsetMinutes']),
+          })),
+          aircraftTypes: ((r['aircraftTypes'] as Request[] | undefined) ?? []).map((t) => ({
+            name: t['name'],
+            // Prefijo y alcance son cosa de Schedule; Offers solo necesita el mapa de asientos y el tiempo en tierra.
+            registrationPrefix: '',
+            maxRouteKm: null,
+            turnaroundMinutes: Number(t['turnaroundMinutes']),
+            cabins: (t['cabins'] as Request[]).map((c) => ({
+              cabinClass: c['cabinClass'],
+              firstRow: Number(c['firstRow']),
+              lastRow: Number(c['lastRow']),
+              layout: c['layout'],
+              exitRows: ((c['exitRows'] as unknown[] | undefined) ?? []).map(Number),
+              extraLegroomRows: ((c['extraLegroomRows'] as unknown[] | undefined) ?? []).map(Number),
+            })),
+          })),
         }),
       }),
       PublishFarePrices: async (r) => ({
@@ -317,6 +342,18 @@ export class OffersGrpcServer implements OnModuleDestroy {
             cabins: (p['cabins'] as unknown[]).map(cabinOf),
             validUntil: optional<string>(p['validUntil']) ?? null,
           })),
+          ...(r['pricing']
+            ? {
+                pricing: {
+                  fixedCharge: Number(r['pricing']['fixedCharge']),
+                  perKm: Number(r['pricing']['perKm']),
+                  routePrices: ((r['routePrices'] ?? []) as Request[]).reduce<Record<string, Record<string, number>>>((all, price) => {
+                    (all[price['routeId']] ??= {})[price['fareBrand']] = Number(price['amount']);
+                    return all;
+                  }, {}),
+                },
+              }
+            : {}),
         }),
       }),
     };

@@ -12,6 +12,9 @@ receivers:
 processors:
   batch:
     timeout: 2s
+  # T-5: las trazas salen en lotes de 0,5 s (el «Recorrido» en vivo); métricas y logs siguen cada 2 s.
+  batch/trazas:
+    timeout: 500ms
   # Defensa en profundidad: aunque un servicio lo enviara por error, nunca se exportan estos atributos.
   attributes/sin-datos-sensibles:
     actions:
@@ -46,7 +49,7 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, attributes/sin-datos-sensibles, batch]
+      processors: [memory_limiter, attributes/sin-datos-sensibles, batch/trazas]
       exporters: [otlp/tempo]
     metrics:
       receivers: [otlp]

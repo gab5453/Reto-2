@@ -1,3 +1,5 @@
+import type { AircraftTypeSpec } from '@ecoairlines/shared';
+import type { Airport } from '@ecoairlines/shared';
 import type { CloudEvent } from '@ecoairlines/shared';
 import pg from 'pg';
 import type {
@@ -8,11 +10,12 @@ import type {
   HoldRecord,
   InventoryRecord,
   OutboxRecord,
+  PricingSettingsRecord,
   PromotionRuleRecord,
   StockSyncRecord,
   TakenStatus,
 } from '../domain/model.js';
-import { TAKEN_STATUSES } from '../domain/model.js';
+import { DEFAULT_PRICING_SETTINGS, TAKEN_STATUSES } from '../domain/model.js';
 import { type CupoState, type OffersStore, type OffersTx, SeatTakenError } from './offers.store.js';
 
 /**
@@ -86,6 +89,21 @@ CREATE TABLE IF NOT EXISTS fare_prices (
   fare_brand  text NOT NULL,
   multiplier  numeric(6, 3) NOT NULL,
   PRIMARY KEY (cabin_class, fare_brand)
+);
+-- P-1: copia de la tarifa base y los precios por ruta de Schedule (una fila).
+-- M-1: copia del catálogo de aeropuertos de Schedule (la publica el ESB con el horario).
+CREATE TABLE IF NOT EXISTS airport_catalog (
+  id       smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  airports jsonb NOT NULL
+);
+-- M-2: copia acumulada del catálogo de tipos de avión (mapa de asientos y cupos por cabina).
+CREATE TABLE IF NOT EXISTS aircraft_type_catalog (
+  name text PRIMARY KEY,
+  spec jsonb NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pricing_settings (
+  id       smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  settings jsonb NOT NULL
 );
 CREATE TABLE IF NOT EXISTS promotion_rules (
   partner_id              text PRIMARY KEY,
@@ -389,6 +407,29 @@ export class PostgresOffersStore implements OffersStore {
       replaceFarePrices: async (prices: FarePriceRecord[]) => {
         await db.query('DELETE FROM fare_prices');
         for (const p of prices) await db.query('INSERT INTO fare_prices (cabin_class, fare_brand, multiplier) VALUES ($1, $2, $3)', [p.cabinClass, p.fareBrand, p.multiplier]);
+      },
+      pricingSettings: async () => {
+        const { rows } = await db.query('SELECT settings FROM pricing_settings WHERE id = 1');
+        return (rows[0]?.['settings'] as PricingSettingsRecord | undefined) ?? structuredClone(DEFAULT_PRICING_SETTINGS);
+      },
+      replacePricingSettings: async (settings: PricingSettingsRecord) => {
+        await db.query('INSERT INTO pricing_settings (id, settings) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings', [JSON.stringify(settings)]);
+      },
+      airportCatalog: async () => {
+        const { rows } = await db.query('SELECT airports FROM airport_catalog WHERE id = 1');
+        return (rows[0]?.['airports'] as Airport[] | undefined) ?? [];
+      },
+      replaceAirportCatalog: async (airports: Airport[]) => {
+        await db.query('INSERT INTO airport_catalog (id, airports) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET airports = EXCLUDED.airports', [JSON.stringify(airports)]);
+      },
+      aircraftTypeCatalog: async () => {
+        const { rows } = await db.query('SELECT spec FROM aircraft_type_catalog ORDER BY name');
+        return rows.map((row: Row) => row['spec'] as AircraftTypeSpec);
+      },
+      saveAircraftTypeCatalog: async (types: AircraftTypeSpec[]) => {
+        for (const type of types) {
+          await db.query('INSERT INTO aircraft_type_catalog (name, spec) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET spec = EXCLUDED.spec', [type.name, JSON.stringify(type)]);
+        }
       },
       promotionRule: async (partnerId) => {
         const { rows } = await db.query('SELECT * FROM promotion_rules WHERE partner_id = $1', [partnerId]);

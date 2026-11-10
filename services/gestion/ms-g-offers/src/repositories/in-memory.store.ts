@@ -1,3 +1,5 @@
+import type { AircraftTypeSpec } from '@ecoairlines/shared';
+import type { Airport } from '@ecoairlines/shared';
 import type { CloudEvent } from '@ecoairlines/shared';
 import type {
   BookingSeatRecord,
@@ -8,10 +10,11 @@ import type {
   HoldStatus,
   InventoryRecord,
   OutboxRecord,
+  PricingSettingsRecord,
   PromotionRuleRecord,
   StockSyncRecord,
 } from '../domain/model.js';
-import { available } from '../domain/model.js';
+import { available, DEFAULT_PRICING_SETTINGS } from '../domain/model.js';
 import { type CupoState, type OffersStore, type OffersTx, SeatTakenError } from './offers.store.js';
 
 const clone = <T>(value: T): T => structuredClone(value);
@@ -28,6 +31,9 @@ export class InMemoryOffersStore implements OffersStore {
   private readonly seats = new Map<string, BookingSeatRecord>();
   private readonly holds = new Map<string, HoldRecord>();
   private prices: FarePriceRecord[] = [];
+  private pricing: PricingSettingsRecord = clone(DEFAULT_PRICING_SETTINGS);
+  private airports: Airport[] = [];
+  private aircraftTypes: AircraftTypeSpec[] = [];
   private rules: PromotionRuleRecord[] = [];
   private readonly sagas = new Map<string, unknown>();
   private readonly outboxRecords: OutboxRecord[] = [];
@@ -172,6 +178,25 @@ export class InMemoryOffersStore implements OffersStore {
         const previous = this.prices;
         undo.push(() => (this.prices = previous));
         this.prices = clone(prices);
+      },
+      pricingSettings: async () => clone(this.pricing),
+      replacePricingSettings: async (settings) => {
+        const previous = this.pricing;
+        undo.push(() => (this.pricing = previous));
+        this.pricing = clone(settings);
+      },
+      airportCatalog: async () => clone(this.airports),
+      replaceAirportCatalog: async (airports) => {
+        const previous = this.airports;
+        undo.push(() => (this.airports = previous));
+        this.airports = clone(airports);
+      },
+      aircraftTypeCatalog: async () => clone(this.aircraftTypes),
+      saveAircraftTypeCatalog: async (types) => {
+        const previous = this.aircraftTypes;
+        undo.push(() => (this.aircraftTypes = previous));
+        const names = new Set(types.map((type) => type.name));
+        this.aircraftTypes = [...previous.filter((type) => !names.has(type.name)), ...clone(types)];
       },
       promotionRule: async (partnerId) => clone(this.rules.find((rule) => rule.partnerId === partnerId)),
       replacePromotionRules: async (rules) => {

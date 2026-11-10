@@ -1,4 +1,4 @@
-import { AIRCRAFT_TYPES, AIRPORTS, type AircraftType, distanceKm, ProblemDetailsException } from '@ecoairlines/shared';
+import { AIRCRAFT_LAYOUTS, AIRCRAFT_TYPES, AIRPORTS, type AircraftType, distanceKm, ProblemDetailsException, reaches } from '@ecoairlines/shared';
 import type { AircraftRecord, CabinClass, PromotionTerms, RouteRecord, WeekdayCode } from './model.js';
 import { WEEKDAY_CODES } from './model.js';
 import { aircraftFor, flightDurationMinutes, TimetableError, type TimetableIssueCode, type Weekday } from './timetable.js';
@@ -37,6 +37,24 @@ export function assertAirport(code: string, field: string): void {
   }
 }
 
+/** El tipo existe en el catálogo (M-2). */
+export function assertAircraftType(name: string, field: string): void {
+  if (!AIRCRAFT_LAYOUTS[name]) {
+    throw problem(422, 'UNKNOWN_AIRCRAFT_TYPE', `No existe el tipo de avión «${name}».`, { invalidParams: [{ name: field, reason: `debe ser uno de ${AIRCRAFT_TYPES.join(', ')}` }] });
+  }
+}
+
+/** Una ruta nueva (o que cambia de aeropuerto) solo usa aeropuertos activos (M-1). */
+export function assertActiveAirport(code: string, field: string): void {
+  assertAirport(code, field);
+  if (AIRPORTS[code]!.active === false) {
+    throw problem(422, 'AIRPORT_INACTIVE', `El aeropuerto ${code} está desactivado.`, {
+      detail: 'Un aeropuerto desactivado no se ofrece para rutas nuevas; actívalo en «Aeropuertos» si quieres volver a usarlo.',
+      invalidParams: [{ name: field, reason: `${code} está desactivado` }],
+    });
+  }
+}
+
 /** Tipo de avión de la ruta: el pedido o, si se eligieron aviones, el del primero. */
 export function routeAircraftType(request: RouteRequest, fleet: AircraftRecord[]): AircraftType | undefined {
   if (request.aircraftType) return request.aircraftType;
@@ -59,7 +77,8 @@ export function toRouteDefinition(request: RouteRequest, outbound: string, inbou
   const distance = distanceKm(AIRPORTS[request.origin]!, AIRPORTS[request.destination]!);
   const required = aircraftFor(distance);
   const aircraftType = chosenType ?? required;
-  if (AIRCRAFT_TYPES.indexOf(aircraftType) < AIRCRAFT_TYPES.indexOf(required)) {
+  assertAircraftType(aircraftType, 'aircraftType');
+  if (!reaches(aircraftType, distance)) {
     throw problem(422, 'AIRCRAFT_RANGE_EXCEEDED', `El ${aircraftType} no tiene alcance para ${distance} km: use ${required} o uno mayor.`, {
       invalidParams: [{ name: 'aircraftType', reason: `mínimo ${required}` }],
     });

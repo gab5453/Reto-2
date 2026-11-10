@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: MS.G.Schedule — red, flota, horario, precios por clase y acuerdo de promociones (interno)
-  version: 1.2.0
+  version: 1.5.0
   license:
     name: Uso académico — Integración de Sistemas (sin licencia de distribución)
   description: |
@@ -50,6 +50,8 @@ tags:
     description: Rutas programadas (saga "Publicar horario")
   - name: Flota
     description: Aviones y tipos de avión
+  - name: Aeropuertos
+    description: Catálogo de aeropuertos (1.4.0, M-1). Antes era una constante del código; ahora lo edita el administrador
   - name: Horario
     description: Vuelos generados para la venta y rotación de la flota
   - name: Precios
@@ -233,6 +235,89 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+    post:
+      tags: [Flota]
+      operationId: createAircraftType
+      summary: Agregar un tipo de avión (1.5.0, M-2; el nombre no se edita después)
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAircraftTypeRequest'
+      responses:
+        '201':
+          description: Tipo agregado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AircraftTypeInfo'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/AircraftTypeConflict'
+
+  /aircraft-types/{aircraftType}:
+    parameters:
+      - name: aircraftType
+        in: path
+        required: true
+        description: Nombre del tipo, codificado («Airbus%20A320neo»)
+        schema:
+          type: string
+          maxLength: 60
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    put:
+      tags: [Flota]
+      operationId: updateAircraftType
+      summary: Editar un tipo sin aviones ni rutas (1.5.0, M-2)
+      description: Con aviones o rutas no cambia (`409 AIRCRAFT_TYPE_IN_USE`, D-T7); se crea un tipo nuevo.
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AircraftTypeRequest'
+      responses:
+        '200':
+          description: Tipo actualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AircraftTypeInfo'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/AircraftTypeConflict'
+    delete:
+      tags: [Flota]
+      operationId: deleteAircraftType
+      summary: Borrar un tipo sin aviones ni rutas (1.5.0, M-2)
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+      responses:
+        '204':
+          description: Borrado
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/AircraftTypeConflict'
+
   /aircraft:
     parameters:
       - $ref: '#/components/parameters/CorrelationId'
@@ -347,6 +432,124 @@ paths:
           $ref: '#/components/responses/AircraftInService'
 
   # ===================================================================== HORARIO
+  /airports:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Aeropuertos]
+      operationId: listAirports
+      summary: Catálogo de aeropuertos (también los desactivados), por código
+      responses:
+        '200':
+          description: Aeropuertos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Airport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Aeropuertos]
+      operationId: createAirport
+      summary: Agregar un aeropuerto (el código es único y no se edita después)
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAirportRequest'
+      responses:
+        '201':
+          description: Aeropuerto agregado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Airport'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/AirportConflict'
+
+  /airports/{code}:
+    parameters:
+      - name: code
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[A-Z]{3}$
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Aeropuertos]
+      operationId: getAirport
+      summary: Un aeropuerto
+      responses:
+        '200':
+          description: Aeropuerto
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Airport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Aeropuertos]
+      operationId: updateAirport
+      summary: Editar un aeropuerto (todo menos el código)
+      description: |
+        Con rutas o aviones con base ahí no cambian su país, coordenadas ni huso horario (`409 AIRPORT_IN_USE`): moverían
+        distancias y horas de vuelos ya publicados. Para dejar de usarlo, `active: false`.
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AirportRequest'
+      responses:
+        '200':
+          description: Aeropuerto actualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Airport'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/AirportConflict'
+    delete:
+      tags: [Aeropuertos]
+      operationId: deleteAirport
+      summary: 'Borrar un aeropuerto sin rutas ni aviones (si los tiene, `409 AIRPORT_IN_USE`: se desactiva en su lugar)'
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+      responses:
+        '204':
+          description: Borrado
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/AirportConflict'
+
   /timetable:
     parameters:
       - $ref: '#/components/parameters/CorrelationId'
@@ -414,6 +617,59 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
   # ===================================================================== PRECIOS
+  /pricing:
+    parameters:
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      tags: [Precios]
+      operationId: getPricing
+      summary: Tarifa base (cargo fijo y precio por km) y precios exactos por ruta, con los últimos cambios (1.3.0)
+      description: |
+        Tarifa de un adulto en un vuelo, sin impuestos: `(fixedCharge + perKm × km) × multiplicador del paquete`, salvo que la
+        ruta tenga precio exacto para ese paquete. Sin datos guardados: 35 y 0,085 (los de siempre).
+      responses:
+        '200':
+          description: Precios
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PricingSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Precios]
+      operationId: savePricing
+      summary: Reemplazar la tarifa base y los precios por ruta (paso de la saga "Guardar precios", 1.3.0)
+      description: |
+        Estado completo (la saga lo usa también para compensar). Todo o nada; cada diferencia queda en el historial. Una ruta con
+        precio exacto lleva los 4 paquetes; una ruta que se agrega o cambia debe existir en el horario (404 si no).
+      parameters:
+        - $ref: '#/components/parameters/ActorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PricingRequest'
+      responses:
+        '200':
+          description: Precios guardados
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PricingSettings'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Ruta inexistente
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
   /fare-prices:
     parameters:
       - $ref: '#/components/parameters/CorrelationId'
@@ -710,6 +966,8 @@ components:
         - `NOT_ENOUGH_AIRCRAFT`: faltan aviones del tipo y la base para los días elegidos (`detail` dice cuántos).
         - `AIRCRAFT_RANGE_EXCEEDED`: la distancia supera el alcance del tipo de avión.
         - `UNKNOWN_AIRPORT`: aeropuerto fuera de la red.
+        - `AIRPORT_INACTIVE`: el aeropuerto está desactivado (1.4.0): no se usa en rutas nuevas.
+        - `UNKNOWN_AIRCRAFT_TYPE`: el tipo de avión no está en el catálogo (1.5.0).
         - `AIRCRAFT_NOT_IN_FLEET`: un avión elegido no existe.
         - `AIRCRAFT_MISMATCH`: un avión elegido es de otro tipo o tiene otra base.
         - `TIMETABLE_CONFLICT`: con los aviones elegidos, alguno quedaría en dos lugares a la vez (`invalidParams` lista cada
@@ -725,6 +983,22 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ProblemDetails'
+    AircraftTypeConflict:
+      description: |
+        - `AIRCRAFT_TYPE_ALREADY_EXISTS`: ya hay un tipo con ese nombre o ese prefijo de matrícula.
+        - `AIRCRAFT_TYPE_IN_USE`: tiene aviones o rutas (no cambia ni se borra, D-T7), o es el único tipo.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+    AirportConflict:
+      description: |
+        - `AIRPORT_ALREADY_EXISTS`: ya hay un aeropuerto con ese código.
+        - `AIRPORT_IN_USE`: tiene rutas o aviones con base ahí (no se borra ni cambia su país, coordenadas u huso horario).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
     AircraftInService:
       description: El avión opera rutas (`IN_SERVICE`)
       content:
@@ -733,13 +1007,209 @@ components:
             $ref: '#/components/schemas/ProblemDetails'
 
   schemas:
+    AirportRequest:
+      type: object
+      additionalProperties: false
+      required: [city, name, country, lat, lon, utcOffsetMinutes]
+      properties:
+        city:
+          type: string
+          maxLength: 80
+          example: Manta
+        name:
+          type: string
+          maxLength: 120
+          example: Aeropuerto Internacional Eloy Alfaro
+        country:
+          type: string
+          pattern: ^[A-Z]{2}$
+          description: ISO 3166-1 alfa-2 (EC, CO, US…). Distinto país entre origen y destino = vuelo internacional (pasaporte)
+        province:
+          type: string
+          nullable: true
+          maxLength: 80
+          description: Provincia (Ecuador)
+        lat:
+          type: number
+          minimum: -90
+          maximum: 90
+        lon:
+          type: number
+          minimum: -180
+          maximum: 180
+        utcOffsetMinutes:
+          type: integer
+          minimum: -720
+          maximum: 840
+          description: Desfase fijo respecto de UTC en minutos, múltiplo de 15 (−300 = UTC−5). Sin horario de verano
+        active:
+          type: boolean
+          description: '`false`: no se ofrece para rutas nuevas; las que ya lo usan siguen'
+
+    CreateAirportRequest:
+      type: object
+      additionalProperties: false
+      required: [code, city, name, country, lat, lon, utcOffsetMinutes]
+      properties:
+        code:
+          type: string
+          pattern: ^[A-Z]{3}$
+          example: MEC
+        city:
+          type: string
+          maxLength: 80
+          example: Manta
+        name:
+          type: string
+          maxLength: 120
+          example: Aeropuerto Internacional Eloy Alfaro
+        country:
+          type: string
+          pattern: ^[A-Z]{2}$
+          description: ISO 3166-1 alfa-2 (EC, CO, US…). Distinto país entre origen y destino = vuelo internacional (pasaporte)
+        province:
+          type: string
+          nullable: true
+          maxLength: 80
+          description: Provincia (Ecuador)
+        lat:
+          type: number
+          minimum: -90
+          maximum: 90
+        lon:
+          type: number
+          minimum: -180
+          maximum: 180
+        utcOffsetMinutes:
+          type: integer
+          minimum: -720
+          maximum: 840
+          description: Desfase fijo respecto de UTC en minutos, múltiplo de 15 (−300 = UTC−5). Sin horario de verano
+        active:
+          type: boolean
+          description: '`false`: no se ofrece para rutas nuevas; las que ya lo usan siguen'
+
+    Airport:
+      type: object
+      required: [code, city, name, country, lat, lon, utcOffsetMinutes, active]
+      properties:
+        code:
+          type: string
+          pattern: ^[A-Z]{3}$
+        city:
+          type: string
+          maxLength: 80
+          example: Manta
+        name:
+          type: string
+          maxLength: 120
+          example: Aeropuerto Internacional Eloy Alfaro
+        country:
+          type: string
+          pattern: ^[A-Z]{2}$
+          description: ISO 3166-1 alfa-2 (EC, CO, US…). Distinto país entre origen y destino = vuelo internacional (pasaporte)
+        province:
+          type: string
+          nullable: true
+          maxLength: 80
+          description: Provincia (Ecuador)
+        lat:
+          type: number
+          minimum: -90
+          maximum: 90
+        lon:
+          type: number
+          minimum: -180
+          maximum: 180
+        utcOffsetMinutes:
+          type: integer
+          minimum: -720
+          maximum: 840
+          description: Desfase fijo respecto de UTC en minutos, múltiplo de 15 (−300 = UTC−5). Sin horario de verano
+        active:
+          type: boolean
+          description: '`false`: no se ofrece para rutas nuevas; las que ya lo usan siguen'
+        updatedAt:
+          type: string
+          format: date-time
+
     WeekdayCode:
       type: string
       enum: [SUN, MON, TUE, WED, THU, FRI, SAT]
 
     AircraftType:
       type: string
-      enum: [Airbus A220-300, Airbus A320neo, Boeing 787-9]
+      maxLength: 60
+      description: Nombre del tipo, del catálogo `aircraft_types` (1.5.0, M-2; antes Airbus A220-300, Airbus A320neo y Boeing 787-9 fijos)
+      example: Airbus A320neo
+
+    CabinSeatsRequest:
+      type: object
+      additionalProperties: false
+      required: [seats, configuration]
+      properties:
+        seats:
+          type: integer
+          minimum: 1
+          maximum: 600
+          description: Múltiplo de los asientos por fila (filas completas)
+        configuration:
+          type: string
+          description: Asientos por fila separados por pasillo. Business `2-2`, `1-2-1` o `2-2-2`; Economy `2-3`, `3-3`, `2-4-2` o `3-3-3`
+          example: 3-3
+
+    AircraftTypeRequest:
+      type: object
+      additionalProperties: false
+      required: [registrationPrefix, turnaroundMinutes, business, economy]
+      properties:
+        registrationPrefix:
+          type: string
+          pattern: ^HC-[A-Z]$
+          description: '`HC-` + una letra, único (las matrículas serán HC-X01, HC-X02…)'
+        maxRouteKm:
+          type: integer
+          nullable: true
+          minimum: 100
+          maximum: 20000
+          description: Alcance; `null` = sin límite en la red
+        turnaroundMinutes:
+          type: integer
+          minimum: 15
+          maximum: 300
+        business:
+          $ref: '#/components/schemas/CabinSeatsRequest'
+        economy:
+          $ref: '#/components/schemas/CabinSeatsRequest'
+
+    CreateAircraftTypeRequest:
+      type: object
+      additionalProperties: false
+      required: [aircraftType, registrationPrefix, turnaroundMinutes, business, economy]
+      description: Business y Economy siempre (D-T8), para que el avión venda los 4 paquetes
+      properties:
+        aircraftType:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9 .-]{2,59}$
+          example: Embraer E195-E2
+        registrationPrefix:
+          type: string
+          pattern: ^HC-[A-Z]$
+          description: '`HC-` + una letra, único (las matrículas serán HC-X01, HC-X02…)'
+        maxRouteKm:
+          type: integer
+          nullable: true
+          minimum: 100
+          maximum: 20000
+          description: Alcance; `null` = sin límite en la red
+        turnaroundMinutes:
+          type: integer
+          minimum: 15
+          maximum: 300
+        business:
+          $ref: '#/components/schemas/CabinSeatsRequest'
+        economy:
+          $ref: '#/components/schemas/CabinSeatsRequest'
 
     FareBrand:
       type: string
@@ -949,6 +1419,42 @@ components:
           type: integer
         inFleet:
           type: integer
+        cabins:
+          type: array
+          description: Distribución de cada cabina (1.5.0); con ella Offers arma el mapa de asientos
+          items:
+            type: object
+            required: [cabinClass, seats, configuration, layout, firstRow, lastRow]
+            properties:
+              cabinClass:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/CabinClass'
+              seats:
+                type: integer
+              configuration:
+                type: string
+                example: 3-3
+              layout:
+                type: string
+                description: Letras por fila; `-` es el pasillo
+                example: ABC-DEF
+              firstRow:
+                type: integer
+              lastRow:
+                type: integer
+              exitRows:
+                type: array
+                items:
+                  type: integer
+              extraLegroomRows:
+                type: array
+                items:
+                  type: integer
+        source:
+          type: string
+          enum: [NETWORK, ADMIN]
+        updatedAt:
+          type: string
+          format: date-time
 
     ScheduledFlight:
       type: object
@@ -979,6 +1485,9 @@ components:
           $ref: '#/components/schemas/AircraftType'
         registration:
           type: string
+        turnaroundMinutes:
+          type: integer
+          description: Tiempo mínimo en tierra del tipo (1.5.0); FlightStatus lo usa para los retrasos
 
     Timetable:
       type: object
@@ -1070,6 +1579,81 @@ components:
           format: uuid
           nullable: true
 
+    RoutePrices:
+      type: object
+      required: [routeId, prices]
+      properties:
+        routeId:
+          type: string
+          example: EA324-EA325
+        prices:
+          type: array
+          description: Tarifa base de un adulto, sin impuestos, de cada paquete (los 4; vacío al quitar el precio exacto)
+          maxItems: 4
+          items:
+            type: object
+            required: [fareBrand, amount]
+            properties:
+              fareBrand:
+                type: string
+                enum: [SEMILLA, BROTE, BOSQUE, DOSEL]
+              amount:
+                type: number
+                minimum: 1
+                maximum: 20000
+    PricingRequest:
+      type: object
+      required: [fixedCharge, perKm, routePrices]
+      properties:
+        fixedCharge:
+          type: number
+          minimum: 0
+          maximum: 500
+          description: Cargo fijo por vuelo (US$)
+        perKm:
+          type: number
+          minimum: 0.001
+          maximum: 5
+          description: Precio por km (US$), el dato de referencia
+        routePrices:
+          type: array
+          maxItems: 500
+          items:
+            $ref: '#/components/schemas/RoutePrices'
+    PricingSettings:
+      type: object
+      required: [fixedCharge, perKm, routePrices, updatedAt, updatedBy, history]
+      properties:
+        fixedCharge:
+          type: number
+        perKm:
+          type: number
+        routePrices:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutePrices'
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        updatedBy:
+          type: string
+          nullable: true
+        history:
+          type: array
+          description: Últimos 20 cambios, del más reciente al más antiguo
+          items:
+            type: object
+            required: [id, field, routeId, fareBrand, oldValue, newValue, changedBy, changedAt]
+            properties:
+              id: { type: string, format: uuid }
+              field: { type: string, enum: [FIXED_CHARGE, PER_KM, ROUTE_PRICE] }
+              routeId: { type: string, nullable: true }
+              fareBrand: { type: string, nullable: true }
+              oldValue: { type: number, nullable: true }
+              newValue: { type: number, nullable: true }
+              changedBy: { type: string }
+              changedAt: { type: string, format: date-time }
     FarePriceTable:
       type: object
       additionalProperties: false
@@ -1161,6 +1745,14 @@ components:
             - NOT_ENOUGH_AIRCRAFT
             - AIRCRAFT_RANGE_EXCEEDED
             - UNKNOWN_AIRPORT
+            - AIRPORT_INACTIVE
+            - AIRPORT_ALREADY_EXISTS
+            - AIRPORT_IN_USE
+            - AIRPORT_NOT_FOUND
+            - UNKNOWN_AIRCRAFT_TYPE
+            - AIRCRAFT_TYPE_ALREADY_EXISTS
+            - AIRCRAFT_TYPE_IN_USE
+            - AIRCRAFT_TYPE_NOT_FOUND
             - AIRCRAFT_NOT_IN_FLEET
             - AIRCRAFT_MISMATCH
             - TIMETABLE_CONFLICT

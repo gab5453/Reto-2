@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { ApiError } from '../api/client';
 import { createBooking, getHold, getMyProfile, releaseHold } from '../api/operations';
 import type { AssistanceInput, PassengerItem, PassengerType } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
@@ -78,6 +79,8 @@ function Checkout({ flow }: { flow: BookingFlow }) {
   const [passengers, setPassengers] = useState<PassengerForm[]>(() => buildPassengers(flow));
   /** seats[passengerId][segmentId] = seatNumber */
   const [seats, setSeats] = useState<Record<string, Record<string, string>>>({});
+  /** Sube tras un SEAT_TAKEN: el mapa se vuelve a pedir y el asiento que otro tomó sale en gris (T-1). */
+  const [seatMapVersion, setSeatMapVersion] = useState(0);
   /** assistance[passengerId]: los pasajeros que marcaron «Necesita asistencia médica». */
   const [assistance, setAssistance] = useState<Record<string, AssistanceInput>>({});
   const card = useCardPayment();
@@ -222,6 +225,19 @@ function Checkout({ flow }: { flow: BookingFlow }) {
     } catch (caught) {
       card.failed(caught);
       setError(caught);
+      // El asiento lo tomó otro viajero (se revisa antes de cobrar): se quita de la selección y se recarga el mapa para elegir otro.
+      if (caught instanceof ApiError && caught.problem?.code === 'SEAT_TAKEN') {
+        const taken = (caught.problem.invalidParams ?? []).map((param) => /^(\S+) en (\S+)$/.exec(param.reason ?? '')).filter((match) => match !== null);
+        setSeats((all) =>
+          Object.fromEntries(
+            Object.entries(all).map(([passengerId, bySegment]) => [
+              passengerId,
+              Object.fromEntries(Object.entries(bySegment).filter(([segmentId, seat]) => !taken.some((match) => match[1] === seat && match[2] === segmentId))),
+            ]),
+          ),
+        );
+        setSeatMapVersion((version) => version + 1);
+      }
     } finally {
       setBusy(false);
       setConfirming(false);
@@ -320,6 +336,7 @@ function Checkout({ flow }: { flow: BookingFlow }) {
               segments={segments}
               passengers={seatedPeople}
               seats={seats}
+              mapVersion={seatMapVersion}
               onChange={(passengerId, segmentId, seat) =>
                 setSeats((all) => {
                   const mine = { ...all[passengerId] };

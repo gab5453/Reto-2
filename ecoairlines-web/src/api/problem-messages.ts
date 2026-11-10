@@ -2,7 +2,7 @@ import { ApiError } from './client';
 
 /** Mensajes para el usuario por `code` del enum ProblemDetails del contrato. */
 const MESSAGES: Record<string, string> = {
-  SEAT_TAKEN: 'Ese asiento acaba de ser ocupado. Elige otro, por favor.',
+  SEAT_TAKEN: 'Ese asiento ya lo tomó otro viajero. Lo quitamos de tu selección y actualizamos el mapa: elige otro y vuelve a confirmar.',
   AMOUNT_MISMATCH: 'El monto del pago no coincide con el de la operación.',
   BOOKING_NOT_CONFIRMED: 'Esta acción requiere una reserva confirmada.',
   BAGGAGE_LIMIT_EXCEEDED: 'Superaste el máximo de maletas extra permitidas.',

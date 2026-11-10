@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: MS.Admin — panel de administración de EcoAirlines (respuesta)
-  version: 1.6.0
+  version: 1.12.0
   license:
     name: Uso académico — Integración de Sistemas (sin licencia de distribución)
   description: |
@@ -599,6 +599,101 @@ paths:
           $ref: '#/components/responses/Problem401'
         '403':
           $ref: '#/components/responses/Problem403'
+
+    post:
+      tags: [Administración]
+      operationId: createAircraftType
+      summary: "Agregar un tipo de avión (1.11.0, M-2): Business y Economy con su distribución, alcance y tiempo en tierra"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-schedule.openapi.yaml#/components/schemas/CreateAircraftTypeRequest'
+      responses:
+        '201':
+          description: Tipo agregado
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-schedule.openapi.yaml#/components/schemas/AircraftTypeInfo'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '409':
+          $ref: '#/components/responses/Problem409'
+  /ecoairlines/admin/aircraft-types/{aircraftType}:
+    put:
+      tags: [Administración]
+      operationId: updateAircraftType
+      summary: "Editar un tipo sin aviones ni rutas (con aviones: 409 AIRCRAFT_TYPE_IN_USE, D-T7)"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: aircraftType
+          in: path
+          required: true
+          description: Nombre del tipo, codificado
+          schema:
+            type: string
+            maxLength: 60
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-schedule.openapi.yaml#/components/schemas/AircraftTypeRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-schedule.openapi.yaml#/components/schemas/AircraftTypeInfo'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+    delete:
+      tags: [Administración]
+      operationId: deleteAircraftType
+      summary: "Borrar un tipo sin aviones ni rutas"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: aircraftType
+          in: path
+          required: true
+          description: Nombre del tipo, codificado
+          schema:
+            type: string
+            maxLength: 60
+      responses:
+        '204':
+          description: Borrado
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
   /ecoairlines/admin/aircraft:
     get:
       tags: [Administración]
@@ -723,6 +818,99 @@ paths:
           $ref: '#/components/responses/Problem404'
         '409':
           $ref: '#/components/responses/Problem409'
+  /ecoairlines/admin/airports:
+    post:
+      tags: [Administración]
+      operationId: createAirport
+      summary: "Agregar un aeropuerto (1.10.0, M-1; el código no se edita después)"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-schedule.openapi.yaml#/components/schemas/CreateAirportRequest'
+      responses:
+        '201':
+          description: Aeropuerto agregado
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-schedule.openapi.yaml#/components/schemas/Airport'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '409':
+          $ref: '#/components/responses/Problem409'
+  /ecoairlines/admin/airports/{code}:
+    put:
+      tags: [Administración]
+      operationId: updateAirport
+      summary: "Editar un aeropuerto: todo menos el código; en uso, no cambian país, coordenadas ni huso (409 AIRPORT_IN_USE)"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^[A-Z]{3}$
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './ms-g-schedule.openapi.yaml#/components/schemas/AirportRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './ms-g-schedule.openapi.yaml#/components/schemas/Airport'
+        '400':
+          $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+    delete:
+      tags: [Administración]
+      operationId: deleteAirport
+      summary: "Borrar un aeropuerto sin rutas ni aviones (si los tiene, 409 AIRPORT_IN_USE: se desactiva)"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^[A-Z]{3}$
+      responses:
+        '204':
+          description: Borrado
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
   /ecoairlines/admin/fleet-schedule:
     get:
       tags: [Administración]
@@ -765,6 +953,36 @@ paths:
                 type: array
                 items:
                   $ref: './ms-g-bookings.openapi.yaml#/components/schemas/FlightAssistanceItem'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+  /ecoairlines/admin/flights/{flightNumber}/delay-impact:
+    get:
+      tags: [Administración]
+      operationId: getFlightDelayImpact
+      summary: "Qué pasaría con un retraso (solo consulta, 1.7.0)"
+      description: "Composición: FlightStatus (siguiente vuelo del mismo avión) + Bookings (pasajeros con poco margen). No cambia nada."
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/FlightNumber'
+        - $ref: '#/components/parameters/Date'
+        - name: delayMinutes
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1440
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlightDelayImpact'
         '401':
           $ref: '#/components/responses/Problem401'
         '403':
@@ -1035,6 +1253,55 @@ paths:
           $ref: '#/components/responses/Problem404'
         '503':
           $ref: '#/components/responses/Problem503'
+  /ecoairlines/admin/telemetry/journeys/{correlationId}:
+    get:
+      tags: [Administración]
+      operationId: getJourney
+      summary: "Recorrido de un proceso de servicio en servicio (T-4), desde Tempo"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/CorrelationIdQuery'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Journey'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '503':
+          $ref: '#/components/responses/Problem503'
+  /ecoairlines/admin/telemetry/system-map:
+    get:
+      tags: [Administración]
+      operationId: getSystemMap
+      summary: "Mapa del sistema en vivo (T-4): quién llama a quién en los últimos 5 minutos"
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemMap'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '503':
+          $ref: '#/components/responses/Problem503'
   /ecoairlines/admin/telemetry/queues:
     get:
       tags: [Administración]
@@ -1239,6 +1506,15 @@ components:
       properties:
         prices:
           $ref: './ms-g-schedule.openapi.yaml#/components/schemas/SaveFarePricesRequest'
+        pricing:
+          type: object
+          additionalProperties: false
+          description: Tarifa base y/o el precio exacto de los 4 paquetes de una ruta (P-1, 1.8.0). `route.prices` vacío lo quita.
+          properties:
+            fixedCharge: { type: number, minimum: 0, maximum: 500 }
+            perKm: { type: number, minimum: 0.001, maximum: 5 }
+            route:
+              $ref: './ms-g-schedule.openapi.yaml#/components/schemas/RoutePrices'
         promotion:
           type: object
           additionalProperties: false
@@ -1253,10 +1529,12 @@ components:
     PricesView:
       type: object
       additionalProperties: false
-      required: [prices, promotions]
+      required: [prices, pricing, promotions]
       properties:
         prices:
           $ref: './ms-g-schedule.openapi.yaml#/components/schemas/FarePriceTable'
+        pricing:
+          $ref: './ms-g-schedule.openapi.yaml#/components/schemas/PricingSettings'
         promotions:
           type: array
           items:
@@ -1353,6 +1631,39 @@ components:
         span_id:
           type: string
 
+    FlightDelayImpact:
+      type: object
+      description: Retrasos R-1. El impacto del avión viene de MS.G.FlightStatus; las reservas, de MS.G.Bookings.
+      required: [flightNumber, date, delayMinutes, scheduledDepartureAt, scheduledArrivalAt, estimatedDepartureAt, estimatedArrivalAt, aircraft, nextFlight, bookings, passengers, tightConnections]
+      properties:
+        flightNumber: { type: string }
+        date: { type: string, format: date }
+        delayMinutes: { type: integer }
+        scheduledDepartureAt: { type: string, format: date-time }
+        scheduledArrivalAt: { type: string, format: date-time }
+        estimatedDepartureAt: { type: string, format: date-time }
+        estimatedArrivalAt: { type: string, format: date-time }
+        aircraft:
+          $ref: './ms-g-flight-status.openapi.yaml#/components/schemas/DelayImpact/properties/aircraft'
+        nextFlight:
+          $ref: './ms-g-flight-status.openapi.yaml#/components/schemas/DelayImpact/properties/nextFlight'
+        bookings: { type: integer, description: Reservas activas del vuelo }
+        passengers: { type: integer }
+        tightConnections:
+          type: array
+          description: Reservas que quedan con menos margen que el de la búsqueda para su vuelo siguiente (conexión 60 min, vuelta 120 min)
+          items:
+            type: object
+            required: [bookingId, pnr, channel, kind, nextFlightNumber, nextDepartureAt, availableMinutes, requiredMinutes]
+            properties:
+              bookingId: { type: string, format: uuid }
+              pnr: { type: string }
+              channel: { type: string, enum: [WEB, BOOKING] }
+              kind: { type: string, enum: [CONNECTION, RETURN] }
+              nextFlightNumber: { type: string }
+              nextDepartureAt: { type: string, format: date-time }
+              availableMinutes: { type: integer }
+              requiredMinutes: { type: integer }
     BookingTimeline:
       type: object
       additionalProperties: false
@@ -1410,6 +1721,113 @@ components:
           items:
             $ref: './ms-g-webhooks.openapi.yaml#/components/schemas/EventHistoryItem'
 
+    Journey:
+      type: object
+      additionalProperties: false
+      required: [correlationId, startedAt, durationMs, traces, nodes, hops, truncated]
+      description: |
+        Vista «Recorrido» (1.12.0, T-4): los saltos de un proceso de servicio en servicio, desde sus spans en Tempo, en orden de
+        tiempo. Solo nombres de servicio, operación (método y ruta sin query, o método gRPC), estado y tiempos: nunca datos personales.
+      properties:
+        correlationId:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        durationMs:
+          type: number
+        traces:
+          type: integer
+          description: Cuántas trazas tiene el proceso (búsqueda, hold, pago, reserva…)
+        window:
+          type: object
+          additionalProperties: false
+          required: [from, to, source]
+          properties:
+            from:
+              type: string
+              format: date-time
+            to:
+              type: string
+              format: date-time
+            source:
+              type: string
+              enum: [RANGE, RECORDS, DEFAULT]
+        nodes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, layer]
+            properties:
+              id:
+                type: string
+                description: Nombre del servicio (`cliente` es quien llamó desde fuera)
+              layer:
+                type: string
+                enum: [CLIENT, GATEWAY, RESPONSE, ESB, MANAGEMENT, EXTERNAL]
+        hops:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [sequence, from, to, operation, startMs, durationMs, status, traceId]
+            properties:
+              sequence:
+                type: integer
+              from:
+                type: string
+              to:
+                type: string
+              operation:
+                type: string
+              startMs:
+                type: number
+                description: Milisegundos desde el inicio del proceso
+              durationMs:
+                type: number
+              status:
+                type: string
+                enum: [OK, ERROR]
+              httpStatus:
+                type: integer
+              traceId:
+                type: string
+        truncated:
+          type: boolean
+          description: Hubo más saltos de los que se devuelven (300)
+
+    SystemMap:
+      type: object
+      additionalProperties: false
+      required: [generatedAt, windowMinutes, edges]
+      description: Mapa del sistema en vivo (1.12.0, T-4) — aristas de los últimos minutos, del grafo de servicios de Tempo (T-3)
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+        windowMinutes:
+          type: integer
+        edges:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [from, to, requestsPerMinute, errorsPerMinute]
+            properties:
+              from:
+                type: string
+              to:
+                type: string
+              requestsPerMinute:
+                type: number
+              errorsPerMinute:
+                type: number
+              p95Ms:
+                type: number
+                nullable: true
+
     CorrelationTrace:
       type: object
       additionalProperties: false
@@ -1418,6 +1836,25 @@ components:
       properties:
         correlationId:
           type: string
+        window:
+          type: object
+          additionalProperties: false
+          required: [from, to, source]
+          description: Dónde se buscaron los pasos en Loki (1.9.0, T-2)
+          properties:
+            from:
+              type: string
+              format: date-time
+            to:
+              type: string
+              format: date-time
+            source:
+              type: string
+              enum: [RANGE, RECORDS, DEFAULT]
+              description: '`RANGE` el rango pedido; `RECORDS` de sus sagas y eventos ±10 min; `DEFAULT` las últimas 3 h'
+        stepsError:
+          type: string
+          description: Si Loki no respondió a tiempo, por qué faltan los pasos (las sagas y eventos sí vienen) (1.9.0)
         steps:
           type: array
           items:

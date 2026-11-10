@@ -1,4 +1,5 @@
-import { IsIn, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
 import { Body, Controller, Get, HttpCode, Inject, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ActorId, ServiceTokenGuard } from '@ecoairlines/shared';
 import type { FlightOperationalStatus } from '../domain/status.js';
@@ -10,6 +11,10 @@ const STATUSES: FlightOperationalStatus[] = ['SCHEDULED', 'BOARDING', 'DEPARTED'
 
 class DateQuery {
   @Matches(DATE) date!: string;
+}
+
+class DelayImpactQuery extends DateQuery {
+  @Type(() => Number) @IsInt() @Min(1) @Max(1440) delayMinutes!: number;
 }
 
 class ListQuery extends DateQuery {
@@ -48,6 +53,11 @@ export class FlightStatusController {
   update(@Param('flightNumber') flightNumber: string, @Body() body: StatusUpdateDto, @ActorId() actor: string) {
     const { date, ...update } = body;
     return this.flights.update(flightNumber, date, update, actor);
+  }
+
+  @Get('flights/:flightNumber/delay-impact')
+  delayImpact(@Param('flightNumber') flightNumber: string, @Query() query: DelayImpactQuery) {
+    return this.flights.delayImpact(flightNumber, query.date, query.delayMinutes);
   }
 
   @Get('flights/:flightNumber/status/history')

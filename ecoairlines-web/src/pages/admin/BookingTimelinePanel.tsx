@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { JourneyView } from '../../components/journey/JourneyView';
 import { Link } from 'react-router-dom';
 import { getAdminBookingTimeline, type AdminBookingTimeline } from '../../api/admin';
 import { ProblemAlert } from '../../components/ProblemAlert';
@@ -84,6 +85,8 @@ export function BookingTimelinePanel({ token, bookingId, changes }: { token: str
 }
 
 function SagaEntry({ saga }: { saga: AdminBookingTimeline['sagas'][number] }) {
+  // El recorrido se pide recién al abrirlo (consulta a Tempo).
+  const [journeyOpen, setJourneyOpen] = useState(false);
   const tone = saga.status === 'COMPLETED' ? 'confirmed' : saga.status === 'RUNNING' ? 'pending_payment' : 'cancelled';
   return (
     <span>
@@ -101,6 +104,10 @@ function SagaEntry({ saga }: { saga: AdminBookingTimeline['sagas'][number] }) {
             </li>
           ))}
         </ol>
+      </details>
+      <details className="saga-steps" onToggle={(event) => setJourneyOpen((event.target as HTMLDetailsElement).open)}>
+        <summary className="small">Ver el recorrido</summary>
+        {journeyOpen ? <JourneyView correlationId={saga.correlationId} range={{ from: new Date(Date.parse(saga.createdAt) - 600_000).toISOString(), to: new Date(Date.parse(saga.updatedAt) + 600_000).toISOString() }} /> : null}
       </details>
     </span>
   );

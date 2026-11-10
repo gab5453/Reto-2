@@ -4,6 +4,7 @@ import { getBoardingPasses, getBooking } from '../api/operations';
 import type { BookingDetail, PassengerItem } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
 import { ItinerarySummary } from '../components/ItinerarySummary';
+import { FlightDelayNotice } from '../components/FlightDelayNotice';
 import { ProblemAlert } from '../components/ProblemAlert';
 import { PASSENGER_LABELS, REFUND_STATUS_LABELS, STATUS_LABELS, couponStatus, formatDateTime, formatMoney } from '../lib/format';
 import { AssistancePanel } from './booking/AssistancePanel';
@@ -124,6 +125,8 @@ export function BookingDetailPage() {
           <p>Tu reserva está creada; emitiremos los boletos en cuanto la pasarela confirme el pago. Esta página se actualiza sola.</p>
         </div>
       )}
+
+      {confirmed && <FlightDelayNotice segments={(booking.itineraries ?? []).flatMap((itinerary) => itinerary.segments)} />}
 
       <header className="booking-head card">
         <div>

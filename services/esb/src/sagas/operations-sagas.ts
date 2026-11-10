@@ -1,5 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { ProblemDetailsException } from '@ecoairlines/shared';
+import { AIRCRAFT_LAYOUTS, AIRCRAFT_TYPES, AIRPORTS, ProblemDetailsException, TURNAROUND_MINUTES } from '@ecoairlines/shared';
+import { refreshAircraftTypes } from '../clients/aircraft-catalog.js';
+import { refreshAirports } from '../clients/airport-catalog.js';
 import { localDate } from '../composition/dates.js';
 import { stableUuid } from '../transversal/ids.js';
 import { CancelBookingSaga, SagaDeps } from './booking-sagas.js';
@@ -112,9 +114,20 @@ export class FlightStatusSaga implements SagaDefinition<FlightStatusInput, Any> 
 
 // =========================================================================================== Guardar precios y descuento
 
+/** Una ruta con su precio exacto por paquete; `prices` vacío quita el precio exacto de la ruta (vuelve a la fórmula). */
+export interface RoutePricesInput {
+  routeId: string;
+  prices: { fareBrand: string; amount: number }[];
+}
+
 export type SavePricesInput =
   | { kind: 'fare-prices'; items: { cabinClass: string; fareBrand: string; multiplier: number }[] }
-  | { kind: 'promotion-agreement'; partnerId: string; agreement: Any };
+  | { kind: 'promotion-agreement'; partnerId: string; agreement: Any }
+  // P-1: tarifa base (cargo fijo y precio por km) y/o el precio exacto de los paquetes de una ruta.
+  | { kind: 'pricing'; fixedCharge?: number; perKm?: number; route?: RoutePricesInput };
+
+/** El cuerpo de `PUT /pricing` de Schedule (estado completo) a partir de su respuesta. */
+const pricingRequest = (pricing: Any | null) => ({ fixedCharge: pricing?.['fixedCharge'] ?? 35, perKm: pricing?.['perKm'] ?? 0.085, routePrices: pricing?.['routePrices'] ?? [] });
 
 /**
  * "Guardar precios y descuento máximo": Schedule valida (multiplicadores; descuento ≤ 50 %, D35) y guarda con historial →
@@ -134,15 +147,32 @@ export class SavePricesSaga implements SagaDefinition<SavePricesInput, Any> {
       if (error instanceof ProblemDetailsException && error.problem.status === 404) return null;
       throw error;
     });
-    const before = await saga.step('schedule.snapshot', async () => ({ prices: await schedule.json<{ items: Any[] }>('GET', '/fare-prices'), agreement: await agreementOf(partnerId) }));
+    const before = await saga.step('schedule.snapshot', async () => ({
+      prices: await schedule.json<{ items: Any[] }>('GET', '/fare-prices'),
+      agreement: await agreementOf(partnerId),
+      pricing: input.kind === 'pricing' ? await schedule.json<Any>('GET', '/pricing') : null,
+    }));
     const saved = await saga.step(
       'schedule.save',
-      () =>
-        input.kind === 'fare-prices'
-          ? schedule.json<Any>('PUT', '/fare-prices', { caller: { actorId }, json: { items: input.items } })
-          : schedule.json<Any>('PUT', `/promotion-agreements/${input.partnerId}`, { caller: { actorId }, json: input.agreement }),
+      () => {
+        if (input.kind === 'fare-prices') return schedule.json<Any>('PUT', '/fare-prices', { caller: { actorId }, json: { items: input.items } });
+        if (input.kind === 'promotion-agreement') return schedule.json<Any>('PUT', `/promotion-agreements/${input.partnerId}`, { caller: { actorId }, json: input.agreement });
+        // P-1: Schedule recibe el estado completo; aquí se mezcla lo que cambia con lo vigente.
+        const current = pricingRequest(before.pricing);
+        const others = (current.routePrices as RoutePricesInput[]).filter((route) => route.routeId !== input.route?.routeId);
+        return schedule.json<Any>('PUT', '/pricing', {
+          caller: { actorId },
+          json: {
+            fixedCharge: input.fixedCharge ?? current.fixedCharge,
+            perKm: input.perKm ?? current.perKm,
+            routePrices: input.route ? (input.route.prices.length ? [...others, input.route] : others) : current.routePrices,
+          },
+        });
+      },
       async () => {
-        if (input.kind === 'fare-prices') {
+        if (input.kind === 'pricing') {
+          await schedule.json('PUT', '/pricing', { caller: { actorId }, json: pricingRequest(before.pricing) });
+        } else if (input.kind === 'fare-prices') {
           await schedule.json('PUT', '/fare-prices', { caller: { actorId }, json: { items: before.prices.items.map((p) => ({ cabinClass: p['cabinClass'], fareBrand: p['fareBrand'], multiplier: p['multiplier'] })) } });
         } else if (before.agreement) {
           await schedule.json('PUT', `/promotion-agreements/${input.partnerId}`, { caller: { actorId }, json: agreementRequest(before.agreement) });
@@ -156,7 +186,9 @@ export class SavePricesSaga implements SagaDefinition<SavePricesInput, Any> {
       .map((p) => ({ p, old: before.prices.items.find((o) => o['cabinClass'] === p['cabinClass'] && o['fareBrand'] === p['fareBrand']) }))
       .filter(({ p, old }) => old && old['multiplier'] !== p['multiplier'])
       .map(({ p, old }) => ({ cabinClass: p['cabinClass'], fareBrand: p['fareBrand'], oldMultiplier: old!['multiplier'], newMultiplier: p['multiplier'] }));
-    await publishEvents(saga, this.d.events, [{ name: 'pricing.changed', visibility: 'internal', subject: 'fare-prices', data: { actorId, promotionUpdated: input.kind === 'promotion-agreement', changedPrices } }]);
+    await publishEvents(saga, this.d.events, [
+      { name: 'pricing.changed', visibility: 'internal', subject: 'fare-prices', data: { actorId, promotionUpdated: input.kind === 'promotion-agreement', pricingUpdated: input.kind === 'pricing', changedPrices } },
+    ]);
     return saved;
   }
 }
@@ -171,11 +203,19 @@ async function publishPrices(saga: SagaContext, d: SagaDeps, name: string) {
   const current = await saga.step(`${name}:read`, async () => ({
     prices: await schedule.json<{ items: Any[] }>('GET', '/fare-prices'),
     agreement: await schedule.json<Any>('GET', '/promotion-agreements/BOOKING_PROTOTIPO').catch(() => null),
+    // P-1: tarifa base y precios por ruta (si Schedule no responde, Offers conserva su copia).
+    pricing: await schedule.json<Any>('GET', '/pricing').catch(() => null),
   }));
   return saga.step(name, () =>
     d.offers.call<Any>('PublishFarePrices', {
       publishId: sub(saga, name),
       prices: current.prices.items.map((p) => ({ cabinClass: `CABIN_CLASS_${p['cabinClass']}`, fareBrand: p['fareBrand'], multiplier: p['multiplier'] })),
+      ...(current.pricing
+        ? {
+            pricing: { fixedCharge: current.pricing['fixedCharge'], perKm: current.pricing['perKm'] },
+            routePrices: (current.pricing['routePrices'] as RoutePricesInput[]).flatMap((route) => route.prices.map((price) => ({ routeId: route.routeId, fareBrand: price.fareBrand, amount: price.amount }))),
+          }
+        : {}),
       promotions: current.agreement
         ? [
             {
@@ -251,7 +291,15 @@ export class PublishTimetableSaga implements SagaDefinition<PublishTimetableInpu
     const routeId = input.action === 'publish-all' ? undefined : (saved?.['routeId'] ?? (input as { routeId: string }).routeId);
     const timetable = await saga.step('schedule.timetable', () => schedule.json<{ flights: Any[] }>('GET', `/timetable?from=${from}&to=${to}`));
     const flights = routeId ? timetable.flights.filter((f) => f['routeId'] === routeId) : timetable.flights;
-    const published = await saga.step('offers.publish-timetable', () => this.d.offers.call<Any>('PublishTimetable', { publishId: saga.sagaId, from, to, ...(routeId ? { routeId } : {}), flights }));
+    // M-1: Offers recibe el catálogo de aeropuertos (distancias de conexiones y de cada vuelo). Si Schedule no responde, va el
+    // que ya tiene el ESB; no es un paso de la saga (es una lectura sin efectos que se repite igual al reanudar).
+    await Promise.all([refreshAirports(schedule), refreshAircraftTypes(schedule)]);
+    const airports = Object.values(AIRPORTS).map(({ code, city, country, lat, lon, utcOffsetMinutes }) => ({ code, city, country, lat, lon, utcOffsetMinutes }));
+    // M-2: los tipos de avión (mapa de asientos y tiempo en tierra) también; los vuelos llevan solo el nombre del tipo.
+    const aircraftTypes = AIRCRAFT_TYPES.map((name) => ({ name, turnaroundMinutes: TURNAROUND_MINUTES[name], cabins: AIRCRAFT_LAYOUTS[name] }));
+    const published = await saga.step('offers.publish-timetable', () =>
+      this.d.offers.call<Any>('PublishTimetable', { publishId: saga.sagaId, from, to, ...(routeId ? { routeId } : {}), flights: flights.map(({ turnaroundMinutes: _t, ...flight }) => flight), airports, aircraftTypes }),
+    );
     if (input.action === 'publish-all') await publishPrices(saga, this.d, 'offers.publish-prices');
     saga.pointOfNoReturn();
     await publishEvents(saga, this.d.events, [

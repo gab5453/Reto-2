@@ -118,7 +118,8 @@ export function agreementRequest(input: Any): Any {
 }
 
 export function pricesView(view: Any): Any {
-  return { prices: view['prices']?.['items'] ?? [], updatedAt: view['prices']?.['updatedAt'], promotions: ((view['promotions'] as Any[] | undefined) ?? []).map(agreement) };
+  const pricing = view['pricing'] ?? { fixedCharge: 35, perKm: 0.085, routePrices: [], updatedAt: null, updatedBy: null, history: [] };
+  return { prices: view['prices']?.['items'] ?? [], updatedAt: view['prices']?.['updatedAt'], pricing, promotions: ((view['promotions'] as Any[] | undefined) ?? []).map(agreement) };
 }
 
 export function indicators(body: Any): Any {
@@ -177,6 +178,8 @@ export function bookingTimeline(body: Any): Any {
 export function trace(body: Any): Any {
   return {
     correlationId: body['correlationId'],
+    window: body['window'] ?? null,
+    stepsError: body['stepsError'] ?? null,
     steps: ((body['steps'] as Any[] | undefined) ?? []).map((step) => ({
       timestamp: step['timestamp'],
       service: step['service'],

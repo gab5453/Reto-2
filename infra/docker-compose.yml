@@ -65,7 +65,8 @@ services:
   # ---------------------------------------------------------------- plataforma de observabilidad (V2.16, D50)
   prometheus:
     image: prom/prometheus:v3.15.0
-    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=7d"]
+    # T-3: --web.enable-remote-write-receiver deja que Tempo escriba las métricas del grafo de servicios (POST /api/v1/write).
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=7d", "--web.enable-remote-write-receiver"]
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
@@ -487,6 +488,7 @@ services:
       # Plataforma de observabilidad (V2.16, D50): telemetría del panel (latencia, trazas por correlation id, colas, alertas).
       PROMETHEUS_URL: http://prometheus:9090
       LOKI_URL: http://loki:3100
+      TEMPO_URL: http://tempo:3200
       ALERTMANAGER_URL: http://alertmanager:9093
       RABBITMQ_MANAGEMENT_URL: http://rabbitmq:15672
       PAYMENT_API_SECRET_KEY: ${PAYMENT_SECRET_KEY:-sk_test_dev_solo_local_ecoairlines_0001}

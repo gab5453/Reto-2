@@ -226,6 +226,11 @@ describe('cada campo → su operación REST', () => {
     await gql('mutation { savePrices(input: { prices: [{ cabinClass: BUSINESS, fareBrand: "DOSEL", multiplier: 2.5 }], promotion: { partnerId: "BOOKING_PROTOTIPO", allowsPromotions: true, maxDiscountPercentage: 15 } }) { updatedAt } }', {}, tokens.admin()).expect(200);
     expect(fakes['MS.Admin'].last('PUT')!.json).toEqual({ prices: { items: [{ cabinClass: 'BUSINESS', fareBrand: 'DOSEL', multiplier: 2.5 }] }, promotion: { partnerId: 'BOOKING_PROTOTIPO', agreement: { permite_promociones: true, porcentaje_descuento_maximo: 15 } } });
 
+    // P-1: la vista trae la tarifa base (por defecto si MS.Admin aún no la manda) y «Guardar» pasa la tarifa base y la ruta.
+    expect((await gql('{ prices { pricing { fixedCharge perKm routePrices { routeId } } } }', {}, tokens.admin()).expect(200)).body.data.prices.pricing).toEqual({ fixedCharge: 35, perKm: 0.085, routePrices: [] });
+    await gql('mutation { savePrices(input: { pricing: { perKm: 0.09, route: { routeId: "EA324-EA325", prices: [{ fareBrand: "SEMILLA", amount: 70 }, { fareBrand: "BROTE", amount: 95 }, { fareBrand: "BOSQUE", amount: 125 }, { fareBrand: "DOSEL", amount: 220 }] } } }) { updatedAt } }', {}, tokens.admin()).expect(200);
+    expect(fakes['MS.Admin'].last('PUT')!.json).toEqual({ pricing: { perKm: 0.09, route: { routeId: 'EA324-EA325', prices: [{ fareBrand: 'SEMILLA', amount: 70 }, { fareBrand: 'BROTE', amount: 95 }, { fareBrand: 'BOSQUE', amount: 125 }, { fareBrand: 'DOSEL', amount: 220 }] } } });
+
     fakes['MS.Admin'].on('POST', '/api/v2/ecoairlines/admin/partners', { status: 201, body: { clientId: 'OTRO_PARTNER', name: 'Otro', scopes: ['flights:read', 'flights:hold'], status: 'ACTIVE', createdAt: '2026-10-26T10:00:00Z', clientSecret: 'secreto-una-vez' } });
     const partner = await gql('mutation { createPartner(input: { clientId: "OTRO_PARTNER", name: "Otro", scopes: [FLIGHTS_READ, FLIGHTS_HOLD] }) { clientSecret partner { scopes status } } }', {}, tokens.admin()).expect(200);
     expect(partner.body.data.createPartner).toEqual({ clientSecret: 'secreto-una-vez', partner: { scopes: ['FLIGHTS_READ', 'FLIGHTS_HOLD'], status: 'ACTIVE' } });
@@ -247,6 +252,11 @@ describe('cada campo → su operación REST', () => {
     expect(telemetry.body).toEqual({ data: { telemetry: { services: [{ service: 'esb', latencyMs: 12 }], trace: null } } });
     await gql('{ telemetry { trace(correlationId: "corr-x", from: "2026-11-08T03:50:00Z", to: "2026-11-08T04:30:00Z") { correlationId } } }', {}, tokens.admin()).expect(200);
     expect(fakes['MS.Admin'].last()!.path).toBe('/api/v2/ecoairlines/admin/telemetry/traces/corr-x?from=2026-11-08T03%3A50%3A00Z&to=2026-11-08T04%3A30%3A00Z');
+
+    // T-2: la ventana que usó el ESB y el aviso de Loki lento.
+    fakes['MS.Admin'].on('GET', /\/telemetry\/traces\//, { body: { correlationId: 'corr-y', window: { from: '2026-11-05T13:50:00Z', to: '2026-11-05T14:10:05Z', source: 'RECORDS' }, steps: [], stepsError: 'La búsqueda tardó demasiado: prueba con un rango más corto.', sagas: [], events: { items: [] } } });
+    const slow = await gql('{ telemetry { trace(correlationId: "corr-y") { window { source } stepsError steps { service } } } }', {}, tokens.admin()).expect(200);
+    expect(slow.body.data.telemetry.trace).toEqual({ window: { source: 'RECORDS' }, stepsError: 'La búsqueda tardó demasiado: prueba con un rango más corto.', steps: [] });
   });
 
   it('★ panel O-1: adminBookings busca por referencia; adminBooking da la liquidación sin exponer la asistencia médica', async () => {
@@ -320,8 +330,85 @@ describe('cada campo → su operación REST', () => {
     expect(tooLong.body.errors).toBeDefined();
   });
 
+  it('R-1: flightDelayImpact pide a MS.Admin el impacto del retraso (avión y pasajeros con poco margen); solo administradores', async () => {
+    fakes['MS.Admin'].on('GET', /\/api\/v2\/ecoairlines\/admin\/flights\/EA100\/delay-impact\?/, { body: { flightNumber: 'EA100', date: '2026-11-10', delayMinutes: 60, scheduledDepartureAt: '2026-11-10T07:00:00-05:00', scheduledArrivalAt: '2026-11-10T07:50:00-05:00',
+      estimatedDepartureAt: '2026-11-10T13:00:00.000Z', estimatedArrivalAt: '2026-11-10T13:50:00.000Z', aircraft: { registration: 'HC-N01', aircraftType: 'Airbus A320neo', turnaroundMinutes: 45 },
+      nextFlight: { flightNumber: 'EA101', date: '2026-11-10', origin: 'GYE', destination: 'UIO', scheduledDepartureAt: '2026-11-10T09:00:00-05:00', departureAt: '2026-11-10T09:00:00-05:00', status: 'SCHEDULED', readyAt: '2026-11-10T14:35:00.000Z', conflict: true, suggestedDelayMinutes: 35 },
+      bookings: 1, passengers: 2,
+      tightConnections: [{ bookingId: 'e8bead02-1587-4dcd-86c3-a54653fb0986', pnr: 'DHV47T', channel: 'BOOKING', kind: 'CONNECTION', nextFlightNumber: 'EA102', nextDepartureAt: '2026-11-10T09:30:00-05:00', availableMinutes: 40, requiredMinutes: 60 }] } });
+    const query = '{ flightDelayImpact(flightNumber: "EA100", date: "2026-11-10", delayMinutes: 60) { estimatedArrivalAt aircraft { registration turnaroundMinutes } nextFlight { flightNumber conflict suggestedDelayMinutes } passengers tightConnections { pnr kind availableMinutes requiredMinutes } } }';
+    const response = await gql(query, {}, tokens.admin()).expect(200);
+    expect(response.body.data.flightDelayImpact).toEqual({
+      estimatedArrivalAt: '2026-11-10T13:50:00.000Z',
+      aircraft: { registration: 'HC-N01', turnaroundMinutes: 45 },
+      nextFlight: { flightNumber: 'EA101', conflict: true, suggestedDelayMinutes: 35 },
+      passengers: 2,
+      tightConnections: [{ pnr: 'DHV47T', kind: 'CONNECTION', availableMinutes: 40, requiredMinutes: 60 }],
+    });
+    expect(fakes['MS.Admin'].last()!.path).toBe('/api/v2/ecoairlines/admin/flights/EA100/delay-impact?date=2026-11-10&delayMinutes=60');
+    expect((await gql(query, {}, tokens.customer()).expect(200)).body.errors[0].extensions.code).toBe('FORBIDDEN');
+  });
+
   it('myProfile: null si el cliente aún no guardó su perfil (404 del MS)', async () => {
     fakes['MS.Clientes'].on('GET', '/api/v2/ecoairlines/customers/me', { status: 404, body: problem(404, 'NOT_FOUND', 'Sin perfil.') });
     expect((await gql('{ myProfile { firstName } }', {}, tokens.customer()).expect(200)).body).toEqual({ data: { myProfile: null } });
   });
 });
+
+describe('catálogo de aeropuertos (PLAN_Telemetria_Asientos M-1)', () => {
+  const JPJ = { code: 'JPJ', city: 'Jipijapa', name: 'Aeródromo de Jipijapa', country: 'EC', province: 'Manabí', lat: -1.3486, lon: -80.5786, utcOffsetMinutes: -300, active: true, updatedAt: '2026-11-10T00:00:00Z' };
+
+  it('★ airports es pública (MS.Vuelos); crear, editar y borrar son solo de administradores (MS.Admin)', async () => {
+    fakes['MS.Vuelos'].on('GET', '/api/v2/ecoairlines/airports', { body: [JPJ] });
+    const list = await gql('{ airports { code city country province active utcOffsetMinutes } }').expect(200);
+    expect(list.body.data.airports).toEqual([{ code: 'JPJ', city: 'Jipijapa', country: 'EC', province: 'Manabí', active: true, utcOffsetMinutes: -300 }]);
+
+    fakes['MS.Admin'].on('POST', '/api/v2/ecoairlines/admin/airports', { status: 201, body: JPJ });
+    const input = '{ code: "JPJ", city: "Jipijapa", name: "Aeródromo de Jipijapa", country: "EC", lat: -1.3486, lon: -80.5786, utcOffsetMinutes: -300 }';
+    expect((await gql(`mutation { createAirport(input: ${input}) { code } }`, {}, tokens.admin()).expect(200)).body.data.createAirport).toEqual({ code: 'JPJ' });
+    expect(fakes['MS.Admin'].last('POST')!.json).toEqual({ code: 'JPJ', city: 'Jipijapa', name: 'Aeródromo de Jipijapa', country: 'EC', lat: -1.3486, lon: -80.5786, utcOffsetMinutes: -300 });
+
+    fakes['MS.Admin'].on('PUT', '/api/v2/ecoairlines/admin/airports/JPJ', { status: 409, body: { type: 'urn:ecoairlines:problema:AIRPORT_IN_USE', title: 'JPJ está en uso.', status: 409, code: 'CONFLICT' } });
+    const conflict = await gql('mutation { updateAirport(code: "JPJ", input: { city: "J", name: "J", country: "EC", lat: -1.2, lon: -80.5, utcOffsetMinutes: -300 }) { code } }', {}, tokens.admin()).expect(200);
+    expect(conflict.body.errors[0].extensions.code).toBe('AIRPORT_IN_USE');
+
+    fakes['MS.Admin'].on('DELETE', '/api/v2/ecoairlines/admin/airports/JPJ', { status: 204 });
+    expect((await gql('mutation { deleteAirport(code: "JPJ") }', {}, tokens.admin()).expect(200)).body.data.deleteAirport).toBe(true);
+    const customer = await gql('mutation { deleteAirport(code: "JPJ") }', {}, tokens.customer()).expect(200);
+    expect(customer.body.errors[0].extensions.code).toBe('FORBIDDEN');
+  });
+});
+
+
+describe('catálogo de tipos de avión (PLAN_Telemetria_Asientos M-2)', () => {
+  it('★ aircraftTypes trae la distribución; crear, editar y borrar van a MS.Admin con el nombre codificado', async () => {
+    const info = { aircraftType: 'Embraer E195-E2', registrationPrefix: 'HC-E', seats: [], totalSeats: 124, maxRouteKm: 1000, turnaroundMinutes: 30, inFleet: 0, cabins: [{ cabinClass: 'ECONOMY', seats: 112, configuration: '2-4-2', layout: 'AC-DEFG-HK', firstRow: 4, lastRow: 17, exitRows: [11], extraLegroomRows: [4, 11] }], source: 'ADMIN' };
+    fakes['MS.Admin'].on('GET', '/api/v2/ecoairlines/admin/aircraft-types', { body: [info] });
+    const list = await gql('{ aircraftTypes { aircraftType cabins { cabinClass configuration layout firstRow lastRow } } }', {}, tokens.admin()).expect(200);
+    expect(list.body.data.aircraftTypes).toEqual([{ aircraftType: 'Embraer E195-E2', cabins: [{ cabinClass: 'ECONOMY', configuration: '2-4-2', layout: 'AC-DEFG-HK', firstRow: 4, lastRow: 17 }] }]);
+    fakes['MS.Admin'].on('POST', '/api/v2/ecoairlines/admin/aircraft-types', { status: 201, body: info });
+    const cabins = 'business: { seats: 12, configuration: "2-2" }, economy: { seats: 112, configuration: "2-4-2" }';
+    await gql(`mutation { createAircraftType(input: { aircraftType: "Embraer E195-E2", registrationPrefix: "HC-E", maxRouteKm: 1000, turnaroundMinutes: 30, ${cabins} }) { aircraftType } }`, {}, tokens.admin()).expect(200);
+    expect(fakes['MS.Admin'].last('POST')!.json).toEqual({ aircraftType: 'Embraer E195-E2', registrationPrefix: 'HC-E', maxRouteKm: 1000, turnaroundMinutes: 30, business: { seats: 12, configuration: '2-2' }, economy: { seats: 112, configuration: '2-4-2' } });
+    fakes['MS.Admin'].on('PUT', /\/aircraft-types\//, { status: 409, body: { type: 'urn:ecoairlines:problema:AIRCRAFT_TYPE_IN_USE', title: 'Tiene aviones.', status: 409, code: 'CONFLICT' } });
+    const inUse = await gql(`mutation { updateAircraftType(aircraftType: "Embraer E195-E2", input: { registrationPrefix: "HC-E", turnaroundMinutes: 40, ${cabins} }) { aircraftType } }`, {}, tokens.admin()).expect(200);
+    expect(inUse.body.errors[0].extensions.code).toBe('AIRCRAFT_TYPE_IN_USE');
+    expect(fakes['MS.Admin'].last('PUT')!.path).toBe('/api/v2/ecoairlines/admin/aircraft-types/Embraer%20E195-E2');
+    fakes['MS.Admin'].on('DELETE', /\/aircraft-types\//, { status: 204 });
+    expect((await gql('mutation { deleteAircraftType(aircraftType: "Embraer E195-E2") }', {}, tokens.admin()).expect(200)).body.data.deleteAircraftType).toBe(true);
+  });
+});
+
+describe('vista «Recorrido» y mapa en vivo (PLAN_Telemetria_Asientos T-4)', () => {
+  it('★ telemetry.journey (sin trazas → null) y telemetry.systemMap', async () => {
+    fakes['MS.Admin'].on('GET', /\/telemetry\/journeys\/corr-x/, { body: { correlationId: 'corr-x', startedAt: '2026-11-10T07:55:55Z', durationMs: 900, traces: 1, nodes: [{ id: 'cliente', layer: 'CLIENT' }, { id: 'gateway', layer: 'GATEWAY' }], hops: [{ sequence: 1, from: 'cliente', to: 'gateway', operation: 'POST /api/graphql', startMs: 0, durationMs: 900, status: 'OK', httpStatus: 200, traceId: 'abc' }], truncated: false } });
+    const journey = await gql('{ telemetry { journey(correlationId: "corr-x") { durationMs nodes { id layer } hops { sequence from to operation status httpStatus } } } }', {}, tokens.admin()).expect(200);
+    expect(journey.body.data.telemetry.journey).toEqual({ durationMs: 900, nodes: [{ id: 'cliente', layer: 'CLIENT' }, { id: 'gateway', layer: 'GATEWAY' }], hops: [{ sequence: 1, from: 'cliente', to: 'gateway', operation: 'POST /api/graphql', status: 'OK', httpStatus: 200 }] });
+    fakes['MS.Admin'].on('GET', /\/telemetry\/journeys\/corr-nada/, { status: 404, body: problem(404, 'NOT_FOUND', 'Sin trazas.') });
+    expect((await gql('{ telemetry { journey(correlationId: "corr-nada") { durationMs } } }', {}, tokens.admin()).expect(200)).body.data.telemetry.journey).toBeNull();
+    fakes['MS.Admin'].on('GET', '/api/v2/ecoairlines/admin/telemetry/system-map', { body: { generatedAt: '2026-11-10T08:00:00Z', windowMinutes: 5, edges: [{ from: 'gateway', to: 'ms-reservas', requestsPerMinute: 12, errorsPerMinute: 0.5, p95Ms: 120 }] } });
+    const map = await gql('{ telemetry { systemMap { windowMinutes edges { from to requestsPerMinute errorsPerMinute p95Ms } } } }', {}, tokens.admin()).expect(200);
+    expect(map.body.data.telemetry.systemMap).toEqual({ windowMinutes: 5, edges: [{ from: 'gateway', to: 'ms-reservas', requestsPerMinute: 12, errorsPerMinute: 0.5, p95Ms: 120 }] });
+  });
+});
+

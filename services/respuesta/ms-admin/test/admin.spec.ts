@@ -68,15 +68,21 @@ describe('precios, rutas y asistencia', () => {
     esb.on('PUT', '/sagas/fare-prices', { body: TABLE });
     esb.on('PUT', `/sagas/promotion-agreements/${PARTNER_ID}`, { body: AGREEMENT });
     esb.on('GET', '/router/schedule/fare-prices', { body: TABLE });
+    const PRICING = { fixedCharge: 35, perKm: 0.09, routePrices: [{ routeId: 'EA324-EA325', prices: [{ fareBrand: 'SEMILLA', amount: 70 }, { fareBrand: 'BROTE', amount: 95 }, { fareBrand: 'BOSQUE', amount: 125 }, { fareBrand: 'DOSEL', amount: 220 }] }], updatedAt: '2026-11-09T00:00:00Z', updatedBy: ADMIN_SUB, history: [] };
+    esb.on('GET', '/router/schedule/pricing', { body: PRICING });
+    esb.on('PUT', '/sagas/pricing', { body: PRICING });
     esb.on('GET', '/router/identity/partners', { body: { items: [{ clientId: PARTNER_ID }, { clientId: 'SIN_ACUERDO' }], nextCursor: null } });
     esb.on('GET', `/router/schedule/promotion-agreements/${PARTNER_ID}`, { body: AGREEMENT });
     esb.on('GET', '/router/schedule/promotion-agreements/SIN_ACUERDO', { status: 404, body: { type: 'about:blank', title: 'Sin acuerdo.', status: 404, code: 'NOT_FOUND' } });
     const response = await admin(http().put('/api/v2/ecoairlines/admin/prices'))
-      .send({ prices: { items: [{ cabinClass: 'ECONOMY', fareBrand: 'BROTE', multiplier: 1.2 }] }, promotion: { partnerId: PARTNER_ID, agreement: { permite_promociones: false, porcentaje_descuento_maximo: 0 } } })
+      .send({ prices: { items: [{ cabinClass: 'ECONOMY', fareBrand: 'BROTE', multiplier: 1.2 }] }, pricing: { perKm: 0.09, route: PRICING.routePrices[0] }, promotion: { partnerId: PARTNER_ID, agreement: { permite_promociones: false, porcentaje_descuento_maximo: 0 } } })
       .expect(200);
     expect(response.body.promotions).toHaveLength(1);
     expect(response.body.promotions[0].partnerId).toBe(PARTNER_ID); // no `proveedor_codigo`: ese es la aerolínea
-    expect(esb.calls.filter((c) => c.path.startsWith('/sagas/')).map((c) => c.path)).toEqual(['/sagas/fare-prices', `/sagas/promotion-agreements/${PARTNER_ID}`]);
+    expect(esb.calls.filter((c) => c.path.startsWith('/sagas/')).map((c) => c.path)).toEqual(['/sagas/fare-prices', '/sagas/pricing', `/sagas/promotion-agreements/${PARTNER_ID}`]);
+    // P-1: la tarifa base y los precios por ruta vienen en la vista, y la saga recibe lo que cambia.
+    expect(response.body.pricing).toMatchObject({ perKm: 0.09, routePrices: [{ routeId: 'EA324-EA325' }] });
+    expect(JSON.parse(esb.calls.find((c) => c.path === '/sagas/pricing')!.body!)).toEqual({ perKm: 0.09, route: PRICING.routePrices[0] });
   });
 
   it('createRoute: la saga "Publicar horario" responde solo la ruta (201 ScheduledRoute), sin el resultado de Offers', async () => {
@@ -164,6 +170,22 @@ describe('reportes (panel O-3)', () => {
   });
 });
 
+describe('retrasos (R-1)', () => {
+  it('getFlightDelayImpact: la composición del ESB con la fecha, los minutos y X-Actor-Id', async () => {
+    const impact = { flightNumber: 'EA100', date: '2026-11-10', delayMinutes: 60, scheduledDepartureAt: '2026-11-10T07:00:00-05:00', scheduledArrivalAt: '2026-11-10T07:50:00-05:00',
+      estimatedDepartureAt: '2026-11-10T13:00:00.000Z', estimatedArrivalAt: '2026-11-10T13:50:00.000Z', aircraft: { registration: 'HC-N01', aircraftType: 'Airbus A320neo', turnaroundMinutes: 45 },
+      nextFlight: { flightNumber: 'EA101', date: '2026-11-10', origin: 'GYE', destination: 'UIO', scheduledDepartureAt: '2026-11-10T09:00:00-05:00', departureAt: '2026-11-10T09:00:00-05:00', status: 'SCHEDULED', readyAt: '2026-11-10T14:35:00.000Z', conflict: true, suggestedDelayMinutes: 35 },
+      bookings: 1, passengers: 2,
+      tightConnections: [{ bookingId: 'e8bead02-1587-4dcd-86c3-a54653fb0986', pnr: 'DHV47T', channel: 'BOOKING', kind: 'CONNECTION', nextFlightNumber: 'EA102', nextDepartureAt: '2026-11-10T09:30:00-05:00', availableMinutes: 40, requiredMinutes: 60 }] };
+    esb.on('GET', /^\/composition\/flights\/EA100\/delay-impact\?/, { body: impact });
+    const response = await admin(http().get('/api/v2/ecoairlines/admin/flights/EA100/delay-impact').query({ date: '2026-11-10', delayMinutes: 60 })).expect(200);
+    expectOwn('get', '/ecoairlines/admin/flights/{flightNumber}/delay-impact', response);
+    expect(response.body).toEqual(impact);
+    expect(esb.last()!.path).toBe('/composition/flights/EA100/delay-impact?date=2026-11-10&delayMinutes=60');
+    expect(esb.last()!.headers['x-actor-id']).toBe(ADMIN_SUB);
+  });
+});
+
 describe('eventos y telemetría', () => {
   it('listEventHistory busca por correlation id (parámetro nuevo de ms-admin 1.1.0)', async () => {
     esb.on('GET', '/router/webhooks/history', { body: { items: [], nextCursor: null } });
@@ -179,8 +201,11 @@ describe('eventos y telemetría', () => {
     expectOwn('get', '/ecoairlines/admin/telemetry/latency', latency);
     expect(esb.last()!.path).toBe('/composition/telemetry/latency?from=2026-10-26T00%3A00%3A00Z');
     expect(esb.last()!.headers['x-actor-id']).toBeDefined();
-    esb.on('GET', '/composition/telemetry/traces/corr-x', { body: { correlationId: 'corr-x', steps: [{ timestamp: '2026-10-26T00:00:00Z', service: 'gateway', operation: 'POST /api/v2/*path', status: '201', latency_ms: 90, request_id: 'req-1', trace_id: 'abc' }], sagas: [{ sagaId: 's1', type: 'CREATE_BOOKING', status: 'COMPLETED' }], events: { items: [] } } });
-    expectOwn('get', '/ecoairlines/admin/telemetry/traces/{correlationId}', await admin(http().get('/api/v2/ecoairlines/admin/telemetry/traces/corr-x')).expect(200));
+    esb.on('GET', '/composition/telemetry/traces/corr-x', { body: { correlationId: 'corr-x', window: { from: '2026-10-25T23:50:00Z', to: '2026-10-26T00:10:00Z', source: 'RECORDS' }, stepsError: 'La búsqueda tardó demasiado: prueba con un rango más corto.', steps: [{ timestamp: '2026-10-26T00:00:00Z', service: 'gateway', operation: 'POST /api/v2/*path', status: '201', latency_ms: 90, request_id: 'req-1', trace_id: 'abc' }], sagas: [{ sagaId: 's1', type: 'CREATE_BOOKING', status: 'COMPLETED' }], events: { items: [] } } });
+    const traced = await admin(http().get('/api/v2/ecoairlines/admin/telemetry/traces/corr-x')).expect(200);
+    expectOwn('get', '/ecoairlines/admin/telemetry/traces/{correlationId}', traced);
+    // T-2: la ventana de Loki y el aviso de Loki lento pasan tal cual.
+    expect([traced.body.window.source, traced.body.stepsError]).toEqual(['RECORDS', 'La búsqueda tardó demasiado: prueba con un rango más corto.']);
     // O-2: el rango (from/to) llega al ESB para acotar la búsqueda en Loki.
     esb.on('GET', /^\/composition\/telemetry\/traces\/corr-x\?/, { body: { correlationId: 'corr-x', steps: [], sagas: [], events: { items: [] } } });
     await admin(http().get('/api/v2/ecoairlines/admin/telemetry/traces/corr-x').query({ from: '2026-11-08T03:50:00Z', to: '2026-11-08T04:30:00Z' })).expect(200);
@@ -196,3 +221,45 @@ describe('eventos y telemetría', () => {
     expect(down.body.code).toBe('PROVIDER_UNAVAILABLE');
   });
 });
+
+describe('catálogo de aeropuertos (PLAN_Telemetria_Asientos M-1)', () => {
+  const airport = { code: 'JPJ', city: 'Jipijapa', name: 'Aeródromo de Jipijapa', country: 'EC', province: 'Manabí', lat: -1.3486, lon: -80.5786, utcOffsetMinutes: -300, active: true, updatedAt: '2026-11-10T00:00:00Z' };
+  it('★ alta, cambio y baja van al enrutador del ESB con el administrador; un cliente no puede', async () => {
+    esb.on('POST', '/router/schedule/airports', { status: 201, body: airport });
+    const created = await admin(http().post('/api/v2/ecoairlines/admin/airports')).send({ code: 'JPJ', city: 'Jipijapa', name: 'Aeródromo de Jipijapa', country: 'EC', lat: -1.3486, lon: -80.5786, utcOffsetMinutes: -300 }).expect(201);
+    expectOwn('post', '/ecoairlines/admin/airports', created);
+    expect(esb.last()!.headers['x-actor-id']).toBeDefined();
+    esb.on('PUT', '/router/schedule/airports/JPJ', { status: 409, body: { type: 'about:blank', title: 'JPJ está en uso.', status: 409, code: 'AIRPORT_IN_USE' } });
+    const inUse = await admin(http().put('/api/v2/ecoairlines/admin/airports/JPJ')).send({ city: 'Jipijapa', name: 'X', country: 'EC', lat: -1.2, lon: -80.5786, utcOffsetMinutes: -300 }).expect(409);
+    expect(inUse.body.type).toBe('urn:ecoairlines:problema:AIRPORT_IN_USE'); // código propio: va en `type` (el `code` del contrato es cerrado)
+    esb.on('DELETE', '/router/schedule/airports/JPJ', { status: 204 });
+    await admin(http().delete('/api/v2/ecoairlines/admin/airports/JPJ')).expect(204);
+    await http().post('/api/v2/ecoairlines/admin/airports').set('Authorization', tokens.customer()).send({ code: 'JPJ', city: 'J', name: 'J', country: 'EC', lat: 0, lon: 0, utcOffsetMinutes: -300 }).expect(403);
+  });
+});
+
+
+describe('catálogo de tipos de avión (PLAN_Telemetria_Asientos M-2)', () => {
+  const input = { registrationPrefix: 'HC-E', maxRouteKm: 1000, turnaroundMinutes: 30, business: { seats: 12, configuration: '2-2' }, economy: { seats: 112, configuration: '2-4-2' } };
+  const info = { aircraftType: 'Embraer E195-E2', registrationPrefix: 'HC-E', seats: [{ cabinClass: 'BUSINESS', seats: 12 }, { cabinClass: 'ECONOMY', seats: 112 }], totalSeats: 124, maxRouteKm: 1000, turnaroundMinutes: 30, inFleet: 0, cabins: [{ cabinClass: 'BUSINESS', seats: 12, configuration: '2-2', layout: 'AC-DF', firstRow: 1, lastRow: 3, exitRows: [], extraLegroomRows: [] }, { cabinClass: 'ECONOMY', seats: 112, configuration: '2-4-2', layout: 'AC-DEFG-HK', firstRow: 4, lastRow: 17, exitRows: [11], extraLegroomRows: [4, 11] }], source: 'ADMIN', updatedAt: '2026-11-10T00:00:00Z' };
+  it('★ alta, cambio y baja al enrutador del ESB, con el nombre codificado', async () => {
+    esb.on('POST', '/router/schedule/aircraft-types', { status: 201, body: info });
+    const created = await admin(http().post('/api/v2/ecoairlines/admin/aircraft-types')).send({ aircraftType: 'Embraer E195-E2', ...input }).expect(201);
+    expectOwn('post', '/ecoairlines/admin/aircraft-types', created);
+    esb.on('PUT', '/router/schedule/aircraft-types/Embraer%20E195-E2', { body: { ...info, turnaroundMinutes: 40 } });
+    expect((await admin(http().put('/api/v2/ecoairlines/admin/aircraft-types/Embraer%20E195-E2')).send({ ...input, turnaroundMinutes: 40 }).expect(200)).body.turnaroundMinutes).toBe(40);
+    esb.on('DELETE', '/router/schedule/aircraft-types/Embraer%20E195-E2', { status: 204 });
+    await admin(http().delete('/api/v2/ecoairlines/admin/aircraft-types/Embraer%20E195-E2')).expect(204);
+  });
+});
+
+describe('vista «Recorrido» y mapa en vivo (PLAN_Telemetria_Asientos T-4)', () => {
+  it('★ recorrido y mapa por la composición del ESB, con el rango', async () => {
+    esb.on('GET', /^\/composition\/telemetry\/journeys\/corr-x/, { body: { correlationId: 'corr-x', startedAt: '2026-11-10T07:55:55Z', durationMs: 900, traces: 1, nodes: [{ id: 'cliente', layer: 'CLIENT' }, { id: 'gateway', layer: 'GATEWAY' }], hops: [{ sequence: 1, from: 'cliente', to: 'gateway', operation: 'POST /api/graphql', startMs: 0, durationMs: 900, status: 'OK', httpStatus: 200, traceId: 'abc' }], truncated: false } });
+    expectOwn('get', '/ecoairlines/admin/telemetry/journeys/{correlationId}', await admin(http().get('/api/v2/ecoairlines/admin/telemetry/journeys/corr-x').query({ from: '2026-11-10T07:00:00Z' })).expect(200));
+    expect(esb.last()!.path).toBe('/composition/telemetry/journeys/corr-x?from=2026-11-10T07%3A00%3A00Z');
+    esb.on('GET', '/composition/telemetry/system-map', { body: { generatedAt: '2026-11-10T08:00:00Z', windowMinutes: 5, edges: [{ from: 'gateway', to: 'ms-reservas', requestsPerMinute: 12, errorsPerMinute: 0.5, p95Ms: 120 }] } });
+    expectOwn('get', '/ecoairlines/admin/telemetry/system-map', await admin(http().get('/api/v2/ecoairlines/admin/telemetry/system-map')).expect(200));
+  });
+});
+

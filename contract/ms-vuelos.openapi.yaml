@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: MS.Vuelos — búsqueda, estado, operaciones, health, eventos y promociones (respuesta)
-  version: 1.0.1
+  version: 1.1.0
   license:
     name: Uso académico — Integración de Sistemas (sin licencia de distribución)
   description: |
@@ -70,6 +70,27 @@ paths:
   # contrato v2 · GET listFlightOperations
   /vuelos/operaciones/vuelos:
     $ref: './vuelos-openapi-v2.yaml#/paths/~1vuelos~1operaciones~1vuelos'
+  # Propia (1.1.0, PLAN_Telemetria_Asientos M-1): el catálogo de aeropuertos para los buscadores de la web. No es del contrato
+  # del grupo (allí los aeropuertos son solo códigos de 3 letras).
+  /ecoairlines/airports:
+    get:
+      tags: [Propias (web)]
+      operationId: listAirports
+      summary: Aeropuertos de la red (también los desactivados, con `active = false`)
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Catálogo de aeropuertos, por código
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: './ms-g-schedule.openapi.yaml#/components/schemas/Airport'
+        '503':
+          $ref: '#/components/responses/Problem503'
 components:
   securitySchemes:
     PartnerOAuth2:

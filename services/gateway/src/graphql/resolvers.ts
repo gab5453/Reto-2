@@ -18,6 +18,9 @@ export interface ResolverOptions {
   events: Set<string>;
   /** La suscripción `bookingEvents` (ver `subscriptions.ts`). */
   bookingEvents: Resolver;
+  /** T-5: `traceProgress` y `liveSystemMap` (ver `live-topics.ts`). */
+  traceProgress: Resolver;
+  liveSystemMap: Resolver;
   /** Límite de búsquedas por `X-Device-Fingerprint` (lanza `RATE_LIMIT_EXCEEDED`). */
   checkSearchLimit: (fingerprint: string | undefined) => void;
 }
@@ -93,6 +96,7 @@ export function createResolvers(options: ResolverOptions) {
     },
     routes: async (_, __, { ms }) => (await ms.call('MS.Admin', 'GET', '/ecoairlines/admin/routes')).body,
     route: async (_, { routeId }, { ms }) => (await ms.call('MS.Admin', 'GET', `/ecoairlines/admin/routes/${id(routeId)}`)).body,
+    airports: async (_, __, { ms }) => (await ms.call('MS.Vuelos', 'GET', '/ecoairlines/airports')).body,
     aircraftTypes: async (_, __, { ms }) => (await ms.call('MS.Admin', 'GET', '/ecoairlines/admin/aircraft-types')).body,
     fleet: async (_, __, { ms }) => (await ms.call('MS.Admin', 'GET', '/ecoairlines/admin/aircraft')).body,
     aircraft: async (_, { registration }, { ms }) => (await ms.call('MS.Admin', 'GET', `/ecoairlines/admin/aircraft/${id(registration)}`)).body,
@@ -105,6 +109,8 @@ export function createResolvers(options: ResolverOptions) {
       const view = map.pricesView((await ms.call('MS.Admin', 'GET', '/ecoairlines/admin/prices')).body);
       return (view['promotions'] as Any[]).find((agreement) => agreement['partnerId'] === partnerId) ?? null;
     },
+    flightDelayImpact: async (_, { flightNumber, date, delayMinutes }, { ms }) =>
+      (await ms.call('MS.Admin', 'GET', `/ecoairlines/admin/flights/${id(flightNumber)}/delay-impact`, { query: { date, delayMinutes } })).body,
     flightAssistance: async (_, { flightNumber, date }, { ms }) => (await ms.call('MS.Admin', 'GET', `/ecoairlines/admin/flights/${id(flightNumber)}/assistance`, { query: { date } })).body,
     eventHistory: async (_, args, { ms }) => {
       const page = (await ms.call<Any>('MS.Admin', 'GET', '/ecoairlines/admin/events', { query: args })).body;
@@ -197,8 +203,10 @@ export function createResolvers(options: ResolverOptions) {
     savePrices: async (_, { input }, { ms }) => {
       const prices = input['prices'] as Any[] | null | undefined;
       const promotion = input['promotion'] as Any | null | undefined;
+      const pricing = input['pricing'] as Any | null | undefined;
       const body = {
         ...(prices?.length ? { prices: { items: prices } } : {}),
+        ...(pricing ? { pricing: Object.fromEntries(Object.entries(pricing).filter(([, value]) => value !== null && value !== undefined)) } : {}),
         ...(promotion ? { promotion: { partnerId: promotion['partnerId'], agreement: map.agreementRequest(promotion) } } : {}),
       };
       return map.pricesView((await ms.call('MS.Admin', 'PUT', '/ecoairlines/admin/prices', { body })).body);
@@ -207,6 +215,18 @@ export function createResolvers(options: ResolverOptions) {
     updateRoute: async (_, { routeId, input }, { ms }) => (await ms.call('MS.Admin', 'PUT', `/ecoairlines/admin/routes/${id(routeId)}`, { body: input })).body,
     deleteRoute: async (_, { routeId }, { ms }) => {
       await ms.call('MS.Admin', 'DELETE', `/ecoairlines/admin/routes/${id(routeId)}`);
+      return true;
+    },
+    createAirport: async (_, { input }, { ms }) => (await ms.call('MS.Admin', 'POST', '/ecoairlines/admin/airports', { body: input })).body,
+    updateAirport: async (_, { code, input }, { ms }) => (await ms.call('MS.Admin', 'PUT', `/ecoairlines/admin/airports/${id(code)}`, { body: input })).body,
+    deleteAirport: async (_, { code }, { ms }) => {
+      await ms.call('MS.Admin', 'DELETE', `/ecoairlines/admin/airports/${id(code)}`);
+      return true;
+    },
+    createAircraftType: async (_, { input }, { ms }) => (await ms.call('MS.Admin', 'POST', '/ecoairlines/admin/aircraft-types', { body: input })).body,
+    updateAircraftType: async (_, { aircraftType, input }, { ms }) => (await ms.call('MS.Admin', 'PUT', `/ecoairlines/admin/aircraft-types/${id(aircraftType)}`, { body: input })).body,
+    deleteAircraftType: async (_, { aircraftType }, { ms }) => {
+      await ms.call('MS.Admin', 'DELETE', `/ecoairlines/admin/aircraft-types/${id(aircraftType)}`);
       return true;
     },
     createAircraft: async (_, { input }, { ms }) => (await ms.call('MS.Admin', 'POST', '/ecoairlines/admin/aircraft', { body: input })).body,
@@ -241,6 +261,15 @@ export function createResolvers(options: ResolverOptions) {
       ((await ms.call<Any[]>('MS.Admin', 'GET', '/ecoairlines/admin/telemetry/services')).body ?? []).map((s) => ({ service: s['service'], status: s['status'], latencyMs: s['latency_ms'] ?? null, version: s['version'] ?? null, checkedAt: s['checkedAt'] })),
     latency: async (_, { from, to }, { ms }) =>
       ((await ms.call<Any[]>('MS.Admin', 'GET', '/ecoairlines/admin/telemetry/latency', { query: { from, to } })).body ?? []).map((l) => ({ service: l['service'], p50Ms: l['p50_ms'], p95Ms: l['p95_ms'], p99Ms: l['p99_ms'], requests: l['requests'], errorRate: l['errorRate'] })),
+    journey: async (_, { correlationId, from, to }, { ms }) => {
+      try {
+        return (await ms.call('MS.Admin', 'GET', `/ecoairlines/admin/telemetry/journeys/${id(correlationId)}`, { query: { from, to } })).body;
+      } catch (error) {
+        if (isNotFound(error)) return null;
+        throw error;
+      }
+    },
+    systemMap: async (_, __, { ms }) => (await ms.call('MS.Admin', 'GET', '/ecoairlines/admin/telemetry/system-map')).body,
     trace: async (_, { correlationId, from, to }, { ms }) => {
       try {
         return map.trace((await ms.call('MS.Admin', 'GET', `/ecoairlines/admin/telemetry/traces/${id(correlationId)}`, { query: { from, to } })).body);
@@ -260,7 +289,11 @@ export function createResolvers(options: ResolverOptions) {
   return {
     Query,
     Mutation,
-    Subscription: { bookingEvents: { subscribe: options.bookingEvents, resolve: (payload: Any) => payload['bookingEvents'] } },
+    Subscription: {
+      bookingEvents: { subscribe: options.bookingEvents, resolve: (payload: Any) => payload['bookingEvents'] },
+      traceProgress: { subscribe: options.traceProgress, resolve: (payload: Any) => payload['traceProgress'] },
+      liveSystemMap: { subscribe: options.liveSystemMap, resolve: (payload: Any) => payload['liveSystemMap'] },
+    },
     Booking,
     BookingSummary: { booking: (async (summary, _, { ms }) => map.booking((await ms.call('MS.Reservas', 'GET', `/vuelos/bookings/${id(summary['bookingId'])}`)).body)) as Resolver },
     Telemetry,

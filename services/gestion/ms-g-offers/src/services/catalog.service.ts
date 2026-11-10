@@ -8,14 +8,14 @@ import {
   findFare,
   findItineraries,
   type Itinerary,
-  multiplierOf,
+  priceRuleOf,
   parseItineraryId,
   parseOfferId,
   priceItinerary,
   seatsOf,
   toItineraryOption,
 } from '../domain/catalog.js';
-import { available, type FarePriceRecord, type FlightOffer, type ItineraryOption, type SeatStatus } from '../domain/model.js';
+import { available, type FarePriceRecord, type FlightOffer, type ItineraryOption, type PricingSettingsRecord, type SeatStatus } from '../domain/model.js';
 import { OFFERS_STORE, type OffersStore } from '../repositories/offers.store.js';
 import { offerGone, problem, TxReader, validation } from './common.js';
 
@@ -65,6 +65,7 @@ export class CatalogService {
     return this.store.transaction(async (tx) => {
       const reader = new TxReader(tx);
       const prices = await tx.farePrices();
+      const pricing = await tx.pricingSettings();
       const optionsPerLeg: Itinerary[][] = [];
       for (const leg of legs) {
         const options = await this.itinerariesFor(reader, leg.origin, leg.destination, leg.departureDate);
@@ -73,7 +74,7 @@ export class CatalogService {
       }
       const offers: FlightOffer[] = [];
       for (const itineraries of combineLegs(optionsPerLeg).filter(isChronological)) {
-        const offer = await this.toOffer(reader, itineraries, counts, prices);
+        const offer = await this.toOffer(reader, itineraries, counts, prices, pricing);
         if (offer) offers.push(offer);
       }
       offers.sort((a, b) => toCents(a.grandTotal.total) - toCents(b.grandTotal.total));
@@ -125,6 +126,7 @@ export class CatalogService {
     return this.store.transaction(async (tx) => {
       const reader = new TxReader(tx);
       const prices = await tx.farePrices();
+      const pricing = await tx.pricingSettings();
       const alternatives: { replacedItineraryId: string; itinerary: ItineraryOption; price: MoneyAmount }[] = [];
       for (const change of input.changes) {
         const current = input.currentItineraries.find((itinerary) => itinerary.itineraryId === change.itineraryId);
@@ -139,8 +141,8 @@ export class CatalogService {
           if (seats < seatsRequired(counts)) continue;
           alternatives.push({
             replacedItineraryId: change.itineraryId,
-            itinerary: toItineraryOption(option, counts, { prices, availableSeats: () => seats }, fare),
-            price: priceItinerary(option, multiplierOf(definition, prices), counts),
+            itinerary: toItineraryOption(option, counts, { prices, pricing, availableSeats: () => seats }, fare),
+            price: priceItinerary(option, priceRuleOf(definition, prices, pricing), counts),
           });
           if (alternatives.filter((alternative) => alternative.replacedItineraryId === change.itineraryId).length >= MAX_ALTERNATIVES) break;
         }
@@ -158,7 +160,7 @@ export class CatalogService {
   }
 
   /** `grandTotal` = la tarifa más barata con cupos para todo el grupo en cada itinerario; sin cupos no hay oferta. */
-  private async toOffer(reader: TxReader, itineraries: Itinerary[], counts: PassengerCounts, prices: FarePriceRecord[]): Promise<FlightOffer | undefined> {
+  private async toOffer(reader: TxReader, itineraries: Itinerary[], counts: PassengerCounts, prices: FarePriceRecord[], pricing: PricingSettingsRecord): Promise<FlightOffer | undefined> {
     const totals: MoneyAmount[] = [];
     const options: ItineraryOption[] = [];
     for (const itinerary of itineraries) {
@@ -166,8 +168,8 @@ export class CatalogService {
       for (const cabinClass of new Set(FARE_BRANDS.map((fare) => fare.cabinClass))) seatsByCabin.set(cabinClass, await reader.availableSeats(itinerary, cabinClass));
       const cheapest = FARE_BRANDS.find((fare) => (seatsByCabin.get(fare.cabinClass) ?? 0) >= seatsRequired(counts));
       if (!cheapest) return undefined;
-      totals.push(priceItinerary(itinerary, multiplierOf(cheapest, prices), counts));
-      options.push(toItineraryOption(itinerary, counts, { prices, availableSeats: (cabinClass) => seatsByCabin.get(cabinClass) ?? 0 }));
+      totals.push(priceItinerary(itinerary, priceRuleOf(cheapest, prices, pricing), counts));
+      options.push(toItineraryOption(itinerary, counts, { prices, pricing, availableSeats: (cabinClass) => seatsByCabin.get(cabinClass) ?? 0 }));
     }
     return {
       offerId: buildOfferId(itineraries.map((itinerary) => itinerary.itineraryId)),

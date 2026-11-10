@@ -17,6 +17,7 @@ import { complexityPlugin, depthLimit } from './limits.js';
 import { createResolvers } from './resolvers.js';
 import { scalarResolvers } from './scalars.js';
 import { bookingEventsSubscriber } from './subscriptions.js';
+import { journeyTopic, systemMapTopic } from './live-topics.js';
 
 export const GATEWAY_SDL = 'gateway.graphql';
 
@@ -40,6 +41,9 @@ export function buildGatewaySchema(runtime: GatewayRuntime): GraphQLSchema {
     scopes: enumValues(plain, 'Scope'),
     events: enumValues(plain, 'WebhookEventType'),
     bookingEvents: bookingEventsSubscriber(enumValues(plain, 'WebhookEventType'), runtime.config.subscriptionPollMs) as never,
+    // T-5: un sondeo compartido por tema, solo mientras hay suscriptores.
+    traceProgress: ((_: unknown, args: { correlationId: string }, context: GqlContext) => runtime.live.subscribe(context, 'traceProgress', journeyTopic(args.correlationId, runtime.config.liveTracePollMs))) as never,
+    liveSystemMap: ((_: unknown, __: unknown, context: GqlContext) => runtime.live.subscribe(context, 'liveSystemMap', systemMapTopic(runtime.config.liveMapPollMs))) as never,
     // Mismo límite que la fachada REST (PLAN.md §4.4): por X-Device-Fingerprint.
     checkSearchLimit: (fingerprint) => {
       const wait = fingerprint ? runtime.limiter.hit(`search:fp:${fingerprint}`, searchLimit) : undefined;

@@ -263,3 +263,14 @@ describe('rutas fuera del contrato', () => {
     await http().get('/api/v2/vuelos/../vuelos/health').expect(404);
   });
 });
+
+describe('catálogo de aeropuertos (propia, PLAN_Telemetria_Asientos M-1)', () => {
+  const expectOwn = contractValidator('ms-vuelos.openapi.yaml');
+  it('★ sin token: la lista de Schedule por el enrutador del ESB', async () => {
+    const airports = [{ code: 'UIO', city: 'Quito', name: 'Aeropuerto Internacional Mariscal Sucre', country: 'EC', province: 'Pichincha', lat: -0.1292, lon: -78.3575, utcOffsetMinutes: -300, active: true, updatedAt: '2026-11-10T00:00:00Z' }];
+    esb.on('GET', '/router/schedule/airports', { body: airports });
+    const response = await http().get('/api/v2/ecoairlines/airports').expect(200);
+    expectOwn('get', '/ecoairlines/airports', response);
+    expect(response.body).toEqual(airports);
+  });
+});

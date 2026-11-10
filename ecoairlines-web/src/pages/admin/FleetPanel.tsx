@@ -196,7 +196,7 @@ export function FleetPanel() {
                         title={free ? undefined : 'Opera rutas: primero quítale sus rutas'}
                         onChange={(event) => move(plane, event.target.value)}
                       >
-                        <AirportOptions short />
+                        <AirportOptions short keep={plane.base} />
                       </select>
                     </td>
                     <td>{free ? 'Disponible' : 'En servicio'}</td>

@@ -9,7 +9,8 @@ export type FlightOperationalStatus = 'SCHEDULED' | 'BOARDING' | 'DEPARTED' | 'D
 /** Transiciones válidas (contrato). ARRIVED y CANCELLED son finales. */
 export const TRANSITIONS: Readonly<Record<FlightOperationalStatus, readonly FlightOperationalStatus[]>> = {
   SCHEDULED: ['DELAYED', 'BOARDING', 'CANCELLED'],
-  DELAYED: ['DELAYED', 'BOARDING', 'CANCELLED'],
+  // DELAYED → SCHEDULED: el administrador quita el retraso (R-1); se borran las horas estimadas.
+  DELAYED: ['DELAYED', 'SCHEDULED', 'BOARDING', 'CANCELLED'],
   BOARDING: ['DEPARTED', 'DELAYED', 'CANCELLED'],
   DEPARTED: ['ARRIVED', 'DIVERTED'],
   DIVERTED: ['ARRIVED'],
@@ -29,6 +30,8 @@ export interface ScheduledFlightRecord {
   arrivalAt: string;
   aircraftType: string;
   registration: string;
+  /** Tiempo mínimo en tierra del tipo (M-2: viaja con el vuelo; FlightStatus no conoce el catálogo de tipos). */
+  turnaroundMinutes?: number;
 }
 
 /** Lo que el administrador cambió sobre el horario (`overrides`). */
@@ -91,7 +94,15 @@ export function applyUpdate(current: FlightState, flight: ScheduledFlightRecord,
   if (!same && !TRANSITIONS[current.status].includes(update.status)) {
     throw problem(409, 'INVALID_STATUS_TRANSITION', 'Transición de estado no permitida.', `No se puede pasar de ${current.status} a ${update.status}.`);
   }
-  const estimatedDeparture = update.estimatedDepartureAt ?? current.estimatedDepartureAt;
+  // Quitar el retraso (DELAYED → SCHEDULED): el vuelo vuelve a su hora programada.
+  const backOnTime = update.status === 'SCHEDULED' && current.status === 'DELAYED';
+  const estimatedDeparture = backOnTime ? null : (update.estimatedDepartureAt ?? current.estimatedDepartureAt);
+  // Con una salida estimada nueva y sin llegada, la llegada se corre lo mismo (R-1): nunca queda una llegada imposible.
+  const shiftedArrival =
+    update.estimatedDepartureAt && !update.estimatedArrivalAt
+      ? new Date(Date.parse(flight.arrivalAt) + (Date.parse(update.estimatedDepartureAt) - Date.parse(flight.departureAt))).toISOString()
+      : undefined;
+  const estimatedArrival = backOnTime ? null : (update.estimatedArrivalAt ?? shiftedArrival ?? current.estimatedArrivalAt);
   if (update.status === 'DELAYED' && !(estimatedDeparture && Date.parse(estimatedDeparture) > Date.parse(flight.departureAt))) {
     throw problem(400, 'VALIDATION_FAILED', 'DELAYED exige estimatedDepartureAt posterior a la hora programada.', undefined, 'estimatedDepartureAt');
   }
@@ -103,13 +114,26 @@ export function applyUpdate(current: FlightState, flight: ScheduledFlightRecord,
     status: update.status,
     departureGate: update.departureGate ?? current.departureGate,
     estimatedDepartureAt: estimatedDeparture,
-    estimatedArrivalAt: update.estimatedArrivalAt ?? current.estimatedArrivalAt,
+    estimatedArrivalAt: estimatedArrival,
     actualDepartureAt: update.status === 'DEPARTED' && !current.actualDepartureAt ? stamp : current.actualDepartureAt,
     actualArrivalAt: update.status === 'ARRIVED' && !current.actualArrivalAt ? stamp : current.actualArrivalAt,
     updatedAt: stamp,
     updatedBy: actor,
   };
 }
+
+/**
+ * La hora `ms` expresada con el desfase de `reference` (`…-05:00`): la hora LOCAL del aeropuerto, como el resto de horas del
+ * contrato v2. Las horas estimadas o reales pueden llegar en UTC (`…Z`); sin esto, la web y Booking verían la hora UTC.
+ */
+export function atOffsetOf(reference: string, ms: number): string {
+  const match = /([+-])(\d{2}):(\d{2})$/.exec(reference);
+  if (!match) return new Date(ms).toISOString();
+  const offset = (match[1] === '-' ? -1 : 1) * (Number(match[2]) * 60 + Number(match[3]));
+  return `${new Date(ms + offset * 60_000).toISOString().slice(0, 19)}${match[0]}`;
+}
+
+const localTo = (reference: string, iso: string | null) => (iso ? atOffsetOf(reference, Date.parse(iso)) : null);
 
 /** Terminales conocidas (las mismas de Offers); el resto opera con terminal única. */
 const TERMINALS: Readonly<Record<string, string>> = { BOG: '1', MAD: '4S', MIA: 'N', MEX: '1' };
@@ -127,16 +151,16 @@ export function toFlightStatus(flight: ScheduledFlightRecord, state: FlightState
       terminal: TERMINALS[flight.origin] ?? null,
       gate: state.departureGate,
       scheduledAt: flight.departureAt,
-      estimatedAt: state.estimatedDepartureAt,
-      actualAt: state.actualDepartureAt,
+      estimatedAt: localTo(flight.departureAt, state.estimatedDepartureAt),
+      actualAt: localTo(flight.departureAt, state.actualDepartureAt),
     },
     arrival: {
       iataCode: flight.destination,
       terminal: TERMINALS[flight.destination] ?? null,
       gate: null,
       scheduledAt: flight.arrivalAt,
-      estimatedAt: state.estimatedArrivalAt,
-      actualAt: state.actualArrivalAt,
+      estimatedAt: localTo(flight.arrivalAt, state.estimatedArrivalAt),
+      actualAt: localTo(flight.arrivalAt, state.actualArrivalAt),
     },
     aircraft: flight.aircraftType,
     status: state.status,

@@ -4,6 +4,8 @@ import type { ProblemDetailsException } from '@ecoairlines/shared';
 import { loadConfig } from '../src/config/config.js';
 import { PostgresScheduleRepository } from '../src/repositories/postgres.repository.js';
 import { PricingService } from '../src/services/pricing.service.js';
+import { AirportsService } from '../src/services/airports.service.js';
+import { AircraftTypesService } from '../src/services/aircraft-types.service.js';
 import { PromotionsService } from '../src/services/promotions.service.js';
 import { ScheduleService } from '../src/services/schedule.service.js';
 import { ScheduleSeed } from '../src/services/seed.js';
@@ -30,7 +32,7 @@ describe.skipIf(!url)('PostgresScheduleRepository', () => {
     schedule = new ScheduleService(repository);
     pricing = new PricingService(repository);
     const config = loadConfig({ NODE_ENV: 'test' });
-    await new ScheduleSeed(repository, pricing, new PromotionsService(repository, schedule, config)).onModuleInit();
+    await new ScheduleSeed(repository, pricing, new PromotionsService(repository, schedule, config), new AirportsService(repository), new AircraftTypesService(repository)).onModuleInit();
   }, 60_000);
 
   afterAll(async () => {

@@ -4,6 +4,7 @@ import type { CabinClass } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
 import { ProblemAlert } from '../../components/ProblemAlert';
 import { formatDateTime, todayIso } from '../../lib/format';
+import { PricingPanel } from './PricingPanel';
 
 /** El partner del contrato (D35): hoy Booking es el único con acuerdo de promociones. */
 const PARTNER_ID = 'BOOKING_PROTOTIPO';
@@ -197,6 +198,8 @@ export function AdminPricesPage() {
           </div>
         )}
       </section>
+
+      {view && <PricingPanel view={view} onSaved={show} />}
 
       <section className="card" aria-labelledby="promo-title">
         <h2 id="promo-title">Promociones con Booking</h2>

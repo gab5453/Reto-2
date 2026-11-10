@@ -106,6 +106,8 @@ CREATE TABLE IF NOT EXISTS scheduled_flights (
   PRIMARY KEY (flight_number, date)
 );
 CREATE INDEX IF NOT EXISTS scheduled_flights_date_idx ON scheduled_flights (date);
+-- M-2: tiempo en tierra del tipo (los vuelos publicados antes no lo tienen: se usa el de la semilla).
+ALTER TABLE scheduled_flights ADD COLUMN IF NOT EXISTS turnaround_minutes integer;
 CREATE TABLE IF NOT EXISTS overrides (
   flight_number text NOT NULL,
   date          date NOT NULL,
@@ -137,6 +139,7 @@ const toFlight = (r: Row): ScheduledFlightRecord => ({
   arrivalAt: String(r['arrival_at']),
   aircraftType: String(r['aircraft_type']),
   registration: String(r['registration']),
+  ...(r['turnaround_minutes'] === null || r['turnaround_minutes'] === undefined ? {} : { turnaroundMinutes: Number(r['turnaround_minutes']) }),
 });
 
 export class PostgresFlightStatusStore implements FlightStatusStore {
@@ -175,11 +178,11 @@ export class PostgresFlightStatusStore implements FlightStatusStore {
           else await db.query('DELETE FROM scheduled_flights WHERE date BETWEEN $1 AND $2', [from, to]);
           for (const f of flights) {
             await db.query(
-              `INSERT INTO scheduled_flights (flight_number, date, route_id, origin, destination, departure_at, departure_utc, arrival_at, aircraft_type, registration)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (flight_number, date) DO UPDATE SET route_id = EXCLUDED.route_id,
+              `INSERT INTO scheduled_flights (flight_number, date, route_id, origin, destination, departure_at, departure_utc, arrival_at, aircraft_type, registration, turnaround_minutes)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (flight_number, date) DO UPDATE SET route_id = EXCLUDED.route_id,
                  origin = EXCLUDED.origin, destination = EXCLUDED.destination, departure_at = EXCLUDED.departure_at, departure_utc = EXCLUDED.departure_utc,
-                 arrival_at = EXCLUDED.arrival_at, aircraft_type = EXCLUDED.aircraft_type, registration = EXCLUDED.registration`,
-              [f.flightNumber, f.date, f.routeId, f.origin, f.destination, f.departureAt, new Date(f.departureAt).toISOString(), f.arrivalAt, f.aircraftType, f.registration],
+                 arrival_at = EXCLUDED.arrival_at, aircraft_type = EXCLUDED.aircraft_type, registration = EXCLUDED.registration, turnaround_minutes = EXCLUDED.turnaround_minutes`,
+              [f.flightNumber, f.date, f.routeId, f.origin, f.destination, f.departureAt, new Date(f.departureAt).toISOString(), f.arrivalAt, f.aircraftType, f.registration, f.turnaroundMinutes ?? null],
             );
           }
         },

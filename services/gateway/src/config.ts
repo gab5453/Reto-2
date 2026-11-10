@@ -30,6 +30,9 @@ export interface GatewayConfig {
   introspection: boolean;
   /** Cada cuánto consulta la suscripción `bookingEvents` el feed de eventos de MS.Vuelos (D47). */
   subscriptionPollMs: number;
+  /** T-5: cada cuánto consulta el gateway el recorrido y el mapa en vivo mientras hay suscriptores. */
+  liveTracePollMs: number;
+  liveMapPollMs: number;
 }
 
 const flag = (env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean => {
@@ -75,5 +78,7 @@ export function loadGatewayConfig(env: NodeJS.ProcessEnv = process.env): Gateway
     docsEnabled: flag(env, 'DOCS_ENABLED', true),
     introspection: flag(env, 'GRAPHQL_INTROSPECTION', !production),
     subscriptionPollMs: positive(env, 'SUBSCRIPTION_POLL_MS', 3_000),
+    liveTracePollMs: positive(env, 'LIVE_TRACE_POLL_MS', 2_000),
+    liveMapPollMs: positive(env, 'LIVE_MAP_POLL_MS', 10_000),
   };
 }

@@ -93,6 +93,8 @@ type Query {
   # ===== Búsqueda y catálogo (base) =====
   "Búsqueda de vuelos (multidestino). Requiere header X-Device-Fingerprint. → MS.Vuelos searchFlights"
   searchFlights(input: SearchFlightsInput!): SearchResult! @public
+  "Aeropuertos de la red, para los buscadores (M-1; también los desactivados, con `active = false`). → MS.Vuelos listAirports"
+  airports: [Airport!]! @public
 
   "Mapa de asientos con el estado de cada asiento. → MS.Vuelos getSeatMap"
   seatMap(offerId: String!, segmentId: String!): SeatMap! @public
@@ -185,6 +187,10 @@ type Query {
 
   "Pasajeros con asistencia de un vuelo (dato de salud). → MS.Admin listFlightAssistance"
   flightAssistance(flightNumber: String!, date: Date!): [FlightAssistanceItem!]! @auth(scopes: [ECOAIRLINES_ADMIN])
+
+  "Qué pasaría con un retraso de un vuelo (solo consulta, R-1). → MS.Admin getFlightDelayImpact"
+  flightDelayImpact(flightNumber: String!, date: Date!, delayMinutes: Int! @constraint(minimum: 1, maximum: 1440)): FlightDelayImpact!
+    @auth(scopes: [ECOAIRLINES_ADMIN])
 
   "Historial de eventos y entregas de webhooks; filtros por tipo y correlation ID desde el panel O-4. → MS.Admin listEventHistory"
   eventHistory(
@@ -297,6 +303,18 @@ type Mutation {
   "→ MS.Admin deleteRoute"
   deleteRoute(routeId: String!): Boolean! @auth(scopes: [ECOAIRLINES_ADMIN])
 
+  "Agregar un aeropuerto (M-1; el código no se edita después). → MS.Admin createAirport"
+  createAirport(input: CreateAirportInput!): Airport! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "Editar un aeropuerto: todo menos el código. En uso, no cambian país, coordenadas ni huso (AIRPORT_IN_USE). → MS.Admin updateAirport"
+  updateAirport(code: IataCode!, input: AirportInput!): Airport! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "Borrar un aeropuerto sin rutas ni aviones (si los tiene: AIRPORT_IN_USE, se desactiva). → MS.Admin deleteAirport"
+  deleteAirport(code: IataCode!): Boolean! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "Agregar un tipo de avión (M-2): Business y Economy siempre (D-T8). → MS.Admin createAircraftType"
+  createAircraftType(input: CreateAircraftTypeInput!): AircraftTypeInfo! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "Editar un tipo sin aviones ni rutas (con aviones: AIRCRAFT_TYPE_IN_USE, D-T7). → MS.Admin updateAircraftType"
+  updateAircraftType(aircraftType: String!, input: AircraftTypeInput!): AircraftTypeInfo! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "Borrar un tipo sin aviones ni rutas. → MS.Admin deleteAircraftType"
+  deleteAircraftType(aircraftType: String!): Boolean! @auth(scopes: [ECOAIRLINES_ADMIN])
   "→ MS.Admin createAircraft"
   createAircraft(input: AircraftInput!): Aircraft! @auth(scopes: [ECOAIRLINES_ADMIN])
   "→ MS.Admin updateAircraft"
@@ -315,6 +333,14 @@ type Mutation {
 type Subscription {
   "Eventos de las reservas del usuario (equivalente en tiempo real a los webhooks; filtrado por dueño)."
   bookingEvents(events: [WebhookEventType!]): WebhookEvent! @auth(scopes: [FLIGHTS_READ])
+  """
+  T-5: el recorrido de un proceso mientras ocurre. Al suscribirse llega lo que ya hay; después, cada vez que Tempo tiene pasos nuevos
+  (~3–4 s después de ocurrir), el recorrido completo y cuáles son los nuevos. El gateway consulta cada 2 s solo mientras hay
+  alguien suscrito, una sola vez para todos los suscriptores del mismo proceso.
+  """
+  traceProgress(correlationId: String!): TraceProgress! @auth(scopes: [ECOAIRLINES_ADMIN])
+  "T-5: el mapa del sistema cada vez que cambia (se consulta cada 10 s solo mientras hay alguien suscrito)."
+  liveSystemMap: SystemMap! @auth(scopes: [ECOAIRLINES_ADMIN])
 }
 
 # --------------------------------------------------------------------------------------------------------------- enums
@@ -397,6 +423,17 @@ enum ProblemCode {
   ROUTE_HAS_SOLD_SEATS
   NOT_ENOUGH_AIRCRAFT
   AIRCRAFT_IN_SERVICE
+  "M-1: el aeropuerto tiene rutas o aviones (no se borra ni cambia su geografía: se desactiva)."
+  AIRPORT_IN_USE
+  AIRPORT_ALREADY_EXISTS
+  "M-1: el aeropuerto está desactivado y no se usa en rutas nuevas."
+  AIRPORT_INACTIVE
+  AIRPORT_NOT_FOUND
+  "M-2: el tipo de avión tiene aviones o rutas (no cambia ni se borra, D-T7)."
+  AIRCRAFT_TYPE_IN_USE
+  AIRCRAFT_TYPE_ALREADY_EXISTS
+  AIRCRAFT_TYPE_NOT_FOUND
+  UNKNOWN_AIRCRAFT_TYPE
   MULTIPLIER_OUT_OF_RANGE
 }
 
@@ -1430,7 +1467,61 @@ type PromotionAgreement {
 type PricesView {
   prices: [FareClassPrice!]!
   updatedAt: DateTime!
+  "Tarifa base (cargo fijo y precio por km) y precios exactos por ruta (P-1)."
+  pricing: PricingSettings!
   promotions: [PromotionAgreement!]!
+}
+
+"Tarifa de un adulto en un vuelo, sin impuestos: (fixedCharge + perKm × km) × multiplicador del paquete, salvo precio exacto de la ruta."
+type PricingSettings {
+  fixedCharge: Float!
+  perKm: Float!
+  routePrices: [RoutePrices!]!
+  updatedAt: DateTime
+  updatedBy: String
+  history: [PricingChange!]!
+}
+
+type RoutePrices {
+  routeId: String!
+  prices: [RoutePrice!]!
+}
+
+type RoutePrice {
+  fareBrand: String!
+  "US$, tarifa base de un adulto sin impuestos."
+  amount: Float!
+}
+
+type PricingChange {
+  id: UUID!
+  "FIXED_CHARGE, PER_KM o ROUTE_PRICE."
+  field: String!
+  routeId: String
+  fareBrand: String
+  oldValue: Float
+  newValue: Float
+  changedBy: String!
+  changedAt: DateTime!
+}
+
+input RoutePriceInput {
+  fareBrand: String!
+  amount: Float! @constraint(minimum: 1, maximum: 20000)
+}
+
+"El precio exacto de los 4 paquetes de una ruta; prices vacío lo quita (vuelve a la fórmula)."
+input RoutePricesInput {
+  routeId: String!
+  prices: [RoutePriceInput!]! @constraint(maxItems: 4)
+}
+
+input PricingInput {
+  "Cargo fijo por vuelo (US$)."
+  fixedCharge: Float @constraint(minimum: 0, maximum: 500)
+  "Precio por km (US$)."
+  perKm: Float
+  route: RoutePricesInput
 }
 
 input FarePriceInput {
@@ -1454,6 +1545,8 @@ input PromotionAgreementInput {
 "Un solo «Guardar» de la pantalla: precios que cambian y, opcionalmente, el acuerdo de promociones."
 input SavePricesInput {
   prices: [FarePriceInput!]
+  "Tarifa base y/o precio exacto de una ruta (P-1)."
+  pricing: PricingInput
   promotion: PromotionAgreementInput
 }
 
@@ -1529,6 +1622,46 @@ type ScheduledRoute {
   updatedAt: DateTime!
 }
 
+"Aeropuerto del catálogo (M-1). Su dueño es MS.G.Schedule."
+type Airport {
+  code: IataCode!
+  city: String!
+  name: String!
+  "ISO 3166-1 alfa-2 (EC, CO, US…)."
+  country: String!
+  province: String
+  lat: Float!
+  lon: Float!
+  "Desfase fijo respecto de UTC, en minutos (−300 = UTC−5)."
+  utcOffsetMinutes: Int!
+  "false: no se ofrece para rutas nuevas; las que ya lo usan siguen."
+  active: Boolean!
+  updatedAt: DateTime
+}
+
+input AirportInput {
+  city: String!
+  name: String!
+  country: String!
+  province: String
+  lat: Float!
+  lon: Float!
+  utcOffsetMinutes: Int!
+  active: Boolean
+}
+
+input CreateAirportInput {
+  code: IataCode!
+  city: String!
+  name: String!
+  country: String!
+  province: String
+  lat: Float!
+  lon: Float!
+  utcOffsetMinutes: Int!
+  active: Boolean
+}
+
 input AircraftInput {
   aircraftType: String!
   base: IataCode!
@@ -1560,6 +1693,48 @@ type AircraftTypeInfo {
   maxRouteKm: Int
   turnaroundMinutes: Int!
   inFleet: Int!
+  "Distribución de cada cabina (M-2)."
+  cabins: [CabinLayoutInfo!]!
+  "NETWORK: de la red base · ADMIN: creado en el panel."
+  source: String
+}
+
+type CabinLayoutInfo {
+  cabinClass: CabinClass!
+  seats: Int!
+  "Asientos por fila separados por pasillo: 2-2, 1-2-1, 3-3…"
+  configuration: String!
+  "Letras por fila; - es el pasillo."
+  layout: String!
+  firstRow: Int!
+  lastRow: Int!
+  exitRows: [Int!]!
+  extraLegroomRows: [Int!]!
+}
+
+input CabinSeatsInput {
+  seats: Int!
+  "Business: 2-2, 1-2-1 o 2-2-2 · Economy: 2-3, 3-3, 2-4-2 o 3-3-3"
+  configuration: String!
+}
+
+input AircraftTypeInput {
+  "HC- + una letra."
+  registrationPrefix: String!
+  "Alcance en km; null = sin límite."
+  maxRouteKm: Int
+  turnaroundMinutes: Int!
+  business: CabinSeatsInput!
+  economy: CabinSeatsInput!
+}
+
+input CreateAircraftTypeInput {
+  aircraftType: String!
+  registrationPrefix: String!
+  maxRouteKm: Int
+  turnaroundMinutes: Int!
+  business: CabinSeatsInput!
+  economy: CabinSeatsInput!
 }
 
 type FleetFlight {
@@ -1835,6 +2010,56 @@ type SettlementItem {
 }
 
 "Historial de una reserva (panel O-2). Nunca trae la entrada ni el resultado de una saga (datos personales y de salud)."
+type FlightDelayImpact {
+  flightNumber: String!
+  date: Date!
+  delayMinutes: Int!
+  scheduledDepartureAt: DateTime!
+  scheduledArrivalAt: DateTime!
+  estimatedDepartureAt: DateTime!
+  estimatedArrivalAt: DateTime!
+  aircraft: DelayImpactAircraft!
+  "Siguiente vuelo del mismo avión (ese día o los 2 siguientes); null si no tiene."
+  nextFlight: DelayImpactNextFlight
+  bookings: Int!
+  passengers: Int!
+  tightConnections: [TightConnection!]!
+}
+
+type DelayImpactAircraft {
+  registration: String!
+  aircraftType: String!
+  turnaroundMinutes: Int!
+}
+
+type DelayImpactNextFlight {
+  flightNumber: String!
+  date: Date!
+  origin: String!
+  destination: String!
+  scheduledDepartureAt: DateTime!
+  "Salida vigente (la estimada si ya está retrasado)."
+  departureAt: DateTime!
+  status: FlightOperationalStatus!
+  "Cuándo estaría listo el avión con el retraso."
+  readyAt: DateTime!
+  conflict: Boolean!
+  "Minutos que habría que atrasar este vuelo para que el avión llegue a tiempo."
+  suggestedDelayMinutes: Int
+}
+
+type TightConnection {
+  bookingId: UUID!
+  pnr: String!
+  channel: String!
+  "CONNECTION (escala, mínimo 60 min) o RETURN (vuelta, mínimo 120 min)."
+  kind: String!
+  nextFlightNumber: String!
+  nextDepartureAt: DateTime!
+  availableMinutes: Int!
+  requiredMinutes: Int!
+}
+
 type AdminBookingTimeline {
   sagas: [AdminSaga!]!
   "Eventos de la reserva, del más reciente al más antiguo, con cada entrega a los suscriptores."
@@ -1873,10 +2098,14 @@ type Telemetry {
   "Todo lo que generó un proceso, por su X-Correlation-Id. → MS.Admin getCorrelationTrace"
   trace(
     correlationId: String!
-    "Rango de búsqueda (O-2). Sin él, 7 días: lento cuando hay muchos logs; el historial de una reserva manda el de su saga."
+    "Rango de búsqueda (O-2). Sin él (T-2), la ventana sale de las sagas y eventos del proceso ±10 min; sin ellos, las últimas 3 h."
     from: DateTime
     to: DateTime
   ): CorrelationTrace
+  "Recorrido de un proceso de servicio en servicio, desde Tempo (T-4). Sin trazas: null. → MS.Admin getJourney"
+  journey(correlationId: String!, from: DateTime, to: DateTime): Journey
+  "Mapa del sistema en vivo: quién llama a quién en los últimos 5 minutos (T-4). → MS.Admin getSystemMap"
+  systemMap: SystemMap!
   "→ MS.Admin getQueues"
   queues: [QueueStats!]!
   "→ MS.Admin getAlerts"
@@ -1920,9 +2149,74 @@ type SagaSummary {
 
 type CorrelationTrace {
   correlationId: String!
+  "Dónde se buscaron los pasos en Loki (T-2)."
+  window: TraceWindow
   steps: [TraceStep!]!
+  "Si Loki no respondió a tiempo, por qué faltan los pasos (las sagas y los eventos sí vienen)."
+  stepsError: String
   sagas: [SagaSummary!]!
   events: [EventHistoryItem!]!
+}
+
+type TraceWindow {
+  from: DateTime!
+  to: DateTime!
+  "RANGE: el rango pedido · RECORDS: sus sagas y eventos ±10 min · DEFAULT: las últimas 3 h"
+  source: String!
+}
+
+"Recorrido de un proceso (T-4): nodos por capa y saltos en orden de tiempo. Sin datos personales."
+type Journey {
+  correlationId: String!
+  startedAt: DateTime
+  durationMs: Float!
+  traces: Int!
+  window: TraceWindow
+  nodes: [JourneyNode!]!
+  hops: [JourneyHop!]!
+  truncated: Boolean!
+}
+
+type JourneyNode {
+  id: String!
+  "CLIENT, GATEWAY, RESPONSE, ESB, MANAGEMENT o EXTERNAL"
+  layer: String!
+}
+
+type JourneyHop {
+  sequence: Int!
+  from: String!
+  to: String!
+  operation: String!
+  "Milisegundos desde el inicio del proceso."
+  startMs: Float!
+  durationMs: Float!
+  "OK o ERROR"
+  status: String!
+  httpStatus: Int
+  traceId: String!
+}
+
+type TraceProgress {
+  correlationId: String!
+  "El recorrido completo hasta ahora."
+  journey: Journey!
+  "Los saltos que no estaban en el envío anterior (al suscribirse, todos)."
+  newHops: [JourneyHop!]!
+}
+
+type SystemMap {
+  generatedAt: DateTime!
+  windowMinutes: Int!
+  edges: [SystemMapEdge!]!
+}
+
+type SystemMapEdge {
+  from: String!
+  to: String!
+  requestsPerMinute: Float!
+  errorsPerMinute: Float!
+  p95Ms: Float
 }
 
 type QueueStats {

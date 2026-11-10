@@ -154,3 +154,57 @@ describe('compensación (revert)', () => {
     expect((await esb('post', `/status-changes/${randomUUID()}/revert`)).status).toBe(404);
   });
 });
+
+describe('retrasos (PLAN_Telemetria_Asientos R-1)', () => {
+  const patchNext = (flightNumber: string, body: Any) => esb('patch', `/flights/${flightNumber}/status`).send({ date: NEXT, ...body });
+  const impact = (flightNumber: string, minutes: number) => esb('get', `/flights/${flightNumber}/delay-impact?date=${NEXT}&delayMinutes=${minutes}`, false);
+
+  it('★ impacto: con 20 min el avión (A320neo, 45 min en tierra) llega a su siguiente vuelo; con 30 min no, y sugiere cuánto atrasarlo', async () => {
+    const fits = await impact('EA100', 20);
+    expect(fits.status).toBe(200);
+    expectContract('get', '/flights/{flightNumber}/delay-impact', fits);
+    expect(fits.body).toMatchObject({
+      delayMinutes: 20,
+      estimatedDepartureAt: `${NEXT}T07:20:00-05:00`,
+      estimatedArrivalAt: `${NEXT}T08:10:00-05:00`,
+      aircraft: { registration: 'HC-N01', aircraftType: 'Airbus A320neo', turnaroundMinutes: 45 },
+      nextFlight: { flightNumber: 'EA101', conflict: false, suggestedDelayMinutes: null, readyAt: `${NEXT}T08:55:00-05:00` },
+    });
+    // 07:50 + 30 = 08:20 de llegada + 45 = 09:05 listo; EA101 sale 09:00 → atrasarlo al menos 5 min.
+    expect((await impact('EA100', 30)).body.nextFlight).toMatchObject({ flightNumber: 'EA101', conflict: true, suggestedDelayMinutes: 5 });
+    // El último vuelo del día: su siguiente es el primero del día siguiente (EA103 17:55 → EA100 de mañana, sin conflicto).
+    const last = await esb('get', `/flights/EA103/delay-impact?date=${DAY}&delayMinutes=60`, false);
+    expect(last.body.nextFlight).toMatchObject({ flightNumber: 'EA100', date: NEXT, conflict: false });
+    // Solo consulta: nada cambió.
+    expect((await esb('get', `/flights/EA100/status?date=${NEXT}`, false)).body.status).toBe('SCHEDULED');
+    expect((await impact('EA100', 0)).status).toBe(400);
+  });
+
+  it('★ el retraso corre también la llegada; si el siguiente ya está atrasado, se compara con su hora nueva; quitar el retraso vuelve a la hora programada', async () => {
+    const delayed = await patchNext('EA101', { status: 'DELAYED', estimatedDepartureAt: `${NEXT}T09:40:00-05:00`, reason: 'Tráfico en UIO' });
+    expect(delayed.status).toBe(200);
+    expect(delayed.body.flight).toMatchObject({ status: 'DELAYED', delayMinutes: 40, arrival: { estimatedAt: `${NEXT}T10:30:00-05:00` } });
+    // EA100 con 30 min: listo 09:05, y EA101 ahora sale 09:40 → ya no hay conflicto.
+    expect((await impact('EA100', 30)).body.nextFlight).toMatchObject({ flightNumber: 'EA101', status: 'DELAYED', conflict: false });
+    // Un retraso nuevo (DELAYED → DELAYED) recalcula la llegada. Aunque la hora llegue en UTC (como la manda la web), se devuelve
+    // con la hora local del aeropuerto (si no, la web y Booking mostrarían 15:00 en vez de 10:00).
+    const again = await patchNext('EA101', { status: 'DELAYED', estimatedDepartureAt: new Date(`${NEXT}T10:00:00-05:00`).toISOString() });
+    expect(again.body.flight.departure.estimatedAt).toBe(`${NEXT}T10:00:00-05:00`);
+    expect(again.body.flight.arrival.estimatedAt).toBe(`${NEXT}T10:50:00-05:00`);
+
+    const onTime = await patchNext('EA101', { status: 'SCHEDULED', reason: 'Se recuperó el horario' });
+    expect(onTime.status).toBe(200);
+    expect(onTime.body.flight).toMatchObject({ status: 'SCHEDULED', delayMinutes: null, departure: { estimatedAt: null }, arrival: { estimatedAt: null } });
+  });
+});
+
+describe('tiempo en tierra de cada tipo (PLAN_Telemetria_Asientos M-2)', () => {
+  it('★ un tipo nuevo trae su tiempo en tierra con el vuelo y el impacto de un retraso lo usa', async () => {
+    const DAY3 = new Date(Date.now() + 4 * 86_400_000).toISOString().slice(0, 10);
+    const embraer = (f: ReturnType<typeof flight>) => ({ ...f, aircraftType: 'Embraer E195-E2', registration: 'HC-E01', turnaroundMinutes: 20 });
+    await service.applySchedulePublished(published({ publishId: randomUUID(), from: DAY3, to: DAY3, routeId: 'EA900-EA901', flights: [embraer(flight('EA900', DAY3, 'UIO', 'GYE', '07:00', '07:50', 'EA900-EA901')), embraer(flight('EA901', DAY3, 'GYE', 'UIO', '08:30', '09:20', 'EA900-EA901'))] }));
+    // 07:50 + 15 = 08:05 de llegada + 20 min en tierra = 08:25: llega a EA901 (08:30). Con los 45 de antes no llegaría.
+    const impact = await esb('get', `/flights/EA900/delay-impact?date=${DAY3}&delayMinutes=15`, false);
+    expect(impact.body).toMatchObject({ aircraft: { aircraftType: 'Embraer E195-E2', turnaroundMinutes: 20 }, nextFlight: { flightNumber: 'EA901', conflict: false } });
+  });
+});

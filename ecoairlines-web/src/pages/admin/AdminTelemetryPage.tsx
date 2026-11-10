@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { JourneyView } from '../../components/journey/JourneyView';
+import { LiveSystemMap } from '../../components/journey/LiveSystemMap';
 import { useSearchParams } from 'react-router-dom';
 import {
   getAlerts,
@@ -31,6 +33,13 @@ const when = (iso: string | null) => (iso ? formatDateTime(iso) : 'Nunca');
 /** Refresco automático (panel O-4): cada 15 s, solo con la pestaña visible; al volver a la pestaña se refresca enseguida. */
 const REFRESH_MS = 15_000;
 
+/** De dónde salió la ventana de Loki de una traza (T-2). */
+const WINDOW_SOURCE = {
+  RECORDS: 'según sus sagas y eventos (±10 min)',
+  RANGE: 'el rango pedido',
+  DEFAULT: 'sin sagas ni eventos: las últimas 3 horas',
+} as const;
+
 /**
  * Telemetría (V2.16, `telemetry` del GraphQL): salud, latencia y errores (Prometheus), colas (RabbitMQ), alertas (Alertmanager),
  * integración con Booking y **búsqueda por correlation ID** (Loki, sagas y eventos). Si la plataforma de observabilidad está
@@ -50,12 +59,12 @@ export function AdminTelemetryPage() {
   // El correlation ID buscado vive en la URL (?correlationId=…): «Ver la traza» del detalle de una reserva llega ya buscado.
   const [params, setParams] = useSearchParams();
   const searched = params.get('correlationId')?.trim() ?? '';
-  // Rango de la búsqueda en Loki: 7 días tardan ~24 s en la VM; el historial de una reserva manda el de su saga.
+  // Rango explícito (opcional, lo manda el historial de una reserva). Sin él, el ESB arma la ventana con las sagas y eventos del
+  // proceso (T-2): ya no hace falta elegir cuántas horas buscar.
   const from = params.get('desde') ?? undefined;
   const to = params.get('hasta') ?? undefined;
   const key = `${searched}|${from ?? ''}|${to ?? ''}`;
   const [correlationId, setCorrelationId] = useState(searched);
-  const [hours, setHours] = useState('3');
   const [result, setResult] = useState<{ key: string; trace?: CorrelationTrace | null; error?: unknown } | null>(null);
 
   const apply = useCallback((results: Awaited<ReturnType<typeof loadAll>>) => {
@@ -123,7 +132,7 @@ export function AdminTelemetryPage() {
   const search = (event: FormEvent) => {
     event.preventDefault();
     const value = correlationId.trim();
-    if (value) setParams({ correlationId: value, desde: new Date(Date.now() - Number(hours) * 3_600_000).toISOString() });
+    if (value) setParams({ correlationId: value });
   };
 
   const services = health.value ?? [];
@@ -163,19 +172,19 @@ export function AdminTelemetryPage() {
             X-Correlation-Id
             <input value={correlationId} required maxLength={128} placeholder="corr-…" onChange={(event) => setCorrelationId(event.target.value)} />
           </label>
-          <label className="inline-field">
-            Buscar en
-            <select value={hours} onChange={(event) => setHours(event.target.value)}>
-              <option value="3">Últimas 3 horas</option>
-              <option value="24">Últimas 24 horas</option>
-              <option value="168">Últimos 7 días (lento)</option>
-            </select>
-          </label>
           <button type="submit" className="btn btn-primary btn-sm" disabled={searching || !correlationId.trim()}>{searching ? 'Buscando…' : 'Buscar'}</button>
         </form>
         {traceError ? <ProblemAlert error={traceError} /> : null}
-        {searched && from ? <p className="muted small">Rango: {formatDateTime(from)} → {to ? formatDateTime(to) : 'ahora'}</p> : null}
-        {trace === null && <p className="muted">No se encontró nada con ese identificador en ese rango.</p>}
+        {searched && !trace ? (
+          <p className="muted small">El rango se arma solo: entre la primera y la última saga o evento del proceso (±10 min); si no hay ninguno, las últimas 3 horas.</p>
+        ) : null}
+        {trace?.window ? (
+          <p className="muted small">
+            Pasos buscados entre {formatDateTime(trace.window.from)} y {formatDateTime(trace.window.to)} · {WINDOW_SOURCE[trace.window.source]}
+          </p>
+        ) : null}
+        {trace?.stepsError ? <p className="alert alert-warning" role="status">Faltan los pasos: {trace.stepsError} Las sagas y los eventos sí están.</p> : null}
+        {trace === null && <p className="muted">No se encontró nada con ese identificador.</p>}
         {trace && (
           <>
             <p className="small">
@@ -192,6 +201,19 @@ export function AdminTelemetryPage() {
             />
           </>
         )}
+        {searched && current ? (
+          <section aria-labelledby="journey-title" id="recorrido">
+            <h3 id="journey-title">Recorrido</h3>
+            <p className="muted small">Cómo viajó el proceso de servicio en servicio, en el orden real de las llamadas (desde Tempo). Dale a «Reproducir».</p>
+            <JourneyView key={key} correlationId={searched} range={{ ...(from ? { from } : {}), ...(to ? { to } : {}) }} />
+          </section>
+        ) : null}
+      </section>
+
+      <section className="card" aria-labelledby="live-map-title">
+        <h2 id="live-map-title">Mapa del sistema en vivo</h2>
+        <p className="muted small">Quién llama a quién en los últimos 5 minutos, a partir de las trazas. Más gruesa, más tráfico; en rojo, con errores.</p>
+        <LiveSystemMap />
       </section>
 
       <h2>Integración con Booking</h2>

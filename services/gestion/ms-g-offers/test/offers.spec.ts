@@ -6,7 +6,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import protobuf from 'protobufjs';
 import request from 'supertest';
-import { signJwt, type TokenUse, verifyJwt } from '@ecoairlines/shared';
+import { AIRPORTS, distanceKm, removeAirport, signJwt, type TokenUse, verifyJwt } from '@ecoairlines/shared';
 import { OffersModule, setupApp } from '../src/app.module.js';
 import { loadConfig } from '../src/config/config.js';
 import { addDays, localDate } from '../src/domain/catalog.js';
@@ -363,6 +363,29 @@ describe('promociones (D35) y reserva desde el hold', () => {
     const loser = await failure(Promise.reject((results.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason));
     expect(loser).toMatchObject({ code: grpc.status.ALREADY_EXISTS, problem: { code: 'SEAT_TAKEN' } });
   });
+
+  it('★ T-1: ValidateHold revisa los asientos pedidos ANTES del pago: tomado → SEAT_TAKEN con el formato de Booking; no ocupa nada', async () => {
+    const first = await createHold(offerId, 'CABIN_CLASS_ECONOMY', 'SEMILLA', { adults: 1 }, 'u-t1a');
+    await rpc('HoldService', 'ConsumeHold', { holdId: first.holdId, bookingId: 'booking-t1', sagaId: 'booking-t1', ownerId: 'u-t1a', passengers: [{ passengerId: 'x', passengerType: 'PASSENGER_TYPE_ADULT', requestedSeats: [{ segmentId: segment('EA100'), seatNumber: '16C' }] }] });
+    const second = await createHold(offerId, 'CABIN_CLASS_ECONOMY', 'SEMILLA', { adults: 1 }, 'u-t1b');
+    const validate = (seats: { segmentId: string; seatNumber: string }[]) => rpc('HoldService', 'ValidateHold', { holdId: second.holdId, ownerId: 'u-t1b', requestedSeats: seats.map((seat) => ({ passengerId: 'y', ...seat })) });
+
+    const taken = await failure(validate([{ segmentId: segment('EA100'), seatNumber: '16C' }]));
+    expect(taken.problem).toMatchObject({ status: 409, code: 'SEAT_TAKEN', title: 'Asiento no disponible', detail: `El asiento 16C del segmento ${segment('EA100')} ya fue tomado.` });
+    // Un asiento libre pasa, y la revisión no lo ocupa: sigue libre para quien lo pida.
+    expect((await validate([{ segmentId: segment('EA100'), seatNumber: '16D' }]))['hold']['holdId']).toBe(second.holdId);
+    expect((await validate([{ segmentId: segment('EA100'), seatNumber: '16D' }]))['hold']['holdId']).toBe(second.holdId);
+    // Otra cabina, asiento repetido y asiento inexistente se rechazan antes de cobrar.
+    expect((await failure(validate([{ segmentId: segment('EA100'), seatNumber: '1A' }]))).problem.code).toBe('SEAT_CABIN_MISMATCH');
+    expect((await failure(validate([{ segmentId: segment('EA100'), seatNumber: '17A' }, { segmentId: segment('EA100'), seatNumber: '17A' }]))).problem.code).toBe('VALIDATION_FAILED');
+    expect((await failure(validate([{ segmentId: segment('EA100'), seatNumber: '99Z' }]))).problem.code).toBe('VALIDATION_FAILED');
+
+    // Punto b) de Booking: en el mapa, el asiento vendido sale con su estado y no disponible; el revisado (16D) sigue libre.
+    const map = await rpc('CatalogService', 'GetSeatMap', { offerId, segmentId: segment('EA100') });
+    const seats = (map['seatMap']['cabins'] as Any[]).flatMap((cabin) => (cabin['rows'] as Any[]).flatMap((row) => row['seats'] as Any[]));
+    expect(seats.find((seat) => seat['seatNumber'] === '16C')).toMatchObject({ status: 'SEAT_STATUS_BOOKED', isAvailable: false });
+    expect(seats.find((seat) => seat['seatNumber'] === '16D')).toMatchObject({ status: 'SEAT_STATUS_AVAILABLE', isAvailable: true });
+  });
 });
 
 describe('asientos e inventario de una reserva (sagas)', () => {
@@ -440,5 +463,94 @@ describe('cierre de venta (D37)', () => {
     expect(reopened['state'].onSale).toBe(true);
     await stock.flush();
     expect(lastStock('EA103', 'BUSINESS')).toMatchObject({ available_units: 12 });
+  });
+});
+
+describe('precios editables: tarifa base y precio exacto por ruta (PLAN_Telemetria_Asientos P-1)', () => {
+  const adultBase = async (fareBrand: string) => {
+    const offer = (await search('UIO', 'GYE', DAY, { adults: 1 }))['offers'].find((candidate: Any) => candidate.offerId === segment('EA100'));
+    const option = offer['itineraries'][0]['pricingOptions'].find((p: Any) => p.fareBrand === fareBrand);
+    return Number(option['pricePerPassengerType'][0]['price']['baseFare']);
+  };
+  const publish = (pricing: Any | undefined, routePrices: Any[] = []) =>
+    rpc('PublishingService', 'PublishFarePrices', {
+      publishId: `precios-p1-${Math.random()}`,
+      prices: [
+        { cabinClass: 'CABIN_CLASS_ECONOMY', fareBrand: 'SEMILLA', multiplier: 1 },
+        { cabinClass: 'CABIN_CLASS_ECONOMY', fareBrand: 'BROTE', multiplier: 1.35 },
+      ],
+      promotions: [],
+      ...(pricing ? { pricing } : {}),
+      routePrices,
+    });
+
+  it('★ el cargo fijo y el precio por km cambian la fórmula; el precio exacto de un paquete en la ruta la reemplaza solo para ese paquete', async () => {
+    const km = distanceKm(AIRPORTS['UIO']!, AIRPORTS['GYE']!);
+    // Lo de siempre: (35 + 0,085 × km) × 1.
+    expect(await adultBase('SEMILLA')).toBe(Math.round(35 + km * 0.085));
+
+    await publish({ fixedCharge: 40, perKm: 0.1 }, [{ routeId: 'EA100-EA101', fareBrand: 'BROTE', amount: 90 }]);
+    expect(await adultBase('SEMILLA')).toBe(Math.round(40 + km * 0.1));
+    expect(await adultBase('BROTE')).toBe(90); // precio exacto: no usa la fórmula ni el multiplicador
+
+    // Un publicador sin `pricing` no borra la copia; publicar los valores de siempre deja todo como antes.
+    await publish(undefined);
+    expect(await adultBase('BROTE')).toBe(90);
+    await publish({ fixedCharge: 35, perKm: 0.085 });
+    expect(await adultBase('SEMILLA')).toBe(Math.round(35 + km * 0.085));
+    expect(await adultBase('BROTE')).toBe(Math.round((35 + km * 0.085) * 1.35));
+  });
+});
+
+describe('catálogo de aeropuertos (PLAN_Telemetria_Asientos M-1)', () => {
+  it('★ con el horario llega el catálogo: un vuelo a un aeropuerto nuevo se cotiza con su distancia', async () => {
+    const jipijapa = { code: 'JPJ', city: 'Jipijapa', country: 'EC', lat: -1.3486, lon: -80.5786, utcOffsetMinutes: -300 };
+    try {
+      await rpc('PublishingService', 'PublishTimetable', {
+        publishId: 'pub-m1-jipijapa',
+        from: DAY,
+        to: DAY,
+        routeId: 'EA900-EA901',
+        flights: [flight('EA900', DAY, 'UIO', 'JPJ', '11:00', '11:55', 'EA900-EA901')],
+        airports: [jipijapa],
+      });
+      expect(AIRPORTS['JPJ']).toMatchObject({ city: 'Jipijapa', country: 'EC' });
+      const offer = (await search('UIO', 'JPJ', DAY, { adults: 1 }))['offers'].find((candidate: Any) => candidate.offerId === segment('EA900'));
+      const semilla = offer['itineraries'][0]['pricingOptions'].find((p: Any) => p.fareBrand === 'SEMILLA');
+      expect(Number(semilla['pricePerPassengerType'][0]['price']['baseFare'])).toBe(Math.round(35 + distanceKm(AIRPORTS['UIO']!, AIRPORTS['JPJ']!) * 0.085));
+    } finally {
+      await rpc('PublishingService', 'PublishTimetable', { publishId: 'pub-m1-quitar', from: DAY, to: DAY, routeId: 'EA900-EA901', flights: [] });
+      removeAirport('JPJ');
+    }
+  });
+});
+
+describe('catálogo de tipos de avión (PLAN_Telemetria_Asientos M-2)', () => {
+  it('★ con el horario llega un tipo nuevo: sus cupos por cabina y su mapa de asientos (1-2-1 en Business) salen de su ficha', async () => {
+    const embraer = {
+      name: 'Embraer E195-E2',
+      turnaroundMinutes: 30,
+      cabins: [
+        { cabinClass: 'BUSINESS', firstRow: 1, lastRow: 2, layout: 'A-DG-K', exitRows: [], extraLegroomRows: [] },
+        { cabinClass: 'ECONOMY', firstRow: 3, lastRow: 22, layout: 'AC-DEFG-HK', exitRows: [13], extraLegroomRows: [3, 13] },
+      ],
+    };
+    await rpc('PublishingService', 'PublishTimetable', {
+      publishId: 'pub-m2-embraer',
+      from: DAY,
+      to: DAY,
+      routeId: 'EA910-EA911',
+      flights: [{ ...flight('EA910', DAY, 'UIO', 'GYE', '15:00', '15:50', 'EA910-EA911'), aircraftType: 'Embraer E195-E2', registration: 'HC-E01' }],
+      aircraftTypes: [embraer],
+    });
+    const offer = (await search('UIO', 'GYE', DAY, { adults: 1 }))['offers'].find((candidate: Any) => candidate.offerId === segment('EA910'));
+    const seats = Object.fromEntries(offer['itineraries'][0]['pricingOptions'].map((p: Any) => [p.fareBrand, p.availableSeats]));
+    expect(seats).toMatchObject({ SEMILLA: 160, DOSEL: 8 }); // 20 filas × 8 y 2 filas × 4
+    const map = (await rpc('CatalogService', 'GetSeatMap', { offerId: offer.offerId, segmentId: segment('EA910') }))['seatMap'];
+    const business = map.cabins.find((cabin: Any) => cabin.cabinClass === 'CABIN_CLASS_BUSINESS');
+    expect(business.rows[0].seats.map((seat: Any) => seat.seatNumber)).toEqual(['1A', '1D', '1G', '1K']);
+    const economy = map.cabins.find((cabin: Any) => cabin.cabinClass === 'CABIN_CLASS_ECONOMY');
+    expect(economy.rows.find((row: Any) => row.rowNumber === 13).seats[0].characteristics).toContain('SEAT_CHARACTERISTIC_EMERGENCY_EXIT');
+    await rpc('PublishingService', 'PublishTimetable', { publishId: 'pub-m2-quitar', from: DAY, to: DAY, routeId: 'EA910-EA911', flights: [] });
   });
 });

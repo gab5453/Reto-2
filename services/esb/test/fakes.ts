@@ -173,6 +173,7 @@ export function testConfig(base: string, offersAddress: string, extra: Record<st
     POST_SALE_URL: `${base}/post-sale`,
     HEALTH_REFRESH_MS: '3600000',
     INBOUND_INTERVAL_MS: '3600000',
+    AIRPORT_SYNC_MS: '0',
     UPSTREAM_TIMEOUT_MS: '1500',
     ...extra,
   });

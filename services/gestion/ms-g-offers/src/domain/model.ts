@@ -132,6 +132,17 @@ export interface FarePriceRecord {
 }
 
 /** Copia de `promotion_agreements` de Schedule (D35). */
+/** Copia de la tarifa base y los precios exactos por ruta de Schedule (P-1). */
+export interface PricingSettingsRecord {
+  fixedCharge: number;
+  perKm: number;
+  /** routeId → paquete → tarifa base de un adulto (US$, sin impuestos). */
+  routePrices: Record<string, Record<string, number>>;
+}
+
+/** Lo que estaba fijo en el código hasta P-1: con esto los precios son exactamente los de antes. */
+export const DEFAULT_PRICING_SETTINGS: PricingSettingsRecord = { fixedCharge: 35, perKm: 0.085, routePrices: {} };
+
 export interface PromotionRuleRecord {
   partnerId: string;
   allowsPromotions: boolean;
