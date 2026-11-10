@@ -126,7 +126,8 @@ export function LiveSystemMap() {
 }
 
 /** «En vivo» (WebSocket) o el aviso del respaldo. */
-export function LiveBadge({ status }: { status: 'connecting' | 'live' | 'fallback' }) {
+export function LiveBadge({ status }: { status: 'connecting' | 'live' | 'fallback' | 'off' }) {
+  if (status === 'off') return <span className="live-badge">Proceso terminado: no se sigue en vivo</span>;
   if (status === 'live') return <span className="live-badge is-live">● En vivo: el servidor envía cada cambio</span>;
   if (status === 'connecting') return <span className="live-badge">Conectando en vivo…</span>;
   return <span className="live-badge is-fallback">Actualización cada 15 s: sin conexión en vivo</span>;

@@ -22,6 +22,8 @@ const SUBSCRIPTION = `subscription RecorridoEnVivo($correlationId: String!) {
   }
 }`;
 const FALLBACK_MS = 15_000;
+/** Un proceso que empezó hace más de esto ya no cambia: no se sigue en vivo (cada consulta pide trazas a Tempo). */
+const LIVE_WINDOW_MS = 15 * 60_000;
 
 const duration = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toLocaleString('es-EC', { maximumFractionDigits: 2 })} s` : `${Math.round(ms)} ms`);
 
@@ -34,10 +36,19 @@ export function JourneyView({ correlationId, range = {} }: { correlationId: stri
   const { token } = useAuth();
   const key = `${correlationId}|${range.from ?? ''}|${range.to ?? ''}`;
   const [result, setResult] = useState<{ key: string; journey?: Journey | null; error?: unknown } | null>(null);
-  // T-5: lo que empuja el servidor (el recorrido completo y cuántos saltos son nuevos).
+  // T-5: lo que empuja el servidor (el recorrido completo y cuántos saltos son nuevos). Solo mientras el proceso no aparece o es de
+  // los últimos 15 minutos: uno viejo ya no cambia, y seguirlo pediría trazas a Tempo cada 5 s sin necesidad.
   const [live, setLive] = useState<{ key: string; journey: Journey; added: number } | null>(null);
-  const status = useLiveSubscription<{ traceProgress: { journey: Journey; newHops: unknown[] } }>(token, SUBSCRIPTION, { correlationId }, (data) =>
-    setLive({ key, journey: data.traceProgress.journey, added: data.traceProgress.newHops.length }),
+  const loaded = result?.key === key ? result : null;
+  const [now] = useState(() => Date.now());
+  const recent = !loaded?.journey?.startedAt || now - Date.parse(loaded.journey.startedAt) < LIVE_WINDOW_MS;
+  const follow = Boolean(loaded) && !loaded?.error && recent;
+  const status = useLiveSubscription<{ traceProgress: { journey: Journey; newHops: unknown[] } }>(
+    token,
+    SUBSCRIPTION,
+    { correlationId },
+    (data) => setLive({ key, journey: data.traceProgress.journey, added: data.traceProgress.newHops.length }),
+    follow,
   );
   const fallback = status === 'fallback';
 

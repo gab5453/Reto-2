@@ -78,7 +78,8 @@ export function loadGatewayConfig(env: NodeJS.ProcessEnv = process.env): Gateway
     docsEnabled: flag(env, 'DOCS_ENABLED', true),
     introspection: flag(env, 'GRAPHQL_INTROSPECTION', !production),
     subscriptionPollMs: positive(env, 'SUBSCRIPTION_POLL_MS', 3_000),
-    liveTracePollMs: positive(env, 'LIVE_TRACE_POLL_MS', 2_000),
+    // 10/11: cada consulta pide trazas a Tempo; cada 2 s ahogaba la VM de 4 GB.
+    liveTracePollMs: positive(env, 'LIVE_TRACE_POLL_MS', 5_000),
     liveMapPollMs: positive(env, 'LIVE_MAP_POLL_MS', 10_000),
   };
 }

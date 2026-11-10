@@ -94,6 +94,9 @@ services:
   tempo:
     image: grafana/tempo:3.1.0
     command: ["-config.file=/etc/tempo/tempo.yaml"]
+    # Límite blando de memoria de Go (10/11): libera memoria antes de llevar la VM al swap.
+    environment:
+      GOMEMLIMIT: 450MiB
     volumes:
       - ./observability/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
       - tempo-data:/var/tempo

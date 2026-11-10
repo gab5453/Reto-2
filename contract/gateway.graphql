@@ -340,7 +340,7 @@ type Subscription {
   bookingEvents(events: [WebhookEventType!]): WebhookEvent! @auth(scopes: [FLIGHTS_READ])
   """
   T-5: el recorrido de un proceso mientras ocurre. Al suscribirse llega lo que ya hay; después, cada vez que Tempo tiene pasos nuevos
-  (~3–4 s después de ocurrir), el recorrido completo y cuáles son los nuevos. El gateway consulta cada 2 s solo mientras hay
+  (~3–4 s después de ocurrir), el recorrido completo y cuáles son los nuevos. El gateway consulta cada 5 s solo mientras hay
   alguien suscrito, una sola vez para todos los suscriptores del mismo proceso.
   """
   traceProgress(correlationId: String!): TraceProgress! @auth(scopes: [ECOAIRLINES_ADMIN])

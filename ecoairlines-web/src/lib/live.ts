@@ -7,7 +7,7 @@ import { openSubscription } from '../api/client';
  * conexión no se abre, se rechaza o se corta, el estado pasa a `fallback` (el componente vuelve al refresco cada 15 s y lo avisa)
  * y se reintenta conectar cada 30 s.
  */
-export type LiveStatus = 'connecting' | 'live' | 'fallback';
+export type LiveStatus = 'connecting' | 'live' | 'fallback' | 'off';
 
 const RETRY_MS = 30_000;
 
@@ -15,7 +15,7 @@ const RETRY_MS = 30_000;
  * Hook: mantiene una suscripción mientras el componente está montado y hay token. `onData` recibe cada envío del servidor.
  * Devuelve el estado de la conexión para que el componente decida si usa el refresco de respaldo.
  */
-export function useLiveSubscription<T>(token: string | null | undefined, query: string, variables: Record<string, unknown>, onData: (data: T) => void): LiveStatus {
+export function useLiveSubscription<T>(token: string | null | undefined, query: string, variables: Record<string, unknown>, onData: (data: T) => void, enabled = true): LiveStatus {
   const [status, setStatus] = useState<LiveStatus>('connecting');
   const handler = useRef(onData);
   useEffect(() => {
@@ -24,7 +24,7 @@ export function useLiveSubscription<T>(token: string | null | undefined, query: 
   const key = JSON.stringify(variables);
 
   useEffect(() => {
-    if (!token) return;
+    if (!token || !enabled) return;
     let stopped = false;
     let close: () => void = () => undefined;
     let retry: number | undefined;
@@ -51,7 +51,8 @@ export function useLiveSubscription<T>(token: string | null | undefined, query: 
       window.clearTimeout(retry);
       close();
     };
-  }, [token, query, key]);
+  }, [token, query, key, enabled]);
 
+  if (!enabled) return 'off';
   return token ? status : 'fallback';
 }

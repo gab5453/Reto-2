@@ -21,6 +21,8 @@ const HISTOGRAM = 'http_server_request_duration_seconds';
 
 /** Plazo de las consultas a Tempo de la vista «Recorrido» (T-4); MS.Admin espera hasta 12 s al ESB para ella. */
 const TEMPO_TIMEOUT_MS = 8_000;
+/** Trazas de un proceso que se traen para el «Recorrido» (una compra tiene ~6: búsqueda, hold, pago, reserva…). */
+const MAX_JOURNEY_TRACES = 10;
 
 const unavailable = (what: string) => new ProblemDetailsException({ status: 503, code: 'PROVIDER_UNAVAILABLE', title: `${what} no está disponible.`, retryAfterSeconds: 30 });
 
@@ -125,16 +127,17 @@ export class ObservabilityClient {
 
   /**
    * Spans de todas las trazas de un correlation ID (T-4), aplanados. Busca en Tempo con TraceQL dentro de la ventana y trae hasta
-   * 20 trazas. Tempo sí indexa los atributos de los spans: es rápido aunque la ventana sea larga.
+   * 10 trazas, **una por una** (10/11: 20 en paralelo llevaban Tempo de ~500 a ~900 MB y la VM al swap con unas pocas consultas).
    */
   async journeySpans(correlationId: string, window: { from: Date; to: Date }): Promise<RawSpan[]> {
     const query = `{ span.correlation_id = "${correlationId.replace(/["\\]/g, '')}" }`;
-    const params = new URLSearchParams({ q: query, start: String(Math.floor(window.from.getTime() / 1000)), end: String(Math.ceil(window.to.getTime() / 1000)), limit: '20' });
+    const params = new URLSearchParams({ q: query, start: String(Math.floor(window.from.getTime() / 1000)), end: String(Math.ceil(window.to.getTime() / 1000)), limit: String(MAX_JOURNEY_TRACES) });
     // Solo el panel, y de vez en cuando: más plazo que el resto (Tempo tarda más con la VM cargada).
     const found = await this.get<{ traces?: { traceID: string }[] }>('Tempo', this.urls.tempo, `/api/search?${params}`, {}, TEMPO_TIMEOUT_MS);
-    const ids = [...new Set((found.traces ?? []).map((trace) => trace.traceID))].slice(0, 20);
-    const traces = await Promise.all(ids.map((id) => this.get<unknown>('Tempo', this.urls.tempo, `/api/v2/traces/${encodeURIComponent(id)}`, {}, TEMPO_TIMEOUT_MS)));
-    return traces.flatMap(flattenOtlp);
+    const ids = [...new Set((found.traces ?? []).map((trace) => trace.traceID))].slice(0, MAX_JOURNEY_TRACES);
+    const spans: RawSpan[] = [];
+    for (const id of ids) spans.push(...flattenOtlp(await this.get<unknown>('Tempo', this.urls.tempo, `/api/v2/traces/${encodeURIComponent(id)}`, {}, TEMPO_TIMEOUT_MS)));
+    return spans;
   }
 
   /**

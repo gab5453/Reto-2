@@ -3096,3 +3096,38 @@ un origen ajeno sin CORS) y aplicado recreando solo Caddy (segundos).
 - No recompilar las 18 imágenes en cada despliegue (compilar solo lo que cambió) y desplegar en horarios acordados con Booking.
 - Que la cotización de cancelación avise `CUTOFF_PASSED` tras el check-in (hoy responde 200 y recién la cancelación dice que no).
 - Una VM de 8 GB resolvería la memoria de raíz, pero sube el costo (decisión del responsable).
+
+### 10/11 — La búsqueda por correlation ID en «Telemetría» tumbaba la VM — ✅ CORREGIDO Y DESPLEGADO (10/11)
+
+**Reporte del responsable:** al buscar un correlation ID en «Telemetría», los servicios «se apagaban».
+
+**Diagnóstico (medido):** no se caían (0 reinicios, sin OOM): la VM se quedaba esperando al disco. Cada consulta del «Recorrido»
+(T-4) buscaba en Tempo y traía **hasta 20 trazas completas en paralelo**, y Tempo partía cada una en 50 trabajos; la suscripción en
+vivo (T-5) **repetía eso cada 2 s** mientras la página estaba abierta, aunque el proceso fuera viejo. Cinco consultas seguidas: Tempo
+de 630 a **860 MB**, la presión de disco al **99 %** y 4 de las 5 consultas con 503 (8–13 s).
+
+**Arreglos:**
+- **Tempo** (`tempo.yaml` y `GOMEMLIMIT: 450MiB`): 4 consultas a la vez (antes 20), 20 trabajos por búsqueda (antes 1000), 4 partes por
+  traza (antes 50), 100 en cola (antes 2000) y 50 MB de trazas en memoria (antes 250). Probado en un contenedor descartable en la VM.
+- **ESB:** el recorrido trae **hasta 10 trazas, una por una** (antes 20 en paralelo).
+- **Gateway:** `traceProgress` consulta **cada 5 s** (antes 2).
+- **Web:** el recorrido se sigue en vivo **solo si el proceso todavía no aparece o empezó hace menos de 15 min**; uno viejo muestra
+  «Proceso terminado: no se sigue en vivo» y no consulta nada más.
+- **`scripts/cloud/desplegar-parcial.sh`:** compila solo los servicios indicados y recrea solo la configuración indicada (minutos, en
+  lugar de los ~20 del despliegue completo).
+
+**Verificación:** suite **717 pasan**, 41 omitidas; typecheck y lint limpios. Desplegado por el responsable con
+`desplegar-parcial.sh` (esb, gateway y tempo). **La misma medición de las 5 consultas seguidas:**
+
+| | Antes | Después |
+|---|---|---|
+| Consultas que respondieron | 1 de 5 (4 con 503) | **5 de 5** |
+| Tiempo por consulta | 8–13 s | **0,4–1,1 s** |
+| Memoria de Tempo | 630 → 860 MB | **195 → 293 MB** |
+| Presión de disco (avg10) | 99 % | **~9 %** |
+
+`recorrido_t5` otra vez en Edge (compra real con la vista en vivo abierta, mapa empujado, WebSocket cortado → respaldo): todo OK y la
+VM quedó en Tempo 290 MB, presión ~12 %, carga 1,1 y los 19 servicios sanos. **Costo aceptado:** los primeros pasos llegan a los
+**~9,5 s** (antes 2,3 s) por consultar cada 5 s y con menos paralelismo. Un proceso de hace más de 15 min muestra «Proceso terminado:
+no se sigue en vivo», hace una sola consulta y no abre suscripción (verificado).
+

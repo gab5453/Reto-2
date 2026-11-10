@@ -24,9 +24,22 @@ storage:
 # un paso tardaba 31 s en aparecer. Con 1 s y 2 s, el panel ve el proceso casi mientras ocurre.
 query_frontend:
   query_end_cutoff: 1s
+  # 10/11: en una VM de 4 GB el paralelismo por defecto (1000 trabajos por búsqueda, 50 partes por traza, 20 consultas a la vez)
+  # llevaba Tempo de ~500 MB a ~900 MB con unas pocas consultas del «Recorrido» y la VM al swap (presión de disco 99 %).
+  max_outstanding_per_tenant: 100
+  search:
+    concurrent_jobs: 20
+  trace_by_id:
+    query_shards: 4
+  metrics:
+    concurrent_jobs: 20
+querier:
+  max_concurrent_queries: 4
 live_store:
   max_trace_idle: 2s
   flush_check_period: 1s
+  # Trazas en memoria antes de escribir el bloque (por defecto 250 MB).
+  max_live_traces_bytes: 50000000
 # PLAN_Telemetria_Asientos T-3: métricas a partir de las trazas, escritas en Prometheus (remote write). En modo monolítico el
 # distribuidor se las pasa al generador en el mismo proceso (Tempo 3: sin Kafka).
 # - service-graphs: el grafo de servicios (traces_service_graph_request_total, _failed_total, _server_seconds… por arista
