@@ -3194,3 +3194,24 @@ servicio guarda, borra o libera. Ninguna cambia código de producción ni usa Ne
 - **Hallazgo menor (sin cambio):** `InventoryService.transition` y `publishFarePrices` validan antes de devolver la promesa (lanzan
   al llamarlas, no al esperar). Para quien usa `await` el efecto es el mismo; las pruebas lo cubren así.
 - **Suite:** 1 310 pasan (antes 1 042), 41 omitidas (corren en la CI); tipos y lint limpios.
+
+### Pruebas · PU-3 — Unitarias del ESB — ✅ HECHA (11/11)
+
+**103 pruebas unitarias nuevas** del ESB, sin NestJS, base de datos ni red; ninguna cambia código de producción.
+- **Motor de sagas** (`src/sagas/engine.spec.ts`, 18), con un repositorio *fake* (un Map con las mismas reglas de plazos) y sagas
+  inventadas cuyos pasos son *spies*: orden de los pasos, STARTED antes de ejecutar, correlation ID, compensación LIFO (la del paso
+  que falló recibe `undefined`), compensación pendiente (COMPENSATING) o rechazada (FAILED con `compensationFailed`), punto sin
+  retorno (PENDING con 2 s, 10 s, 30 s… 30 min; o FAILED por error de negocio), reanudar sin repetir pasos ni compensaciones,
+  `sagaId` fijo y el trabajador de recuperación.
+- **Piezas del ESB** (`src/esb.units.spec.ts`, 66): tabla cerrada de rutas y segmentos con puntos, eventos internos (el secreto de un
+  partner y el tipo de asistencia nunca salen), ProblemDetails, Idempotency-Key (UUID, repetición, otro cuerpo, en curso, 5xx
+  libera), ventana de búsqueda por correlation ID (T-2), capas y rutas enmascaradas (T-4), catálogo de aeropuertos (M-1),
+  referencia de pago de Booking y los pasos de cobro y reembolso (Booking no cobra; web autoriza, captura y reembolsa solo lo suyo).
+- **Entrada de eventos de Booking** (`src/inbound/inbound.service.spec.ts`, 19): firma HMAC sobre los bytes exactos, validación del
+  CloudEvent, un `id` repetido no se procesa, REJECTED por negocio y RETRY con espera creciente por disponibilidad.
+- **La mutación manual encontró una prueba débil:** cambiar `status >= 500` por `> 500` en la idempotencia no hacía fallar nada (la
+  prueba usaba un 503). Se agregó la prueba del borde exacto (500 se libera, 499 se guarda) y ahora la mutación se detecta.
+  Las otras dos (compensación en orden directo, rechazar un MS.G caído) se detectaron a la primera.
+- **Errores de las propias pruebas, corregidos:** un *spy* guarda la referencia del objeto (se usó una copia por llamada) y una
+  limpieza que restauraba un catálogo ya modificado (se guarda una copia antes).
+- **Suite:** 1 413 pasan (antes 1 310), 41 omitidas (corren en la CI); tipos y lint limpios.

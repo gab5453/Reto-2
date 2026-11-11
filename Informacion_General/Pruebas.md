@@ -109,7 +109,7 @@ existe en `gab5453/Reto-2`.
 
 | Nivel | Al empezar (11/11) | Hoy | Objetivo | Cambio |
 |---|---:|---:|---:|---|
-| Unitarias | 82 | **675** (tras PU-2) | **~980** | **+~900** (sección 5.1) |
+| Unitarias | 82 | **778** (tras PU-3) | **~980** | **+~900** (sección 5.1) |
 | Integración | 540 + 41 omitidas | 540 + 41 (en CI) | ~600 | Se activan las 41 en CI ✅; +~20 nuevas; se revisan duplicados (sección 5.2) |
 | Contrato | 95 + 49 | + Pact | Se agrega Pact, el lado consumidor (sección 5.3) |
 | E2E | ~25 fuera del repositorio | **~8** en el repositorio | Se reducen a los flujos críticos (sección 5.4) |
@@ -377,7 +377,7 @@ acordados con Booking.
 | **CI-1** ✅ 11/11 | `ci.yml` con lint, typecheck y las pruebas actuales (incluidas las 41 con infraestructura real) | Lo que existe, protegido en cada push. Verificado en local: 717 + 46 (las 41 + 5 de `bus.spec`) pasan, 0 omitidas. **Verde en GitHub** (ejecución 43105254180) |
 | **PU-1** ✅ 11/11 | Unitarias de los dominios de los MS.G (5.1.1) | **325** (se estimaron ~245): Bookings 66, Offers 58, Schedule 59, PostSale 35, FlightStatus 36, CheckIn 15, Webhooks 42, Identity 14. Una mutación a mano en tres reglas (edad, impuestos, exoneración) fue detectada |
 | **PU-2** ✅ 11/11 | Unitarias de los servicios de los MS.G con *stubs* y *spies* (5.1.2) | **268** (se estimaron ~225): Bookings 71, Offers 73 (holds, inventario, stock a Booking con `fetch` simulado), Schedule 33, Identity 34, PostSale 14, FlightStatus 18, CheckIn 11, Webhooks 14 (con `fetch` simulado y firma HMAC). Customers no tiene capa de servicio (lo cubren sus 4 de integración). Otra mutación a mano en tres servicios fue detectada |
-| **PU-3** | Unitarias del ESB (5.1.3) | ~135 |
+| **PU-3** ✅ 11/11 | Unitarias del ESB (5.1.3) | **103** (se estimaron ~135: lo demás ya lo cubrían `journey`, `transversal`, `events` y `routes`): motor de sagas 18 (con un repositorio *fake*), enrutador, eventos internos, idempotencia, composición, catálogo y cobro/reembolso 66, entrada de eventos de Booking 19. La mutación manual encontró un borde sin probar (un 500 exacto en idempotencia) y se agregó su prueba |
 | **PU-4** | Unitarias de shared, gateway, externos y web (5.1.4) | ~275 |
 | **CT-1** | Pact: consumidores, `pact.json` y verificación de proveedores (5.3) | ~60 interacciones |
 | **E2E-1** | Playwright en `e2e/` con los 8 flujos y E2E en CI (5.4) | La punta de la pirámide |
