@@ -3143,7 +3143,7 @@ no se sigue en vivo», hace una sola consulta y no abre suscripción (verificado
   grafo de servicios de Tempo en Prometheus; en la arquitectura, O-1..O-4, T-1, R-1, P-1, T-2..T-5, M-1, M-2 y los arreglos del 10/11.
   Las v2–v5 se quedan en `PLAN/` como historial.
 
-### Pruebas · CI-1 — Integración continua con lo que ya existe — ✅ HECHA (11/11), pendiente de su primera ejecución en GitHub
+### Pruebas · CI-1 — Integración continua con lo que ya existe — ✅ HECHA (11/11), verde en GitHub (ejecución 43105254180, commit 570a955)
 
 - **`.github/workflows/ci.yml`** (en cada push a `feature/v2-microservicios` o `main`, en cada pull request y a mano), en orden «fail
   fast» (Semana 9 §9.5): **1. calidad** (`typecheck` + `lint`) → **2. pruebas** (`npm test`) → **3. infraestructura** (PostgreSQL 17 y
@@ -3155,3 +3155,20 @@ no se sigue en vivo», hace una sola consulta y no abre suscripción (verificado
 - **Verificación local** (Docker con las mismas imágenes): tipos y lint limpios (raíz y web), `npm test` 717 pasan, `test:infra`
   **46 pasan, 0 omitidas** (las 41 nunca se habían ejecutado: todas pasan), el guardia sin variables detecta las 41 y sale con 1,
   la web compila. `imagenes-v2.yml` no cambia (se retoma en CD-1).
+
+### Pruebas · PU-1 — Unitarias de los dominios de los MS.G — ✅ HECHA (11/11)
+
+Primera fase para corregir la pirámide (Informacion_General/Pruebas.md §4): **325 pruebas unitarias nuevas** junto al código
+(`src/domain/*.spec.ts`), sin NestJS ni base de datos; ninguna cambia código de producción.
+- **Bookings** (66): cédula ecuatoriana, edad por tipo (cumpleaños el día del vuelo, 29 de febrero), infantes, documentos repetidos o
+  vencidos, pasaporte internacional, asientos y maletas, PNR sin caracteres ambiguos, emisión y reemisión de boletos.
+- **Offers** (58): identificadores, conexiones (escala 1–10 h, rodeos), venta 60 min antes, **precios calculados a mano** (UIO–GYE
+  79,85; niño 75 %; infante 10 % sin impuestos; DOSEL × 3,2; escala −10 %; precio exacto por ruta de P-1), maletas, mapa de asientos.
+- **Schedule** (59): aeropuertos (activo/inactivo), alcance por tipo, rutas duplicadas, números de vuelo, hora de llegada local,
+  regreso del avión (C-3), multiplicadores, acuerdo de promociones (≤ 50 %), fechas y consultas del horario.
+- **PostSale** (35): reembolso por tarifa y exoneración, cambio de fecha (diferencias, cargo, saldo a favor), maletas.
+- **FlightStatus** (36), **CheckIn** (15), **Webhooks** (42), **Identity** (14): transiciones y retrasos, código IATA BCBP,
+  quién recibe cada evento, SSRF, cifrado del secreto, reintentos, correo y scopes.
+- **Comprobación de que las pruebas sirven:** se cambió a mano una regla en Bookings (edad), Offers (impuestos) y PostSale
+  (exoneración): las pruebas fallaron en los tres casos (2, 7 y 1 pruebas) y el código se restauró desde git.
+- **Suite:** 1 042 pasan (antes 717), 41 omitidas (corren en la CI); tipos y lint limpios.
