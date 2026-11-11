@@ -3172,3 +3172,25 @@ Primera fase para corregir la pirámide (Informacion_General/Pruebas.md §4): **
 - **Comprobación de que las pruebas sirven:** se cambió a mano una regla en Bookings (edad), Offers (impuestos) y PostSale
   (exoneración): las pruebas fallaron en los tres casos (2, 7 y 1 pruebas) y el código se restauró desde git.
 - **Suite:** 1 042 pasan (antes 717), 41 omitidas (corren en la CI); tipos y lint limpios.
+
+### Pruebas · PU-2 — Unitarias de los servicios de los MS.G — ✅ HECHA (11/11)
+
+**268 pruebas unitarias nuevas** de los servicios (`src/services/*.spec.ts`), con el repositorio como doble de prueba: *stubs*
+(`vi.fn().mockResolvedValue`) para lo que devuelve la base y *spies* (`toHaveBeenCalledWith`, `not.toHaveBeenCalled`) para lo que el
+servicio guarda, borra o libera. Ninguna cambia código de producción ni usa NestJS, base de datos o red.
+- **Bookings** (71): referencia de pago de un solo uso, crear (idempotente, PNR repetido, hold usado, documento en el vuelo), quién ve
+  qué (404 y no 403), fallar, emitir, asientos, maletas, cancelar (D55 tras el check-in), ingresos = cobrado − reembolsado, reporte
+  por día de Ecuador y asistencia.
+- **Offers** (73): crear, vencer, liberar y consumir holds (sin liberar dos veces), promociones del acuerdo, `SEAT_TAKEN` antes de
+  cobrar (T-1), primer asiento libre, operaciones de saga idempotentes, publicar horario y precios, y envío de stock a Booking con
+  `fetch` simulado (mensaje del contrato, espera creciente 1 s → 60 s, vuelos ya salidos).
+- **Schedule** (33): precios con historial, tarifa base y precio por ruta (P-1), aeropuertos (M-1), tipos de avión (M-2), acuerdo.
+- **Identity** (34): registro, login (misma respuesta para correo inexistente o clave incorrecta), límite de intentos, OAuth2
+  `client_credentials` (cuerpo y Basic, scopes, ESB y MS de respuesta), alta y rotación del secreto (se guarda solo el hash).
+- **PostSale** (14), **FlightStatus** (18: impacto de un retraso en el siguiente vuelo del avión, revertir), **CheckIn** (11),
+  **Webhooks** (14: firma HMAC, reintentos, un 3xx no es entrega, el dueño nunca va en el cuerpo).
+- **Comprobación:** tres errores introducidos a mano (liberar el pago de una reserva confirmada, liberar cupos de un hold ya
+  liberado, contar un 3xx como entregado) fueron detectados; el código se restauró desde git.
+- **Hallazgo menor (sin cambio):** `InventoryService.transition` y `publishFarePrices` validan antes de devolver la promesa (lanzan
+  al llamarlas, no al esperar). Para quien usa `await` el efecto es el mismo; las pruebas lo cubren así.
+- **Suite:** 1 310 pasan (antes 1 042), 41 omitidas (corren en la CI); tipos y lint limpios.
