@@ -21,6 +21,7 @@
     "format": "prettier --write \"{packages,services}/**/{src,test}/**/*.ts\" \"tests/**/*.ts\"",
     "test": "vitest run --config ./vitest.config.v2.ts",
     "test:v2": "vitest run --config ./vitest.config.v2.ts",
+    "test:infra": "vitest run --config ./vitest.config.v2.ts postgres.spec bus.spec",
     "test:conformidad-v2": "vitest run --config ./tests/conformidad-v2/vitest.config.ts",
     "infra:up": "docker compose -f infra/docker-compose.yml up -d --build",
     "infra:down": "docker compose -f infra/docker-compose.yml down"

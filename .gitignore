@@ -52,3 +52,6 @@ desktop.ini
 
 # ── Configuración local de asistentes ──
 .claude/settings.local.json
+
+# Material del curso (solo referencia local; no se publica en el repositorio público)
+Informacion_General/*.pdf

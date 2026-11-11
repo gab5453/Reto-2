@@ -3131,3 +3131,27 @@ VM quedó en Tempo 290 MB, presión ~12 %, carga 1,1 y los 19 servicios sanos. *
 **~9,5 s** (antes 2,3 s) por consultar cada 5 s y con menos paralelismo. Un proceso de hace más de 15 min muestra «Proceso terminado:
 no se sigue en vivo», hace una sola consulta y no abre suscripción (verificado).
 
+
+### 11/11 — Información general, plan de pruebas y diagramas v6
+
+- **Carpeta `Informacion_General/`** (solo lo vigente): `Pruebas.md` (plan de pruebas y CI/CD según la Semana 9 del curso, con las
+  decisiones P-1 a P-9), `Patron_Diseño_Arquitectura.md` (estilo, arquitectura, patrones y diseño) y los diagramas v6. El material
+  de la Semana 9 queda solo en local (`.gitignore`). Nada programado todavía: las pruebas y el `ci.yml` se implementan por fases aprobadas (CI-1, PU-1…).
+- **Diagramas v6** (`PLAN/arquitectura-microservicios-v6.png`, `PLAN/modelo-conceptual-v6.png`, scripts `PLAN/scripts/*_v6.py`; copia
+  en `Informacion_General/`). En rojo, lo nuevo desde la v5: tablas `airports`, `aircraft_types`, `pricing_settings` y `pricing_changes`
+  en Schedule; copias `airport_catalog`, `aircraft_type_catalog` y `pricing_settings` en Offers; `turnaround_minutes` en FlightStatus;
+  grafo de servicios de Tempo en Prometheus; en la arquitectura, O-1..O-4, T-1, R-1, P-1, T-2..T-5, M-1, M-2 y los arreglos del 10/11.
+  Las v2–v5 se quedan en `PLAN/` como historial.
+
+### Pruebas · CI-1 — Integración continua con lo que ya existe — ✅ HECHA (11/11), pendiente de su primera ejecución en GitHub
+
+- **`.github/workflows/ci.yml`** (en cada push a `feature/v2-microservicios` o `main`, en cada pull request y a mano), en orden «fail
+  fast» (Semana 9 §9.5): **1. calidad** (`typecheck` + `lint`) → **2. pruebas** (`npm test`) → **3. infraestructura** (PostgreSQL 17 y
+  RabbitMQ 4 como contenedores de servicio de GitHub: las 41 pruebas que hasta hoy siempre se omitían); **web** en paralelo (lint +
+  build). Sin secretos: base y broker desechables. `cancel-in-progress` para no gastar ejecuciones viejas.
+- **`npm run test:infra`**: solo `postgres.spec` y `bus.spec`. Todas comparten una base: cada prueba crea su esquema y lo borra.
+- **`scripts/ci/sin-omitidas.mjs`**: lee el reporte JSON de Vitest y falla si alguna prueba se omitió o si no corrió ninguna, para
+  que una variable mal escrita no deje la CI en verde sin probar nada.
+- **Verificación local** (Docker con las mismas imágenes): tipos y lint limpios (raíz y web), `npm test` 717 pasan, `test:infra`
+  **46 pasan, 0 omitidas** (las 41 nunca se habían ejecutado: todas pasan), el guardia sin variables detecta las 41 y sale con 1,
+  la web compila. `imagenes-v2.yml` no cambia (se retoma en CD-1).

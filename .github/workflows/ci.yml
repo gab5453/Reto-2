@@ -1,0 +1,118 @@
+name: CI
+
+# CI-1 (Informacion_General/Pruebas.md §8, §11): protege en cada push y pull request lo que ya existe. Orden «fail fast» (Semana 9,
+# §9.5): primero lo más rápido y barato; si una etapa falla, las siguientes no corren.
+#   1. calidad ........ tipos (tsc) + lint (oxlint)
+#   2. pruebas ........ unitarias + integración (npm test: PostgreSQL y RabbitMQ en memoria o simulados)
+#   3. infraestructura  las pruebas con PostgreSQL y RabbitMQ REALES (contenedores de servicio), que sin ellos se omiten
+#   web (en paralelo) . lint + compilación de ecoairlines-web
+# Sin secretos: las bases y el broker son desechables y viven solo mientras dura el trabajo.
+on:
+  push:
+    branches: [feature/v2-microservicios, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  calidad:
+    name: 1. Calidad (tipos y lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Tipos
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+
+  pruebas:
+    name: 2. Pruebas unitarias e integración
+    needs: calidad
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: npm test
+        run: npm test
+
+  infraestructura:
+    name: 3. Integración con PostgreSQL y RabbitMQ reales
+    needs: pruebas
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17.11-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci-solo-pruebas
+          POSTGRES_DB: pruebas
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ci -d pruebas"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      rabbitmq:
+        image: rabbitmq:4.1.8-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: ci
+          RABBITMQ_DEFAULT_PASS: ci-solo-pruebas
+        ports: ['5672:5672']
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s --health-timeout 10s --health-retries 20
+    # Cada prueba crea su propio esquema (o exchange y colas) y lo borra al terminar: todas comparten la misma base y el mismo broker.
+    env:
+      PG: postgres://ci:ci-solo-pruebas@localhost:5432/pruebas
+      BUS_TEST_URL: amqp://ci:ci-solo-pruebas@localhost:5672
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Pruebas con infraestructura real
+        run: |
+          for svc in ESB IDENTITY SCHEDULE OFFERS BOOKINGS CHECK_IN POST_SALE FLIGHT_STATUS WEBHOOKS PAYMENT; do
+            export "${svc}_TEST_DATABASE_URL=$PG"
+          done
+          npm run test:infra -- --reporter=default --reporter=json --outputFile=resultados-infra.json
+      - name: Ninguna se omitió
+        run: node scripts/ci/sin-omitidas.mjs resultados-infra.json
+
+  web:
+    name: Web (lint y compilación)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ecoairlines-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ecoairlines-web/package-lock.json
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Compilación
+        run: npm run build
