@@ -7,6 +7,7 @@ name: CI
 #   3. infraestructura  las pruebas con PostgreSQL y RabbitMQ REALES (contenedores de servicio), que sin ellos se omiten
 #   4. contratos ...... Pact (CT-1): los consumidores generan contract/pacts y los proveedores reales los verifican
 #   web (en paralelo) . lint + pruebas (Vitest + jsdom) + compilación de ecoairlines-web
+#   5. e2e ............ E2E-1: el sistema completo con docker compose + conformidad v2 (54) + flujos críticos con Playwright (8)
 # Sin secretos: las bases y el broker son desechables y viven solo mientras dura el trabajo.
 on:
   push:
@@ -124,6 +125,53 @@ jobs:
           fi
       - name: Proveedores (verifican los contratos)
         run: npm run test:pact:verify
+
+  e2e:
+    name: 5. E2E (sistema completo)
+    # La etapa más cara: solo si todo lo anterior pasó (fail fast). El sistema vive en el runner y se borra al terminar: nunca se
+    # toca la nube ni las reservas de Booking. Las claves son las de desarrollo de infra/docker-compose.yml (sin secretos).
+    needs: [infraestructura, contratos, web]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            ecoairlines-web/package-lock.json
+      - run: npm ci
+      - name: Dependencias de la web (Playwright la compila y la sirve)
+        run: npm ci
+        working-directory: ecoairlines-web
+      - name: Navegador (Chromium de Playwright)
+        run: npx playwright install --with-deps chromium
+      - name: Levantar el sistema (docker compose, sin Prometheus, Grafana ni Alertmanager)
+        run: npm run e2e:up
+      - name: Conformidad con el contrato v2 (caja negra, como Booking)
+        run: |
+          npm run e2e:conformidad -- --reporter=default --reporter=json --outputFile=resultados-conformidad.json
+          node scripts/ci/sin-omitidas.mjs resultados-conformidad.json "Conformidad v2"
+      - name: Flujos críticos en el navegador (Playwright)
+        run: npm run test:e2e
+      - name: Logs de los contenedores (si algo falló)
+        if: failure()
+        run: docker compose -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml logs --no-color --timestamps > logs-e2e.txt
+      - name: Reporte y logs (si algo falló)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-reporte
+          path: |
+            playwright-report/
+            test-results/
+            logs-e2e.txt
+          retention-days: 7
+      - name: Apagar el sistema
+        if: always()
+        run: npm run e2e:down
 
   web:
     name: Web (lint, pruebas y compilación)

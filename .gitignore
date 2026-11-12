@@ -55,3 +55,7 @@ desktop.ini
 
 # Material del curso (solo referencia local; no se publica en el repositorio público)
 Informacion_General/*.pdf
+
+# Resultados de las E2E (Playwright, E2E-1)
+playwright-report/
+test-results/

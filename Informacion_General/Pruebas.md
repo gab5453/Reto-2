@@ -82,8 +82,8 @@ solo es una pieza de 20. Por eso se usa este criterio, y conviene explicarlo as�
 | Integración por HTTP (servicio + *fakes*) | 540 | 26 | Cada `services/**/test/*.spec.ts` (9 MS.G, ESB, 5 MS de respuesta, gateway, externos) |
 | Integración con infraestructura real | 41 | 12 | `*/test/postgres.spec.ts`, `bus.spec.ts`: **omitidas** si no hay variables `*_TEST_DATABASE_URL` / `BUS_TEST_URL` |
 | Contrato (lado proveedor, estático) | 95 | 3 | `esb/routes.spec.ts` (61), `arquitectura.spec.ts` (30), `web-graphql.spec.ts` (4) |
-| Contrato contra servidor real (conformidad v2) | 49 | 6 | `tests/conformidad-v2/` (a mano, con `CONFORMANCE_BASE_URL`) |
-| E2E (Playwright + Edge) | ~25 | — | **Fuera del repositorio** |
+| Contrato contra servidor real (conformidad v2) | 49 (54 desde E2E-1, con las 5 de administrador) | 6 | `tests/conformidad-v2/`; desde E2E-1 corre en la CI contra el sistema local (`npm run e2e:conformidad`) |
+| E2E (Playwright + Edge) | ~25 (8 desde E2E-1) | 7 | Antes fuera del repositorio; desde E2E-1, los 8 flujos críticos en `tests/e2e/` y en la CI |
 | Web (`ecoairlines-web`) | 46 (desde PU-4) | 4 | Vitest + Testing Library + jsdom; corren en el trabajo «Web» de la CI |
 
 **Nada corre solo en GitHub Actions:** `imagenes-v2.yml` es manual, y el flujo de la web solo se dispara en `main`, que no
@@ -112,7 +112,7 @@ existe en `gab5453/Reto-2`.
 | Unitarias | 82 | **937** (tras PU-4; 891 del backend + 46 de la web) | **~980** | **+~900** (sección 5.1) |
 | Integración | 540 + 41 omitidas | 540 + 41 (en CI) | ~600 | Se activan las 41 en CI ✅; +~20 nuevas; se revisan duplicados (sección 5.2) |
 | Contrato | 95 + 49 | 95 + 49 + **Pact: 11 interacciones en 5 contratos** (tras CT-1) | + Pact | Pact agregado (sección 5.3, `tests/contratos-pact`) |
-| E2E | ~25 fuera del repositorio | **~8** en el repositorio | Se reducen a los flujos críticos (sección 5.4) |
+| E2E | ~25 fuera del repositorio | **8** en el repositorio (tras E2E-1) | ~8 | Se reducen a los flujos críticos (sección 5.4) ✅ |
 
 Las cantidades nuevas son **estimadas**: unas 2 a 4 pruebas por función con reglas (camino feliz, caso límite, error). Se
 ajustan al escribirlas.
@@ -224,7 +224,7 @@ espera, se genera un `pact.json` y el proveedor lo verifica.
 ### 5.4 E2E (~8): la punta [S9 §9.1, 9.5b]
 
 **[S9 Ejercicio 9.5b]:** si hay muchas E2E lentas, es probable que algunas debieran ser de integración. De los ~25 recorridos
-actuales quedan **solo los flujos críticos**, con Playwright Test, en `e2e/`:
+actuales quedan **solo los flujos críticos**, con Playwright Test, en `tests/e2e/` (así heredan el typecheck y el lint):
 
 | # | Flujo crítico | Viene de |
 |---|---|---|
@@ -241,7 +241,31 @@ Lo que sale de los otros recorridos (catálogo de aeropuertos y tipos de avión,
 cubierto por integración**, o pasa a integración. Cada E2E deja el sistema como estaba: cancela sus reservas y restaura los
 precios.
 
-**Prueba de humo después de desplegar:** contra la nube, **solo lectura** (health, una búsqueda, un mapa de asientos). Nunca se
+**Cómo quedó (E2E-1, 11/11):**
+
+| Archivo | Flujos | Qué atraviesa |
+|---|---|---|
+| `compra.e2e.ts` | E-1, E-2 | Web → gateway → MS.Reservas → ESB (saga) → MS.G → Payment API. En E-2 la otra persona compra por la API mientras el navegador está en el pago |
+| `check-in.e2e.ts` | E-3, E-8 | La misma reserva (vuelo de mañana, el check-in abre 48 h antes). E-3 comprueba el bloqueo en la web **y** en el servidor (`CUTOFF_PASSED`); E-8 corta la red y lee el pase guardado |
+| `booking-b2b.e2e.ts` | E-4 | API REST v2 del contrato (OAuth2, búsqueda, hold, reserva, consulta) y el panel del administrador |
+| `retraso.e2e.ts` | E-5 | MS.Admin → ESB → MS.G.FlightStatus → evento → MS.G.Bookings; Booking lo ve por REST |
+| `precio.e2e.ts` | E-6 | MS.Admin → ESB → MS.G.Schedule → evento de precios → MS.G.Offers |
+| `recorrido.e2e.ts` | E-7 | Telemetría: sagas y eventos (ESB), pasos (Loki) y spans (Tempo) |
+
+- **Preparar y limpiar por la API, probar en el navegador** (`apoyo.ts`): una reserva que solo es el punto de partida se compra
+  por la API; la limpieza la hace el administrador (`adminCancelBooking`, que también cancela con check-in), y se quitan el retraso,
+  el precio exacto y el hold que haya quedado. La limpieza nunca oculta el resultado de la prueba.
+- **Nunca contra la nube:** `apoyo.ts` se niega a correr si la web, el gateway o la Payment API no son `localhost`.
+- **Sistema:** `npm run e2e:up` (todo `docker-compose.yml` con `docker-compose.e2e.yml`, sin Prometheus, Grafana ni Alertmanager).
+  Solo para las pruebas se suben los límites por IP del login y de la Payment API (todas salen de la misma IP; los límites tienen
+  sus propias pruebas de integración) y el ESB no recibe las URL de Prometheus y Alertmanager.
+- **Ejecutar:** `npm run e2e:up`, luego `npm run e2e:conformidad` (las 54) y `npm run test:e2e` (compila y sirve la web en :5173).
+  En Windows usa el Edge instalado; en la CI, el Chromium de Playwright.
+- **Inestables (*flaky*) [S9 §9.4], encontradas y corregidas en la causa:** E-7 fallaba a veces porque la web no repite una
+  búsqueda con el mismo ID (cada reintento recarga la pantalla) y porque, sin Prometheus, una consulta del panel tardaba 3,5 s en
+  fallar. Después: 8 de 8 en tres corridas seguidas (~33 s).
+
+**Prueba de humo después de desplegar (queda para CD-1, porque corre después del despliegue):** contra la nube, **solo lectura** (health, una búsqueda, un mapa de asientos). Nunca se
 compra en producción desde CI.
 
 ---
@@ -308,6 +332,15 @@ push / pull request
   5. contrato ........ verificación Pact (proveedores) + conformidad v2 (49)               ~3 min
   ── gate: si cualquiera falla, NO se llega a desplegar ──
   6. despliegue ...... solo en la rama de producción, con aprobación manual (sección 10)
+```
+
+**Como quedó en `ci.yml` (tras E2E-1):** el contrato va **antes** del E2E, porque es más barato (Pact no levanta el sistema):
+
+```
+  1. Calidad (tipos y lint)
+  2. Pruebas unitarias e integración ............... npm test
+  3. Integración con PostgreSQL y RabbitMQ reales ── en paralelo ── 4. Contratos (Pact)      Web (lint, pruebas, build)
+  5. E2E (sistema completo) ........................ necesita 3, 4 y Web: docker compose + conformidad v2 (54) + Playwright (8)
 ```
 
 En YAML, cada etapa es un *job* con `needs:` sobre el anterior, así una falla detiene a los que siguen. La web corre en un
@@ -380,7 +413,7 @@ acordados con Booking.
 | **PU-3** ✅ 11/11 | Unitarias del ESB (5.1.3) | **103** (se estimaron ~135: lo demás ya lo cubrían `journey`, `transversal`, `events` y `routes`): motor de sagas 18 (con un repositorio *fake*), enrutador, eventos internos, idempotencia, composición, catálogo y cobro/reembolso 66, entrada de eventos de Booking 19. La mutación manual encontró un borde sin probar (un 500 exacto en idempotencia) y se agregó su prueba |
 | **PU-4** ✅ 11/11 | Unitarias de shared, gateway, externos y web (5.1.4) | **159** (se estimaron ~275: parte ya estaba en `shared.spec`, `service.spec` y `bus.spec`): librería compartida 59, gateway 28, Payment API 26 (Booking simulado es una herramienta de prueba: no se prueba), web 46 con Vitest + Testing Library + jsdom (cliente GraphQL y WebSocket, hook en vivo, grafo del recorrido, validación de pasajeros, búsqueda en la URL). La mutación manual encontró que la web podía perder el token sin que nada fallara; se agregó la prueba |
 | **CT-1** ✅ 11/11 | Pact: consumidores, `pact.json` y verificación de proveedores (5.3) | **11 interacciones en 5 contratos** (se estimaron ~60; es la primera iteración, con las relaciones más críticas): todos → Identity `/oauth2/token` (3), ESB → Bookings (4), MS de respuesta → ESB `/sagas/{id}` (3) y el mensaje `hold.created` de Offers → Webhooks (1). Contratos en `contract/pacts/` (sin Pact Broker); trabajo «4. Contratos (Pact)» en la CI. Dos cambios que rompen (renombrar `pnr` y `seatsHeld`) fueron detectados |
-| **E2E-1** | Playwright en `e2e/` con los 8 flujos y E2E en CI (5.4) | La punta de la pirámide |
+| **E2E-1** ✅ 11/11 | Playwright en `tests/e2e/` con los 8 flujos y E2E en CI (5.4) | **8 flujos** (E-1 a E-8) con `@playwright/test` 1.64.1 contra el sistema completo (docker compose) y la web compilada; la conformidad v2 corre en la CI con las **54** (antes 49 y 5 omitidas). Trabajo «5. E2E (sistema completo)». Cada prueba deja el sistema como estaba. Una mutación a mano en la web (no quitar el asiento tomado) fue detectada. Tres hallazgos fuera de la fase en `CAMBIOS.md` (el principal: 10 servicios se caen si PostgreSQL corta sus conexiones) |
 | **CI-2** | ESLint con tipos, Prettier, cobertura y gate de calidad | Pipeline completo |
 | **CD-1** | Imágenes en GitHub y despliegue por `pull` (opción B) + humo | Despliegue sin compilar en la VM |
 | **SEG-1** (recomendada) | Mejoras de seguridad: **actualizar las dependencias de producción con avisos (S-0; `@nestjs/graphql` desde el 18/11)**, Vitest y `vite` (S-1), Dependabot y secret scanning (S-3), cambiar la contraseña del ADMIN de demostración al terminar la evaluación (S-4). Detalle, riesgos conocidos y lo que ya está implementado: [`Seguridad.md`](Seguridad.md) | Avisos de seguridad de las dependencias resueltos |

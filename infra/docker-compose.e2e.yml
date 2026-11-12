@@ -1,0 +1,23 @@
+# Sistema para las pruebas E2E (E2E-1, Informacion_General/Pruebas.md §5.4): el mismo docker-compose.yml, levantado SIN
+# Prometheus, Grafana ni Alertmanager (los paneles de métricas no son parte de ningún flujo crítico). Tempo y Loki sí se
+# levantan: el «Recorrido» de Telemetría (E-7) lee los pasos de Loki y los spans de Tempo.
+#
+#   npm run e2e:up      (equivale a: docker compose -f infra/docker-compose.yml -f infra/docker-compose.e2e.yml up -d --build
+#                        --wait <todos los servicios menos prometheus, grafana y alertmanager>)
+#
+# Cambios de configuración (solo para las pruebas, nunca en la nube):
+#  - Todas las pruebas usan la MISMA IP, así que se suben los límites por IP del login (Identity, 10/min) y de la Payment API (20/min).
+#    Esos límites tienen sus propias pruebas de integración.
+#  - El ESB no recibe las URL de Prometheus ni de Alertmanager (no se levantan): sus paneles responden «no disponible» al
+#    instante. Con la URL puesta, resolver un nombre que no existe tarda ~3,5 s y retrasaba la consulta a Loki de E-7.
+services:
+  ms-g-identity:
+    environment:
+      AUTH_ATTEMPTS_PER_MINUTE: "1000"
+  payment-api:
+    environment:
+      PAYMENT_BROWSER_LIMIT: "1000"
+  esb:
+    environment:
+      PROMETHEUS_URL: ""
+      ALERTMANAGER_URL: ""

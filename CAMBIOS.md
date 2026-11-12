@@ -3278,3 +3278,39 @@ desactivadas con `scarfSettings` y `PACT_DO_NOT_TRACK`). Primera iteración con 
   las de desarrollo. Pact no agregó ninguno (12 antes y después). Nueva mejora **S-0** (prioridad alta): `npm audit fix` y
   `@nestjs/graphql` 14.2.0 desde el 18/11 (regla de las 2 semanas).
 - **Suite:** 1 526 pasan (sin cambios: los contratos corren aparte), consumidores 11, verificaciones 5; tipos y lint limpios.
+
+### Pruebas · E2E-1 — Flujos críticos E2E con Playwright, en la CI — ✅ HECHA (11/11)
+
+La punta de la pirámide (Semana 9, §9.1 y ejercicio 9.5b): de los ~25 recorridos sueltos del scratchpad quedan **8 flujos
+críticos** en el repositorio, con **@playwright/test 1.64.1** (14/10; la 1.65.0 es del 05/11 y no cumple las 2 semanas), contra el
+sistema ENTERO levantado con docker compose y la web compilada como en producción (`vite preview`, con su service worker).
+- **Pruebas (`tests/e2e/`):** E-1 compra en la web con asiento (y aparece en «Mis viajes»); E-2 dos personas y el mismo asiento
+  (la otra compra va por la API mientras el navegador está en el pago: SEAT_TAKEN, se quita el asiento, elige otro y compra);
+  E-3 check-in y después la cancelación bloqueada **en la web y en el servidor** (`CUTOFF_PASSED`, D55); E-4 Booking compra por la
+  API REST v2 (OAuth2 → búsqueda → hold → reserva → consulta) y el administrador la ve en el panel con su orden; E-5 retraso en
+  «Operaciones», Booking lo ve por REST y el pasajero en su reserva; E-6 precio exacto de una ruta y la búsqueda lo refleja (tarifa
+  base exacta); E-7 el «Recorrido» de una compra por su correlation ID (saga, pasos de Loki en ≥ 3 servicios); E-8 sin conexión,
+  la PWA muestra el pase de abordar guardado (con su QR).
+- **Diseño:** lo que la prueba no está probando (preparar una reserva, limpiar) va por la API (`apoyo.ts`); lo que sí, en el
+  navegador. **Cada prueba deja el sistema como estaba**: el administrador cancela sus reservas (`adminCancelBooking`, también las
+  que tienen check-in), se libera el hold que quedó, se quita el retraso y el precio exacto. Fechas a 40+ días (la conformidad usa
+  20–26) y en serie (`workers: 1`). **Candado:** `apoyo.ts` se niega a correr si la web, el gateway o la Payment API no son locales.
+- **Sistema (`infra/docker-compose.e2e.yml`, `npm run e2e:up` / `e2e:down`):** todo `docker-compose.yml` menos Prometheus, Grafana y
+  Alertmanager (Tempo y Loki sí: E-7 los lee). Cambios solo de prueba: límites por IP de login (10/min) y de la Payment API
+  (20/min) subidos, porque todas las pruebas salen de la misma IP; y el ESB sin las URL de Prometheus y Alertmanager.
+- **Conformidad v2 en la CI** (`npm run e2e:conformidad`): ahora con un token de administrador pedido en el script (nunca se
+  imprime), así corren **las 54** (antes 49 y 5 omitidas); `sin-omitidas.mjs` falla si alguna se omite.
+- **CI:** trabajo «5. E2E (sistema completo)», después de infraestructura, contratos y web (fail fast); Chromium de Playwright;
+  si algo falla sube el reporte, las trazas y los logs de los contenedores (sistema desechable, claves de desarrollo); siempre
+  apaga el sistema. En Windows usa el Edge instalado.
+- **Verificación:** 8 pasan, tres corridas seguidas (~33 s cada una, sin contar la compilación); ninguna reserva nueva queda
+  confirmada. Mutación a mano: si la web no quita el asiento tomado tras SEAT_TAKEN, E-2 falla en esa comprobación; se restauró.
+  `npm audit` sin cambios (12, 8 de producción): Playwright no agregó avisos.
+- **Hallazgos (no corregidos, fuera de esta fase):**
+  1. **10 servicios se caen si PostgreSQL corta sus conexiones** (al reiniciarlo, el ESB terminó con `Exited (1)`: `pg.Pool` sin
+     `pool.on('error')` emite un `'error'` sin manejar). Solo la Payment API lo maneja. En la nube `restart: unless-stopped` los
+     vuelve a levantar; la corrección es una línea por servicio.
+  2. En Telemetría, «Buscar» con el **mismo** correlation ID no vuelve a consultar (el ID va en la URL y no cambia): para ver
+     pasos que llegaron después hay que recargar la página.
+  3. Con el sistema incompleto, resolver un nombre que no existe (`prometheus`) tarda ~3,5 s dentro de Docker y retrasaba la
+     consulta a Loki (plazo de 3 s); en la nube no pasa porque Prometheus existe.
