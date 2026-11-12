@@ -44,8 +44,6 @@ const CANCEL_REASONS: Record<string, string> = {
   SAGA_COMPENSATION: 'por Booking (paquete cancelado)',
   OTHER: 'por otro motivo',
 };
-/** Cancelaciones que no pide el cliente: siguen permitidas después del check-in (D55). */
-const SYSTEM_CANCELLATIONS = ['FLIGHT_CANCELLED', 'SAGA_COMPENSATION'];
 /** Estados que no se cobraron: no cuentan en Ingresos ni en Reportes (D-C3). */
 const UNCHARGED_STATUSES = ['FAILED', 'PENDING', 'PENDING_PAYMENT'];
 const PARTNER_REFERENCE = /^PAY-[A-Z0-9-]{6,60}$/;
@@ -378,7 +376,7 @@ export class BookingsService {
   async applyBaggage(bookingId: string, input: { passengerId: string; itineraryId: string; quantity: number; amountCharged: MoneyAmount; paymentReference: string }, caller: Caller) {
     return this.store.transaction(async (tx) => {
       const booking = this.confirmed(await this.owned(tx, bookingId, caller));
-      this.assertNotCheckedIn(booking);
+      // D56 (12/11, revoca D55): también después del check-in.
       const passenger = booking.passengers.find((candidate) => candidate.passengerId === input.passengerId);
       if (!passenger || passenger.passengerType === 'INFANT') throw problem(400, 'VALIDATION_FAILED', 'Pasajero inválido para maletas.', { invalidParams: [{ name: 'passengerId', reason: 'no existe o es infante' }] });
       if (!unflown(booking, this.now()).some((itinerary) => itinerary.itineraryId === input.itineraryId)) {
@@ -407,7 +405,7 @@ export class BookingsService {
   ) {
     return this.store.transaction(async (tx) => {
       const booking = this.confirmed(await this.owned(tx, bookingId, caller));
-      this.assertNotCheckedIn(booking);
+      // D56 (12/11, revoca D55): también después del check-in.
       const replaced = booking.itineraries.filter((itinerary) => input.replacedItineraryIds.includes(itinerary.itineraryId));
       if (replaced.length !== input.replacedItineraryIds.length) throw problem(400, 'VALIDATION_FAILED', 'Un itinerario a cambiar no es de la reserva.', { invalidParams: [{ name: 'replacedItineraryIds', reason: 'desconocido' }] });
       if (replaced.some((itinerary) => !unflown(booking, this.now()).includes(itinerary))) throw problem(409, 'FLIGHT_ALREADY_DEPARTED', 'Un itinerario a cambiar ya salió.');
@@ -453,7 +451,7 @@ export class BookingsService {
       if (!['CONFIRMED', 'TICKET_ISSUING', 'CANCELLATION_PENDING', 'CHANGE_PENDING'].includes(booking.status)) {
         throw problem(409, 'BOOKING_NOT_CANCELLABLE', `Una reserva ${booking.status} no se puede cancelar.`);
       }
-      if (!SYSTEM_CANCELLATIONS.includes(input.reasonCode)) this.assertNotCheckedIn(booking);
+      // D56 (12/11, revoca D55): también se cancela después del check-in; el ESB anula el check-in en MS.G.CheckIn.
       const now = new Date(this.now()).toISOString();
       const voided = booking.tickets.filter((ticket) => ticket.status === 'ISSUED').map((ticket) => ticket.ticketId);
       const refund: Refund = { ...input.refund, originalPaymentReference: input.refund.originalPaymentReference ?? booking.payment.paymentReference };
@@ -577,11 +575,6 @@ export class BookingsService {
     return result;
   }
 
-  /** D55: después del check-in de cualquier pasajero, la reserva no se modifica (ni se cancela a pedido del cliente). */
-  private assertNotCheckedIn(booking: BookingRecord) {
-    if (booking.checkedIn.length) throw problem(409, 'CUTOFF_PASSED', 'Ya hiciste check-in: la reserva no se puede modificar.');
-  }
-
   /**
    * Reporte de ventas del panel (O-3), por fecha de creación en hora de Ecuador. Cuenta como venta lo que se cobró (no FAILED ni
    * pendiente de pago); lo cobrado es la suma de las referencias de pago registradas de cada reserva (reserva, asientos, maletas,
@@ -674,7 +667,7 @@ export class BookingsService {
   }
 
   // ------------------------------------------------------------------ asistencia
-  /** Pedir o cambiar la asistencia; no después del check-in del pasajero (CUTOFF_PASSED). */
+  /** Pedir o cambiar la asistencia; también después del check-in (D56). */
   async saveAssistance(bookingId: string, passengerId: string, input: { type: AssistanceType; needsCompanion?: boolean; notes?: string }, caller: Caller) {
     return this.store.transaction(async (tx) => {
       const booking = await this.owned(tx, bookingId, caller);
@@ -766,7 +759,9 @@ export class BookingsService {
       if (passenger.passengerType === 'INFANT') throw problem(422, 'INFANT_SEAT_NOT_ALLOWED', 'Los infantes viajan en el regazo de un adulto y no tienen asiento.');
       if (Date.parse(segment.departure.at) <= this.now()) throw problem(409, 'FLIGHT_ALREADY_DEPARTED', `El vuelo ${segment.flightNumber} ya salió.`);
       if (customerChange && booking.checkedIn.some((c) => c.segmentId === change.segmentId && c.passengerId === change.passengerId)) {
-        throw problem(409, 'CUTOFF_PASSED', 'El pasajero ya hizo check-in en ese segmento: el asiento no se puede cambiar.');
+        throw problem(409, 'CUTOFF_PASSED', 'El pasajero ya hizo check-in en ese segmento: el asiento no se puede cambiar.', {
+          detail: `El pasajero ${change.passengerId} hizo check-in en ${change.segmentId}. Según el contrato del grupo (changeSeats), el asiento no se cambia después del check-in del segmento.`,
+        });
       }
       return {
         passengerId: change.passengerId,
@@ -782,9 +777,8 @@ export class BookingsService {
   private assistancePassenger(booking: BookingRecord, passengerId: string) {
     if (!booking.passengers.some((passenger) => passenger.passengerId === passengerId)) throw problem(404, 'NOT_FOUND', 'Pasajero no encontrado en la reserva.');
     if (booking.status === 'CANCELLED' || booking.status === 'FAILED') throw problem(409, 'BOOKING_NOT_CONFIRMED', `La reserva está ${booking.status}.`);
-    if (booking.checkedIn.some((entry) => entry.passengerId === passengerId)) {
-      throw problem(409, 'CUTOFF_PASSED', 'El pasajero ya hizo check-in: la asistencia se coordina en el aeropuerto.');
-    }
+    // D56 (12/11, revoca D55): la asistencia también se pide o se quita después del check-in. El pase sigue valiendo; su grupo
+    // de abordaje (A para quien tiene asistencia) no se recalcula: el aeropuerto coordina la asistencia con la lista del vuelo.
   }
 
   /** Une a la reserva una referencia ya registrada (claim) de esa operación; si no está registrada, no se acepta. */

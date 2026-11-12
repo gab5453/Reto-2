@@ -230,7 +230,7 @@ actuales quedan **solo los flujos críticos**, con Playwright Test, en `tests/e2
 |---|---|---|
 | E-1 | Un pasajero busca, elige asiento, paga y recibe su reserva | `recorrido_c1` |
 | E-2 | Dos personas toman el mismo asiento: la segunda recibe el aviso y elige otro | `seat_taken_web` |
-| E-3 | El pasajero hace check-in; después la cancelación queda bloqueada | `recorrido_c2` |
+| E-3 | El pasajero hace check-in y después cancela en la web: sus pases dejan de valer, también sin conexión (D56, 12/11; antes comprobaba que la cancelación quedaba bloqueada, D55) | `recorrido_c2` |
 | E-4 | Booking compra por la API v2 (hold → pago → reserva → consulta) | `seat_taken_booking`, compra B2B |
 | E-5 | El administrador registra un retraso y el pasajero lo ve en su reserva | `recorrido_r1` |
 | E-6 | El administrador cambia un precio y la búsqueda lo refleja | `recorrido_p1p` |
@@ -246,7 +246,7 @@ precios.
 | Archivo | Flujos | Qué atraviesa |
 |---|---|---|
 | `compra.e2e.ts` | E-1, E-2 | Web → gateway → MS.Reservas → ESB (saga) → MS.G → Payment API. En E-2 la otra persona compra por la API mientras el navegador está en el pago |
-| `check-in.e2e.ts` | E-3, E-8 | La misma reserva (vuelo de mañana, el check-in abre 48 h antes). E-3 comprueba el bloqueo en la web **y** en el servidor (`CUTOFF_PASSED`); E-8 corta la red y lee el pase guardado |
+| `check-in.e2e.ts` | E-3, E-8 | La misma reserva (vuelo de mañana, el check-in abre 48 h antes): check-in en la web → E-8 corta la red y lee el pase guardado → el pasajero **cancela desde la web** después del check-in (D56): el servidor ya no da pases y la PWA los retira del dispositivo |
 | `booking-b2b.e2e.ts` | E-4 | API REST v2 del contrato (OAuth2, búsqueda, hold, reserva, consulta) y el panel del administrador |
 | `retraso.e2e.ts` | E-5 | MS.Admin → ESB → MS.G.FlightStatus → evento → MS.G.Bookings; Booking lo ve por REST |
 | `precio.e2e.ts` | E-6 | MS.Admin → ESB → MS.G.Schedule → evento de precios → MS.G.Offers |

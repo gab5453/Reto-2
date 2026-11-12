@@ -7,6 +7,7 @@ import { ItinerarySummary } from '../components/ItinerarySummary';
 import { FlightDelayNotice } from '../components/FlightDelayNotice';
 import { ProblemAlert } from '../components/ProblemAlert';
 import { PASSENGER_LABELS, REFUND_STATUS_LABELS, STATUS_LABELS, couponStatus, formatDateTime, formatMoney } from '../lib/format';
+import { removePasses } from '../lib/offline-trips';
 import { AssistancePanel } from './booking/AssistancePanel';
 import { BaggagePanel } from './booking/BaggagePanel';
 import { CancelPanel } from './booking/CancelPanel';
@@ -27,7 +28,7 @@ const IN_PROGRESS = ['PENDING', 'PENDING_PAYMENT', 'TICKET_ISSUING', 'CHANGE_PEN
 
 export function BookingDetailPage() {
   const { bookingId = '' } = useParams();
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const justBooked = (location.state as { justBooked?: number } | null)?.justBooked;
@@ -37,8 +38,8 @@ export function BookingDetailPage() {
     (location.state as { panel?: Panel } | null)?.panel ?? 'CHECK_IN',
   );
 
-  // D55: con check-in hecho (hay pases de abordar) la reserva ya no se modifica. El ESB y Bookings lo hacen cumplir; aquí solo
-  // se ocultan las pestañas. Se vuelve a consultar después de cada cambio (`passesRound`).
+  // D56 (12/11, revoca D55): con check-in hecho (hay pases de abordar) la reserva SÍ se cancela y se modifica; cada panel avisa
+  // qué pasa con el check-in. Solo el asiento sigue bloqueado (contrato del grupo). Se vuelve a consultar tras cada cambio.
   const [passesRound, setPassesRound] = useState(0);
   const [passes, setPasses] = useState<{ key: string; checkedIn: boolean } | null>(null);
   const passesKey = `${bookingId}|${passesRound}`;
@@ -88,6 +89,11 @@ export function BookingDetailPage() {
     };
   }, [token, bookingId]);
 
+  // D56: una reserva cancelada ya no tiene pases válidos: se retiran del dispositivo (vista sin conexión de la PWA).
+  useEffect(() => {
+    if (bookingStatus === 'CANCELLED' && user) removePasses(user.email, bookingId);
+  }, [bookingStatus, user, bookingId]);
+
   // Operaciones asíncronas del contrato (202): se consulta hasta que terminen.
   useEffect(() => {
     if (!booking || !IN_PROGRESS.includes(booking.status)) return;
@@ -108,7 +114,7 @@ export function BookingDetailPage() {
   const confirmed = booking.status === 'CONFIRMED';
   const refunds = booking.refunds ?? [];
   const checkedIn = passes?.key === passesKey && passes.checkedIn;
-  const panels = checkedIn ? PANELS.filter((item) => item.id === 'CHECK_IN') : PANELS;
+  const panels = PANELS;
   const activePanel = panels.some((item) => item.id === panel) ? panel : 'CHECK_IN';
 
   return (
@@ -256,8 +262,11 @@ export function BookingDetailPage() {
         <section className="card" aria-label="Gestionar reserva">
           {checkedIn && (
             <div className="alert alert-info" role="status">
-              <p className="alert-title">Ya hiciste check-in: tu reserva ya no se puede modificar.</p>
-              <p>No se pueden cambiar asientos, maletas, asistencia ni la fecha, ni cancelar. Aquí tienes tus pases de abordar.</p>
+              <p className="alert-title">Ya hiciste check-in.</p>
+              <p>
+                Todavía puedes agregar maletas, pedir asistencia, cambiar la fecha o cancelar. El asiento ya no se cambia. Si cambias la
+                fecha o cancelas, tus pases de abordar dejan de valer.
+              </p>
             </div>
           )}
           <div className="tabs" role="tablist" aria-label="Gestionar reserva">
@@ -278,11 +287,11 @@ export function BookingDetailPage() {
           </div>
           <div id={`panel-${activePanel}`} role="tabpanel" aria-labelledby={`panel-tab-${activePanel}`} className="tab-panel">
             {activePanel === 'CHECK_IN' && <CheckInPanel booking={booking} onChanged={changed} />}
-            {activePanel === 'SEAT' && <SeatChangePanel booking={booking} onChanged={changed} />}
+            {activePanel === 'SEAT' && <SeatChangePanel booking={booking} checkedIn={checkedIn} onChanged={changed} />}
             {activePanel === 'BAGGAGE' && <BaggagePanel booking={booking} onChanged={changed} />}
             {activePanel === 'ASSISTANCE' && <AssistancePanel booking={booking} />}
-            {activePanel === 'DATE_CHANGE' && <DateChangePanel booking={booking} onChanged={changed} />}
-            {activePanel === 'CANCEL' && <CancelPanel booking={booking} onChanged={changed} />}
+            {activePanel === 'DATE_CHANGE' && <DateChangePanel booking={booking} checkedIn={checkedIn} onChanged={changed} />}
+            {activePanel === 'CANCEL' && <CancelPanel booking={booking} checkedIn={checkedIn} onChanged={changed} />}
           </div>
         </section>
       )}

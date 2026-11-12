@@ -217,6 +217,7 @@ info:
     | Ampliado | Respuesta de `cancel` (reembolso + restauración de inventario), `_links` HATEOAS, `salesChannel`, `ttlMinutes` del hold, `status` por asiento en el seatmap |
     | Ampliado | Webhooks entregan CloudEvents firmados; nuevos tipos de evento |
     | Nuevo | Encabezados `X-Correlation-Id`, `X-Request-Id`, `X-User-Id` en todo el contrato |
+    | **Cambio (12/11/2026)** | Después del check-in **se puede cancelar, cambiar la fecha, agregar maletas y pedir asistencia** (antes EcoAirlines lo bloqueaba con 409 `CUTOFF_PASSED`; esa regla no estaba en este contrato). Al cancelar o cambiar la fecha, el check-in se anula y sus pases dejan de ser válidos. El cambio de asiento sigue como dice `changeSeats` (no después del check-in del segmento), ahora con `detail` |
     | **Cambio (12/11/2026)** | Eventos de vuelos (§8): `type` corto (`booking.checked_in`, antes `ec.edu.epn.booking.vuelos.booking.checked_in`), `source` = `ecoairlines` (antes `/aerolineas/ecoairlines/vuelos`) e `id` UUID v4. Lo pidió Booking (su webhook rechazaba el formato anterior con 400) y se priorizó sobre el formato acordado. Vale para los webhooks y para `GET /vuelos/eventos` |
 servers:
   - url: /api/v2
@@ -1246,6 +1247,8 @@ paths:
       description: |
         Libera los asientos del vuelo original y ocupa los del nuevo (dos `StockChangeEvent` por gRPC).
         Si hay diferencia a pagar, Booking cobra antes y envía `payment`. Emite `booking.changed`.
+        También después del check-in: el check-in del vuelo original **se anula** (sus pases dejan de ser válidos) y el
+        pasajero vuelve a hacer check-in en el nuevo. Desde el 12/11/2026 (§13).
       security:
         - PartnerOAuth2: [flights:book]
       parameters:
@@ -1331,6 +1334,8 @@ paths:
         Anula los boletos, devuelve los asientos a `AVAILABLE` (StockChangeEvent con delta positivo) y calcula el reembolso
         según la cotización (`quoteId`). **Booking ejecuta el reembolso** al cliente con su pasarela; la aerolínea solo informa
         el monto (`refund.status = CALCULATED`). Emite `booking.cancelled`.
+        También después del check-in: el check-in **se anula** y los pases de abordar dejan de ser válidos
+        (`GET .../boarding-passes` responde 409 `BOARDING_PASS_NOT_AVAILABLE`). Desde el 12/11/2026 (§13).
         Usado por Booking como paso de compensación LIFO cuando falla otra parte de un combo; en ese caso envía
         `reasonCode = SAGA_COMPENSATION` y la penalidad no aplica si así lo permite el acuerdo B2B.
       security:

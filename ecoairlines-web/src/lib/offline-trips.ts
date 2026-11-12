@@ -82,6 +82,16 @@ export function saveTrips(owner: string, trips: SavedTrip[]): void {
   });
 }
 
+/**
+ * Retira del dispositivo los pases de una reserva que ya no valen (D56, 12/11): se canceló o su check-in se anuló (cambio de
+ * fecha). Así no queda un pase «válido» sin conexión de una reserva cancelada.
+ */
+export function removePasses(owner: string, bookingId: string): void {
+  const data = dataOf(owner);
+  if (!data.passes.some((pass) => pass.bookingId === bookingId)) return;
+  store({ ...data, passes: data.passes.filter((pass) => pass.bookingId !== bookingId) });
+}
+
 /** Reemplaza los pases de una reserva con los últimos vistos. */
 export function savePasses(owner: string, bookingId: string, passes: SavedPass[]): void {
   const data = dataOf(owner);

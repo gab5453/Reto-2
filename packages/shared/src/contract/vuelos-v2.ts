@@ -420,6 +420,8 @@ export interface paths {
          * Confirmar el cambio de fecha
          * @description Libera los asientos del vuelo original y ocupa los del nuevo (dos `StockChangeEvent` por gRPC).
          *     Si hay diferencia a pagar, Booking cobra antes y envía `payment`. Emite `booking.changed`.
+         *     También después del check-in: el check-in del vuelo original **se anula** (sus pases dejan de ser válidos) y el
+         *     pasajero vuelve a hacer check-in en el nuevo. Desde el 12/11/2026 (§13).
          */
         post: operations["confirmDateChange"];
         delete?: never;
@@ -462,6 +464,8 @@ export interface paths {
          * @description Anula los boletos, devuelve los asientos a `AVAILABLE` (StockChangeEvent con delta positivo) y calcula el reembolso
          *     según la cotización (`quoteId`). **Booking ejecuta el reembolso** al cliente con su pasarela; la aerolínea solo informa
          *     el monto (`refund.status = CALCULATED`). Emite `booking.cancelled`.
+         *     También después del check-in: el check-in **se anula** y los pases de abordar dejan de ser válidos
+         *     (`GET .../boarding-passes` responde 409 `BOARDING_PASS_NOT_AVAILABLE`). Desde el 12/11/2026 (§13).
          *     Usado por Booking como paso de compensación LIFO cuando falla otra parte de un combo; en ese caso envía
          *     `reasonCode = SAGA_COMPENSATION` y la penalidad no aplica si así lo permite el acuerdo B2B.
          */

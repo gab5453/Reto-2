@@ -351,14 +351,15 @@ describe('asientos, check-in y asistencia', () => {
     expect((await esb('get', `/flights/EA100/${DAY}/assistance`)).status).toBe(400);
   });
 
-  it('check-in (CHECK_IN_AUTO) marca a los pasajeros: después no se cambia el asiento ni la asistencia (CUTOFF_PASSED)', async () => {
+  it('check-in (CHECK_IN_AUTO) marca a los pasajeros: después el asiento NO se cambia (contrato, con detail) y la asistencia SÍ (D56)', async () => {
     const checkIn = await esb('put', `/bookings/${bookingId}/seats`).send({ reason: 'CHECK_IN_AUTO', seats: [{ passengerId: 'PAX-1', segmentId, seatNumber: '14C' }] });
     expect(checkIn.body.seats[0].status).toBe('CHECKED_IN');
     const plan = await esb('post', `/bookings/${bookingId}/seats/plan`).send({ seats: [{ passengerId: 'PAX-1', segmentId, seatNumber: '20A' }] });
     expect(plan.status).toBe(409);
     expect(plan.body.code).toBe('CUTOFF_PASSED');
+    expect(plan.body.detail).toMatch(/contrato del grupo/); // pedido de Booking: el 409 explica el motivo
     const assistance = await esb('put', `/bookings/${bookingId}/passengers/PAX-1/assistance`, owner()).send({ type: 'WCHR' });
-    expect(assistance.status).toBe(409);
+    expect(assistance.status).toBe(200);
     expectContract('put', '/bookings/{bookingId}/passengers/{passengerId}/assistance', assistance);
   });
 });
@@ -486,26 +487,23 @@ describe('correcciones de la prueba de usuario (PLAN_Correccion C-2)', () => {
     expect(cents(after.body.revenue.baseFare) + cents(after.body.revenue.taxes)).toBe(cents(after.body.revenue.total));
   });
 
-  it('★ D55: después del check-in no se agregan maletas, no se cambia la fecha ni se cancela a pedido del cliente; el vuelo cancelado sí', async () => {
+  it('★ D56 (12/11, revoca D55): después del check-in se agregan maletas, se cambia la fecha (el tramo viejo sale de checkedIn) y se cancela', async () => {
     const { bookingId } = await book({ passengers: [passenger('PAX-1', { documentNumber: cedula('171003432') })] });
     await esb('post', `/bookings/${bookingId}/tickets`);
     const segmentId = UIO_GYE.segments[0].segmentId;
     await esb('put', `/bookings/${bookingId}/seats`).send({ reason: 'CHECK_IN_AUTO', seats: [{ passengerId: 'PAX-1', segmentId, seatNumber: '15C' }] });
 
+    await esb('post', '/payment-references/claim').send({ sagaId: randomUUID(), paymentReference: 'pi_maletas_c2_0001', provider: 'AIRLINE_DIRECT', operation: 'BAGGAGE', expectedAmount: { currency: 'USD', total: '35.00' } });
     const baggage = await esb('post', `/bookings/${bookingId}/baggage`).send({ passengerId: 'PAX-1', itineraryId: UIO_GYE.itineraryId, quantity: 1, amountCharged: { currency: 'USD', total: '35.00' }, paymentReference: 'pi_maletas_c2_0001' });
-    expect(baggage.status).toBe(409);
-    expect(baggage.body.code).toBe('CUTOFF_PASSED');
+    expect(baggage.status).toBe(200);
     const next = itinerary('EA100', 'UIO', 'GYE', day(4));
     const dateChange = await esb('post', `/bookings/${bookingId}/date-change`).send({
       changeOfferId: 'CHG-C2', replacedItineraryIds: [UIO_GYE.itineraryId], newItineraries: [next], newFares: [fareOf(next, '130.00')], priceDifference: { currency: 'USD', total: '0.00' }, paymentReference: null,
     });
-    expect(dateChange.body.code).toBe('CUTOFF_PASSED');
+    expect(dateChange.status).toBe(200);
     const byCustomer = await esb('post', `/bookings/${bookingId}/cancellation`).send({ reasonCode: 'CUSTOMER_REQUEST', refund: refund('REF-C2-3'), seatsReleased: 1 });
-    expect(byCustomer.body.code).toBe('CUTOFF_PASSED');
-    const byFlight = await esb('post', `/bookings/${bookingId}/cancellation`).send({ reasonCode: 'FLIGHT_CANCELLED', refund: refund('REF-C2-4'), seatsReleased: 1 });
-    expect(byFlight.status).toBe(200);
-    const view = await esb('get', `/bookings/${bookingId}`, owner());
-    expect(view.body.changes.at(-1).description).toBe('Reserva cancelada por cancelación del vuelo.');
+    expect(byCustomer.status).toBe(200);
+    expect(byCustomer.body.status).toBe('CANCELLED');
   });
 });
 

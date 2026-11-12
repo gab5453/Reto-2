@@ -86,6 +86,25 @@ export class CheckInService {
     });
   }
 
+  /**
+   * Anula check-ins (K-1, D56): al cancelar la reserva (cualquier motivo) o al cambiar la fecha de un tramo. Los pases dejan de ser
+   * válidos y el pasajero puede volver a hacer check-in. Idempotente por `sagaId`: repetirlo no anula de nuevo. Sin check-ins que
+   * anular, no es un error (la reserva no tenía check-in): devuelve `voided: 0`.
+   */
+  voidCheckIns(bookingId: string, input: { sagaId: string; reason: string; segmentIds?: string[]; passengerIds?: string[] }) {
+    return this.store.transaction(async (tx) => {
+      const already = await tx.voidedBySaga(bookingId, input.sagaId);
+      if (already) return { bookingId, voided: already };
+      const voided = await tx.voidCheckIns(bookingId, input.sagaId, { segmentIds: input.segmentIds, passengerIds: input.passengerIds }, input.reason, new Date(this.now()).toISOString());
+      return { bookingId, voided };
+    });
+  }
+
+  /** Compensación de la anulación: devuelve los check-ins que anuló esa saga. Idempotente. */
+  async restoreVoided(bookingId: string, sagaId: string): Promise<void> {
+    await this.store.transaction((tx) => tx.restoreVoided(bookingId, sagaId));
+  }
+
   /** Compensación: borra solo lo que registró esa saga. Idempotente. */
   async undo(bookingId: string, sagaId: string): Promise<void> {
     await this.store.transaction((tx) => tx.deleteBySaga(bookingId, sagaId));

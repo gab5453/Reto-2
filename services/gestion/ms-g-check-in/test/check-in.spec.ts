@@ -52,6 +52,66 @@ describe('pase de abordar (BCBP)', () => {
   });
 });
 
+describe('anular check-ins (K-1, D56: cancelar o cambiar la fecha después del check-in)', () => {
+  const OTRO_DIA = new Date(Date.now() - 5 * 3_600_000 + 2 * 86_400_000).toISOString().slice(0, 10);
+  const OTRO = `EA102-${OTRO_DIA.replaceAll('-', '')}`;
+  const tramo = (seat: string) => segment({ segmentId: OTRO, flightNumber: 'EA102', destination: 'BOG', departureAt: `${OTRO_DIA}T13:00:00-05:00`, seat });
+  const pax = (id: string, seat: string) => ({ passengerId: id, passengerType: 'ADULT', firstName: 'Ana', lastName: 'Ruiz', segments: [tramo(seat)] });
+  const anular = (bookingId: string, extra: Any = {}) => esb('post', `/check-ins/${bookingId}/void`).send({ sagaId: randomUUID(), reason: 'BOOKING_CANCELLED', ...extra });
+
+  it('cancelar: anula todos los check-ins de la reserva; los pases dejan de ser válidos (409) y es idempotente por saga', async () => {
+    const bookingId = randomUUID();
+    await esb('post', `/check-ins/${bookingId}`).send(body(randomUUID(), [pax('PAX-1', '10A'), pax('PAX-2', '10B')]));
+    const sagaId = randomUUID();
+    const voided = await esb('post', `/check-ins/${bookingId}/void`).send({ sagaId, reason: 'BOOKING_CANCELLED' });
+    expect(voided.status).toBe(200);
+    expectContract('post', '/check-ins/{bookingId}/void', voided);
+    expect(voided.body).toEqual({ bookingId, voided: 2 });
+    const passes = await esb('get', `/check-ins/${bookingId}/boarding-passes`);
+    expect(passes.status).toBe(409);
+    expect(passes.body.code).toBe('BOARDING_PASS_NOT_AVAILABLE');
+    expect((await esb('get', `/check-ins/${bookingId}`)).status).toBe(404);
+    // La misma saga otra vez no anula de nuevo; otra saga sin check-ins vigentes responde 0 (no es un error).
+    expect((await esb('post', `/check-ins/${bookingId}/void`).send({ sagaId, reason: 'BOOKING_CANCELLED' })).body.voided).toBe(2);
+    expect((await anular(bookingId)).body.voided).toBe(0);
+  });
+
+  it('compensación: la saga que falló después devuelve los check-ins que anuló (idempotente)', async () => {
+    const bookingId = randomUUID();
+    await esb('post', `/check-ins/${bookingId}`).send(body(randomUUID(), [pax('PAX-1', '11A')]));
+    const sagaId = randomUUID();
+    await esb('post', `/check-ins/${bookingId}/void`).send({ sagaId, reason: 'BOOKING_CANCELLED' });
+    expect((await esb('delete', `/check-ins/${bookingId}/void?sagaId=${sagaId}`)).status).toBe(204);
+    expect((await esb('delete', `/check-ins/${bookingId}/void?sagaId=${sagaId}`)).status).toBe(204);
+    const passes = await esb('get', `/check-ins/${bookingId}/boarding-passes`);
+    expect(passes.status).toBe(200);
+    expect(passes.body.boardingPasses).toHaveLength(1);
+  });
+
+  it('cambio de fecha: anula solo lo pedido; el pasajero vuelve a hacer check-in con una posición NUEVA (nunca repetida)', async () => {
+    const bookingId = randomUUID();
+    await esb('post', `/check-ins/${bookingId}`).send(body(randomUUID(), [pax('PAX-1', '12A'), pax('PAX-2', '12B')]));
+    const antes = (await esb('get', `/check-ins/${bookingId}/boarding-passes`)).body.boardingPasses;
+    const voided = await anular(bookingId, { reason: 'DATE_CHANGED', segmentIds: [OTRO], passengerIds: ['PAX-2'] });
+    expect(voided.body.voided).toBe(1);
+    const quedan = (await esb('get', `/check-ins/${bookingId}/boarding-passes`)).body.boardingPasses;
+    expect(quedan.map((p: Any) => p.passengerId)).toEqual(['PAX-1']);
+    const again = await esb('post', `/check-ins/${bookingId}`).send(body(randomUUID(), [pax('PAX-2', '12B')]));
+    expect(again.status).toBe(200);
+    const despues = (await esb('get', `/check-ins/${bookingId}/boarding-passes`)).body.boardingPasses;
+    const posiciones = despues.map((p: Any) => p.boardingPosition);
+    expect(new Set(posiciones).size).toBe(posiciones.length);
+    expect(Number(despues.find((p: Any) => p.passengerId === 'PAX-2').boardingPosition)).toBeGreaterThan(Math.max(...antes.map((p: Any) => Number(p.boardingPosition))));
+  });
+
+  it('datos inválidos → 400; sin token → 401', async () => {
+    const bad = await esb('post', `/check-ins/${randomUUID()}/void`).send({ sagaId: randomUUID(), reason: 'CUALQUIERA' });
+    expect(bad.status).toBe(400);
+    expectContract('post', '/check-ins/{bookingId}/void', bad);
+    expect((await request(app.getHttpServer()).post(`/check-ins/${randomUUID()}/void`).send({ sagaId: randomUUID(), reason: 'BOOKING_CANCELLED' })).status).toBe(401);
+  });
+});
+
 describe('check-in (saga "Check-in")', () => {
   const bookingId = randomUUID();
   const sagaId = randomUUID();

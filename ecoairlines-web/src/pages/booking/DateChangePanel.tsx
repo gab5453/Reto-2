@@ -7,7 +7,7 @@ import { ProblemAlert } from '../../components/ProblemAlert';
 import { formatMoney, lastSaleDate, localDate, localTime, todayIso } from '../../lib/format';
 import { useIdempotencyKey } from '../../lib/request-ids';
 
-export function DateChangePanel({ booking, onChanged }: { booking: BookingDetail; onChanged: () => Promise<void> }) {
+export function DateChangePanel({ booking, checkedIn = false, onChanged }: { booking: BookingDetail; checkedIn?: boolean; onChanged: () => Promise<void> }) {
   const { token } = useAuth();
   const itineraries = booking.itineraries ?? [];
   const [itineraryId, setItineraryId] = useState(itineraries[0]?.itineraryId ?? '');
@@ -74,6 +74,12 @@ export function DateChangePanel({ booking, onChanged }: { booking: BookingDetail
 
   return (
     <div>
+      {checkedIn && (
+        <p className="alert alert-warning" role="note">
+          Ya hiciste check-in: al cambiar la fecha, el check-in del vuelo que cambias se anula y tendrás que volver a hacerlo en el nuevo
+          vuelo.
+        </p>
+      )}
       <form className="panel-form" onSubmit={search}>
         <label className="field">
           Vuelo a cambiar

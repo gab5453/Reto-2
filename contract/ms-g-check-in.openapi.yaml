@@ -149,6 +149,59 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /check-ins/{bookingId}/void:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+      - $ref: '#/components/parameters/CorrelationId'
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      tags: [Check-in]
+      operationId: voidCheckIns
+      summary: Anular check-ins (cancelación o cambio de fecha después del check-in)
+      description: |
+        K-1 (D56, 12/11/2026): después del check-in la reserva se puede cancelar y cambiar de fecha. Los check-ins afectados se
+        anulan: sus pases dejan de ser válidos (los de una reserva sin check-ins vigentes responden `409
+        BOARDING_PASS_NOT_AVAILABLE`) y el pasajero puede volver a hacer check-in. Quedan guardados como historia. Sin
+        `segmentIds` ni `passengerIds`, toda la reserva. Idempotente por `sagaId`; sin check-ins que anular responde `voided: 0`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoidCheckInRequest'
+      responses:
+        '200':
+          description: Check-ins anulados
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [bookingId, voided]
+                properties:
+                  bookingId: { type: string, format: uuid }
+                  voided: { type: integer, minimum: 0, description: Cuántos check-ins (pasajero y segmento) se anularon }
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Check-in]
+      operationId: restoreVoidedCheckIns
+      summary: Compensación — devolver los check-ins que anuló una saga que falló
+      parameters:
+        - name: sagaId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Check-ins devueltos (idempotente)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /check-ins/{bookingId}/boarding-passes:
     parameters:
       - $ref: '#/components/parameters/BookingId'
@@ -372,6 +425,25 @@ components:
                       default: false
                       description: Solo la marca, sin el tipo (dato de salud); prioriza el grupo de abordaje
 
+    VoidCheckInRequest:
+      type: object
+      additionalProperties: false
+      required: [sagaId, reason]
+      properties:
+        sagaId: { type: string, format: uuid }
+        reason:
+          type: string
+          enum: [BOOKING_CANCELLED, DATE_CHANGED]
+        segmentIds:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { type: string, maxLength: 40 }
+        passengerIds:
+          type: array
+          minItems: 1
+          maxItems: 9
+          items: { type: string, maxLength: 20 }
     CheckInState:
       type: object
       additionalProperties: false

@@ -42,6 +42,13 @@ class SagaQuery {
   @IsUUID() sagaId!: string;
 }
 
+class VoidCheckInDto {
+  @IsUUID() sagaId!: string;
+  @IsIn(['BOOKING_CANCELLED', 'DATE_CHANGED']) reason!: 'BOOKING_CANCELLED' | 'DATE_CHANGED';
+  @IsOptional() @IsArray() @ArrayMinSize(1) @ArrayMaxSize(20) @IsString({ each: true }) @MaxLength(40, { each: true }) segmentIds?: string[];
+  @IsOptional() @IsArray() @ArrayMinSize(1) @ArrayMaxSize(9) @IsString({ each: true }) @MaxLength(20, { each: true }) passengerIds?: string[];
+}
+
 /** Operaciones de MS.G.CheckIn. Solo el ESB, con su token de servicio. */
 @Controller()
 @UseGuards(ServiceTokenGuard)
@@ -63,6 +70,20 @@ export class CheckInController {
   @HttpCode(204)
   async undo(@Param('bookingId') bookingId: string, @Query() query: SagaQuery) {
     await this.checkIns.undo(bookingId.toLowerCase(), query.sagaId);
+  }
+
+  /** K-1 (D56): anular check-ins (cancelación o cambio de fecha después del check-in). */
+  @Post('check-ins/:bookingId/void')
+  @HttpCode(200)
+  voidCheckIns(@Param('bookingId') bookingId: string, @Body() body: VoidCheckInDto) {
+    return this.checkIns.voidCheckIns(bookingId.toLowerCase(), body);
+  }
+
+  /** Compensación de la anulación (la saga falló después). */
+  @Delete('check-ins/:bookingId/void')
+  @HttpCode(204)
+  async restoreVoided(@Param('bookingId') bookingId: string, @Query() query: SagaQuery) {
+    await this.checkIns.restoreVoided(bookingId.toLowerCase(), query.sagaId);
   }
 
   @Get('check-ins/:bookingId/boarding-passes')

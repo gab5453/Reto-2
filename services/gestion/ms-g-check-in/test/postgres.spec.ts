@@ -44,6 +44,30 @@ describe.skipIf(!url)('PostgresCheckInStore (concurrencia real)', () => {
     expect(rows.map((row) => row.boarding_position)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 
+  it('K-1: anular mueve el check-in a voided_check_ins (historia), los pases dan 409; la compensación lo devuelve; la posición nunca se repite', async () => {
+    const bookingId = randomUUID();
+    await checkIn(bookingId, randomUUID(), '30A');
+    const [{ boarding_position: posicion }] = (await admin.query(`SELECT boarding_position FROM ${schema}.check_ins WHERE booking_id = $1`, [bookingId])).rows;
+    const sagaId = randomUUID();
+    expect(await service.voidCheckIns(bookingId, { sagaId, reason: 'BOOKING_CANCELLED' })).toEqual({ bookingId, voided: 1 });
+    expect((await admin.query(`SELECT count(*)::int AS n FROM ${schema}.check_ins WHERE booking_id = $1`, [bookingId])).rows[0].n).toBe(0);
+    const historia = (await admin.query(`SELECT void_reason, void_saga_id, seat FROM ${schema}.voided_check_ins WHERE booking_id = $1`, [bookingId])).rows;
+    expect(historia).toEqual([{ void_reason: 'BOOKING_CANCELLED', void_saga_id: sagaId, seat: '30A' }]);
+    await expect(service.boardingPasses(bookingId)).rejects.toMatchObject({ problem: { code: 'BOARDING_PASS_NOT_AVAILABLE' } });
+    expect(await service.voidCheckIns(bookingId, { sagaId, reason: 'BOOKING_CANCELLED' })).toEqual({ bookingId, voided: 1 }); // idempotente
+
+    // Otra reserva hace check-in en el mismo vuelo: no recibe la posición del anulado.
+    const otra = randomUUID();
+    await checkIn(otra, randomUUID(), '31A');
+    const [{ boarding_position: nueva }] = (await admin.query(`SELECT boarding_position FROM ${schema}.check_ins WHERE booking_id = $1`, [otra])).rows;
+    expect(nueva).toBeGreaterThan(posicion);
+
+    await service.restoreVoided(bookingId, sagaId);
+    await service.restoreVoided(bookingId, sagaId);
+    expect((await service.boardingPasses(bookingId)).boardingPasses).toHaveLength(1);
+    expect((await admin.query(`SELECT count(*)::int AS n FROM ${schema}.voided_check_ins WHERE booking_id = $1`, [bookingId])).rows[0].n).toBe(0);
+  });
+
   it('el mismo pasajero dos veces a la vez (sagas distintas): un solo check-in', async () => {
     const bookingId = randomUUID();
     const results = await Promise.allSettled([checkIn(bookingId), checkIn(bookingId)]);

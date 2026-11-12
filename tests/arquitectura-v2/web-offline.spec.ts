@@ -76,6 +76,16 @@ describe('copia local para usar sin conexión', () => {
     expect(load()!.passes).toEqual([]);
   });
 
+  it('★ D56: los pases de una reserva cancelada o con el check-in anulado se retiran; los de otras reservas quedan', () => {
+    offline['savePasses']('ana@x.test', 'B1', [pass()]);
+    offline['savePasses']('ana@x.test', 'B2', [pass({ barcode: 'OTRA' })]);
+    offline['removePasses']('ana@x.test', 'B1');
+    expect(load()!.passes.map((item) => item.barcode)).toEqual(['OTRA']);
+    // De otro usuario no toca nada (en un equipo compartido nunca se mezclan).
+    offline['removePasses']('luis@x.test', 'B2');
+    expect(load()!.passes.map((item) => item.barcode)).toEqual(['OTRA']);
+  });
+
   it('★ los vuelos que ya pasaron se purgan también del dispositivo', () => {
     offline['savePasses']('ana@x.test', 'B1', [pass({ departureAt: day(-2), barcode: 'VIEJO' })]);
     offline['savePasses']('ana@x.test', 'B2', [pass({ bookingId: 'B2', departureAt: day(1) })]);

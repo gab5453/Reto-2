@@ -24,6 +24,9 @@ beforeEach(() => {
     onSegment: vi.fn().mockResolvedValue([]),
     insert: vi.fn().mockResolvedValue(true),
     deleteBySaga: vi.fn(),
+    voidCheckIns: vi.fn().mockResolvedValue(2),
+    voidedBySaga: vi.fn().mockResolvedValue(0),
+    restoreVoided: vi.fn(),
     lockSegment: vi.fn(),
     assistanceReady: vi.fn().mockResolvedValue([]),
     readyOnSegment: vi.fn().mockResolvedValue(0),
@@ -101,5 +104,21 @@ describe('pases y compensación', () => {
     tx.assistanceReady.mockResolvedValue([{ passengerId: 'P1', segmentId: 'EA100-20261210', ready: true }]);
     expect((await service.markAssistanceReady('b-1', { passengerId: 'P1', segmentId: 'EA100-20261210', ready: true }, 'admin-1')).items[0].assistanceReady).toBe(true);
     expect(tx.saveAssistanceReady).toHaveBeenCalledWith(expect.objectContaining({ updatedBy: 'admin-1', ready: true }));
+  });
+});
+
+describe('anular (K-1, D56)', () => {
+  it('anula con el motivo, la saga y el filtro pedidos, con la hora del servicio', async () => {
+    expect(await service.voidCheckIns('b-1', { sagaId: 'v-1', reason: 'DATE_CHANGED', segmentIds: ['EA100-20261210'], passengerIds: ['P2'] })).toEqual({ bookingId: 'b-1', voided: 2 });
+    expect(tx.voidCheckIns).toHaveBeenCalledWith('b-1', 'v-1', { segmentIds: ['EA100-20261210'], passengerIds: ['P2'] }, 'DATE_CHANGED', new Date(AHORA).toISOString());
+  });
+  it('idempotente: si esa saga ya anuló, devuelve lo mismo SIN anular otra vez', async () => {
+    tx.voidedBySaga.mockResolvedValue(3);
+    expect(await service.voidCheckIns('b-1', { sagaId: 'v-1', reason: 'BOOKING_CANCELLED' })).toEqual({ bookingId: 'b-1', voided: 3 });
+    expect(tx.voidCheckIns).not.toHaveBeenCalled();
+  });
+  it('la compensación devuelve lo que anuló esa saga', async () => {
+    await service.restoreVoided('b-1', 'v-1');
+    expect(tx.restoreVoided).toHaveBeenCalledWith('b-1', 'v-1');
   });
 });

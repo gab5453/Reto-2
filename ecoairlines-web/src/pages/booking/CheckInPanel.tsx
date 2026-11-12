@@ -5,7 +5,7 @@ import type { BoardingPass, BookingDetail } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
 import { BoardingPassCard } from '../../components/BoardingPassCard';
 import { ProblemAlert } from '../../components/ProblemAlert';
-import { savePasses } from '../../lib/offline-trips';
+import { removePasses, savePasses } from '../../lib/offline-trips';
 
 export function CheckInPanel({ booking, onChanged }: { booking: BookingDetail; onChanged: () => Promise<void> }) {
   const { token, user } = useAuth();
@@ -21,9 +21,12 @@ export function CheckInPanel({ booking, onChanged }: { booking: BookingDetail; o
       // Para abrirlos sin conexión en el aeropuerto (PLAN.md §4.9).
       if (user) savePasses(user.email, booking.bookingId, boardingPasses.map(toView));
     } catch (caught) {
-      // BOARDING_PASS_NOT_AVAILABLE: todavía no hay check-in; no es un error para el usuario.
-      if (caught instanceof ApiError && (caught.status === 404 || caught.problem?.code === 'BOARDING_PASS_NOT_AVAILABLE')) setPasses([]);
-      else setError(caught);
+      // BOARDING_PASS_NOT_AVAILABLE: todavía no hay check-in (o se anuló al cambiar la fecha, D56); no es un error para el
+      // usuario. Si había pases guardados para usar sin conexión, ya no valen: se retiran del dispositivo.
+      if (caught instanceof ApiError && (caught.status === 404 || caught.problem?.code === 'BOARDING_PASS_NOT_AVAILABLE')) {
+        setPasses([]);
+        if (user) removePasses(user.email, booking.bookingId);
+      } else setError(caught);
     }
   };
 

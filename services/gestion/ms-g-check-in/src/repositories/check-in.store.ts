@@ -15,6 +15,16 @@ export interface CheckInTx {
   /** `false` si ese pasajero ya tiene check-in en ese segmento. */
   insert(record: CheckInRecord): Promise<boolean>;
   deleteBySaga(bookingId: string, sagaId: string): Promise<void>;
+  /**
+   * Anula check-ins (K-1, D56): los pasa a `voided_check_ins` con quién y por qué; dejan de existir para los pases, la lista del
+   * vuelo y los duplicados, y el pasajero puede volver a hacer check-in. Sin `segmentIds`/`passengerIds`, toda la reserva.
+   * Devuelve cuántos anuló.
+   */
+  voidCheckIns(bookingId: string, voidSagaId: string, filter: { segmentIds?: string[]; passengerIds?: string[] }, reason: string, at: string): Promise<number>;
+  /** ¿Esa saga ya anuló algo de la reserva? (idempotencia). */
+  voidedBySaga(bookingId: string, voidSagaId: string): Promise<number>;
+  /** Compensación de `voidCheckIns`: vuelven a `check_ins` los que anuló esa saga. */
+  restoreVoided(bookingId: string, voidSagaId: string): Promise<void>;
   lockSegment(segmentId: string): Promise<void>;
   assistanceReady(bookingId: string): Promise<AssistanceReadyRecord[]>;
   readyOnSegment(segmentId: string): Promise<number>;
@@ -35,6 +45,7 @@ const clone = <T>(value: T): T => structuredClone(value);
 export class InMemoryCheckInStore implements CheckInStore {
   readonly kind = 'memory' as const;
   private readonly rows = new Map<string, CheckInRecord>();
+  private readonly voided = new Map<string, { record: CheckInRecord; voidSagaId: string; reason: string; voidedAt: string }>();
   private readonly ready = new Map<string, AssistanceReadyRecord>();
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -57,7 +68,9 @@ export class InMemoryCheckInStore implements CheckInStore {
       try {
         return await work({
           checkIns: async (bookingId) => clone([...this.rows.values()].filter((r) => r.bookingId === bookingId)),
-          countOnSegment: async (segmentId) => [...this.rows.values()].filter((r) => r.segmentId === segmentId).length,
+          // La mayor posición dada en el vuelo (también a check-ins anulados): anular uno nunca repite una posición.
+          countOnSegment: async (segmentId) =>
+            Math.max(0, ...[...this.rows.values(), ...[...this.voided.values()].map((v) => v.record)].filter((r) => r.segmentId === segmentId).map((r) => r.boardingPosition)),
           onSegment: async (segmentId) => clone([...this.rows.values()].filter((r) => r.segmentId === segmentId)),
           insert: async (record) => {
             if (this.rows.has(key(record))) return false;
@@ -66,6 +79,24 @@ export class InMemoryCheckInStore implements CheckInStore {
           },
           deleteBySaga: async (bookingId, sagaId) => {
             for (const [k, r] of this.rows) if (r.bookingId === bookingId && r.sagaId === sagaId) set(this.rows, k, undefined);
+          },
+          voidCheckIns: async (bookingId, voidSagaId, filter, reason, at) => {
+            let count = 0;
+            for (const [k, r] of this.rows) {
+              if (r.bookingId !== bookingId || (filter.segmentIds && !filter.segmentIds.includes(r.segmentId)) || (filter.passengerIds && !filter.passengerIds.includes(r.passengerId))) continue;
+              set(this.rows, k, undefined);
+              set(this.voided, `${k}|${voidSagaId}`, { record: r, voidSagaId, reason, voidedAt: at });
+              count++;
+            }
+            return count;
+          },
+          voidedBySaga: async (bookingId, voidSagaId) => [...this.voided.values()].filter((v) => v.record.bookingId === bookingId && v.voidSagaId === voidSagaId).length,
+          restoreVoided: async (bookingId, voidSagaId) => {
+            for (const [k, v] of this.voided) {
+              if (v.record.bookingId !== bookingId || v.voidSagaId !== voidSagaId) continue;
+              set(this.voided, k, undefined);
+              set(this.rows, key(v.record), v.record);
+            }
           },
           lockSegment: async () => undefined,
           assistanceReady: async (bookingId) => clone([...this.ready.values()].filter((r) => r.bookingId === bookingId)),
@@ -107,6 +138,15 @@ CREATE TABLE IF NOT EXISTS check_ins (
   PRIMARY KEY (booking_id, segment_id, passenger_id)
 );
 CREATE INDEX IF NOT EXISTS check_ins_segment_idx ON check_ins (segment_id);
+-- K-1 (D56): check-ins anulados (cancelación o cambio de fecha después del check-in). Quedan para la historia; no son pases válidos.
+CREATE TABLE IF NOT EXISTS voided_check_ins (
+  LIKE check_ins,
+  void_saga_id uuid NOT NULL,
+  void_reason  text NOT NULL,
+  voided_at    timestamptz NOT NULL,
+  PRIMARY KEY (booking_id, segment_id, passenger_id, void_saga_id)
+);
+CREATE INDEX IF NOT EXISTS voided_check_ins_segment_idx ON voided_check_ins (segment_id);
 CREATE TABLE IF NOT EXISTS assistance_ready (
   booking_id   uuid NOT NULL,
   segment_id   text NOT NULL,
@@ -167,7 +207,16 @@ export class PostgresCheckInStore implements CheckInStore {
       await db.query('BEGIN');
       const result = await work({
         checkIns: async (bookingId) => (UUID.test(bookingId) ? (await db.query('SELECT * FROM check_ins WHERE booking_id = $1 ORDER BY segment_id, passenger_id', [bookingId])).rows.map(toRecord) : []),
-        countOnSegment: async (segmentId) => Number((await db.query('SELECT count(*)::int AS n FROM check_ins WHERE segment_id = $1', [segmentId])).rows[0].n),
+        // La mayor posición dada en el vuelo (también a check-ins anulados): anular uno nunca repite una posición.
+        countOnSegment: async (segmentId) =>
+          Number(
+            (
+              await db.query(
+                'SELECT GREATEST((SELECT COALESCE(MAX(boarding_position), 0) FROM check_ins WHERE segment_id = $1), (SELECT COALESCE(MAX(boarding_position), 0) FROM voided_check_ins WHERE segment_id = $1))::int AS n',
+                [segmentId],
+              )
+            ).rows[0].n,
+          ),
         onSegment: async (segmentId) => (await db.query('SELECT * FROM check_ins WHERE segment_id = $1', [segmentId])).rows.map(toRecord),
         insert: async (r) =>
           (
@@ -181,6 +230,34 @@ export class PostgresCheckInStore implements CheckInStore {
           ).rowCount === 1,
         deleteBySaga: async (bookingId, sagaId) => {
           if (UUID.test(bookingId) && UUID.test(sagaId)) await db.query('DELETE FROM check_ins WHERE booking_id = $1 AND saga_id = $2', [bookingId, sagaId]);
+        },
+        voidCheckIns: async (bookingId, voidSagaId, filter, reason, at) => {
+          if (!UUID.test(bookingId)) return 0;
+          const moved = await db.query(
+            `WITH anulados AS (
+               DELETE FROM check_ins WHERE booking_id = $1 AND ($2::text[] IS NULL OR segment_id = ANY($2)) AND ($3::text[] IS NULL OR passenger_id = ANY($3))
+               RETURNING *
+             )
+             INSERT INTO voided_check_ins SELECT anulados.*, $4::uuid, $5, $6::timestamptz FROM anulados`,
+            [bookingId, filter.segmentIds ?? null, filter.passengerIds ?? null, voidSagaId, reason, at],
+          );
+          return moved.rowCount ?? 0;
+        },
+        voidedBySaga: async (bookingId, voidSagaId) =>
+          UUID.test(bookingId) && UUID.test(voidSagaId)
+            ? Number((await db.query('SELECT count(*)::int AS n FROM voided_check_ins WHERE booking_id = $1 AND void_saga_id = $2', [bookingId, voidSagaId])).rows[0].n)
+            : 0,
+        restoreVoided: async (bookingId, voidSagaId) => {
+          if (!UUID.test(bookingId) || !UUID.test(voidSagaId)) return;
+          await db.query(
+            `WITH devueltos AS (DELETE FROM voided_check_ins WHERE booking_id = $1 AND void_saga_id = $2 RETURNING *)
+             INSERT INTO check_ins (booking_id, segment_id, passenger_id, saga_id, pnr, passenger_type, first_name, last_name, e_ticket_number, flight_number,
+               origin, destination, departure_at, cabin_class, seat, gate, needs_assistance, boarding_group, boarding_position, checked_in_at)
+             SELECT booking_id, segment_id, passenger_id, saga_id, pnr, passenger_type, first_name, last_name, e_ticket_number, flight_number,
+               origin, destination, departure_at, cabin_class, seat, gate, needs_assistance, boarding_group, boarding_position, checked_in_at FROM devueltos
+             ON CONFLICT DO NOTHING`,
+            [bookingId, voidSagaId],
+          );
         },
         // Un candado por vuelo: dos reservas a la vez no reciben la misma posición de abordaje.
         lockSegment: async (segmentId) => {

@@ -3456,3 +3456,63 @@ objeto; responde 202 (recibido), 200 (duplicado), 401 (firma inválida), 400 (no
   en el webhook y en el feed (sin la normalización, falla). La conformidad v2 valida el feed contra el contrato nuevo.
 - **Secreto:** el que envió Booking **coincide** con el de la suscripción activa (comparado por huella SHA-256 dentro de la VM,
   sin mostrar ninguno). La firma era válida desde el principio: los 400 venían del cuerpo (`id` v5 y `type` largo).
+
+### Postventa · K-1 — Cancelar después del check-in (D56, revoca D55) — ✅ HECHA (12/11)
+
+Plan: `PLAN/cancelacion_check.md` (aprobado el 12/11, K-0 = A: el asiento sigue bloqueado después del check-in, como dice el
+contrato del grupo en `changeSeats`). Origen: mensaje de Booking del 12/11 y decisión del responsable de estandarizarse con el grupo.
+- **MS.G.CheckIn — anular check-ins:** `POST /check-ins/{bookingId}/void` (`sagaId`, `reason` = `BOOKING_CANCELLED` o
+  `DATE_CHANGED`, `segmentIds`/`passengerIds` opcionales) y su compensación `DELETE /check-ins/{bookingId}/void?sagaId=`. Los
+  anulados pasan a la tabla nueva `voided_check_ins` (historia: quién, cuándo y por qué); los pases de la reserva responden
+  `409 BOARDING_PASS_NOT_AVAILABLE` y el pasajero puede volver a hacer check-in. Idempotente por saga. Contrato interno
+  `ms-g-check-in.openapi.yaml` actualizado.
+- **Posición de abordaje:** se calculaba contando los check-ins del vuelo; con anulaciones, un pasajero nuevo habría repetido una
+  posición. Ahora es la mayor posición ya dada (también a los anulados) + 1.
+- **ESB — saga de cancelación:** sin el bloqueo por check-in; nuevo paso `check-in.void` después del punto sin retorno, en **toda**
+  cancelación. **Corrige un hallazgo:** hasta hoy, cuando el administrador (o un vuelo cancelado) cancelaba una reserva con
+  check-in, el pase de abordar seguía siendo válido.
+- **MS.G.Bookings:** se quitó el bloqueo de cancelación por check-in (y `SYSTEM_CANCELLATIONS`, que solo servía para eso).
+- **409 con `detail`** (pedido de Booking): los `CUTOFF_PASSED` que quedan explican el motivo. Siguen bloqueados hasta K-2 el cambio
+  de fecha y las maletas, y el asiento (contrato del grupo, K-0 = A).
+- **Pruebas:** MS.G.CheckIn (anular toda la reserva o un tramo, idempotencia, compensación, posición nunca repetida, 400/401; y con
+  **PostgreSQL real**: la historia en `voided_check_ins` y la compensación); saga (el cliente cancela con check-in y se anula;
+  la cancelación del administrador y la de un vuelo cancelado también anulan); Bookings. **E2E E-3** pasa a: check-in en la web →
+  pase sin conexión (E-8) → el pasajero **cancela** después del check-in y sus pases dejan de ser válidos.
+
+### Postventa · K-2 — Modificar después del check-in (D56) — ✅ HECHA (12/11)
+
+- **Cambiar fecha:** sin el bloqueo por check-in (ESB y Bookings). La saga, después del punto sin retorno, anula el check-in **solo de
+  los vuelos reemplazados** (`check-in.void-old`, `reason: DATE_CHANGED`, `segmentIds` = los tramos viejos); el pasajero vuelve
+  a hacer check-in en el vuelo nuevo. Bookings ya quitaba esos tramos de `checkedIn`.
+- **Maletas:** sin el bloqueo; el check-in no se toca.
+- **Asistencia:** sin el bloqueo (Bookings). El pase sigue valiendo; su grupo de abordaje (A para quien tiene asistencia) **no se
+  recalcula**: el aeropuerto coordina la asistencia con la lista del vuelo.
+- **Asiento:** sigue bloqueado después del check-in del tramo (contrato del grupo, `changeSeats`; K-0 = A), ahora con `detail`.
+- Se borró `assertNotCheckedIn` del ESB y de Bookings (ya no la usa nadie).
+- **Pruebas:** saga de cambio de fecha con check-in (200, anula solo los tramos viejos) y de maletas con check-in (200, sin anular);
+  Bookings: maletas, fecha y cancelación después del check-in en la misma reserva; asistencia permitida; el asiento sigue con
+  409 y `detail`. Suite completa: 1 548 pruebas.
+
+### Web · K-3 — La web y la PWA después del check-in (D56) — ✅ HECHA (12/11)
+
+- **Detalle de la reserva:** ya no se esconden las pestañas después del check-in. El aviso pasa de «tu reserva ya no se puede
+  modificar» a «Ya hiciste check-in. Todavía puedes agregar maletas, pedir asistencia, cambiar la fecha o cancelar. El asiento ya
+  no se cambia. Si cambias la fecha o cancelas, tus pases de abordar dejan de valer».
+- **Avisos antes de confirmar:** al **cancelar** («tus pases de abordar dejan de ser válidos, también los guardados en este
+  dispositivo»), al **cambiar la fecha** («el check-in del vuelo que cambias se anula y tendrás que volver a hacerlo») y en el
+  **asiento** (los pasajeros con check-in no lo cambian en ese vuelo). Mensaje de `CUTOFF_PASSED` actualizado.
+- **PWA:** nuevo `removePasses`. Los pases guardados para usar sin conexión se retiran cuando la reserva aparece cancelada (al abrir
+  su detalle, además de «Mis viajes», que ya lo hacía) y cuando el servidor dice que no hay pases (check-in anulado por un cambio de
+  fecha). Así no queda un pase «válido» sin conexión de una reserva cancelada.
+- **Pruebas:** `removePasses` (solo los de esa reserva y de ese usuario); **E2E E-3** cancela ahora **desde la web** después del
+  check-in: ve el aviso, la reserva queda cancelada, el servidor ya no da pases y la vista sin conexión ya no muestra el pase.
+  E2E: 9 de 9; web: lint, 46 pruebas y compilación.
+
+### Contrato y documentación · K-4 — Cerrar el plan de cancelación después del check-in — ✅ HECHA (12/11)
+
+- **Contrato del grupo** (`vuelos-openapi-v2.yaml`): el contrato **nunca** prohibía cancelar ni cambiar la fecha después del check-in
+  (D55 era una regla solo nuestra): con D56 EcoAirlines vuelve a cumplirlo. Se documentó lo que ahora pasa con el check-in en
+  `cancelBooking` y `confirmDateChange` (se anula; los pases responden `409 BOARDING_PASS_NOT_AVAILABLE`) y una fila en §13.
+  `changeSeats` no cambia (ya decía que el asiento no se cambia después del check-in del segmento). Tipos regenerados.
+- `Pruebas.md`: E-3 describe la prueba nueva. `PLAN/cancelacion_check.md`: completo.
+- **Falta (responsable):** desplegar y avisar a Booking.

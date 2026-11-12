@@ -420,9 +420,9 @@ describe('applyBaggage', () => {
     expect(tx.saveBooking).not.toHaveBeenCalled();
   });
   it('un infante no lleva maletas', async () => expect(await codeOf(service.applyBaggage('b-1', maletas({ passengerId: 'I1' }), {}))).toBe('VALIDATION_FAILED'));
-  it('después del check-in nada se modifica (D55) → CUTOFF_PASSED', async () => {
+  it('después del check-in las maletas ya no se bloquean (D56, 12/11: revoca D55)', async () => {
     tx.booking.mockResolvedValue(reserva({ checkedIn: [{ segmentId: 'EA100-20261210', passengerId: 'P2' }] }));
-    expect(await codeOf(service.applyBaggage('b-1', maletas(), {}))).toBe('CUTOFF_PASSED');
+    expect(await codeOf(service.applyBaggage('b-1', maletas(), {}))).not.toBe('CUTOFF_PASSED');
   });
   it('una reserva no confirmada → BOOKING_NOT_CONFIRMED', async () => {
     tx.booking.mockResolvedValue(reserva({ status: 'TICKET_ISSUING' }));
@@ -456,9 +456,9 @@ describe('applyCancellation', () => {
     tx.booking.mockResolvedValue(reserva({ status: 'FAILED' }));
     expect(await codeOf(cancelar())).toBe('BOOKING_NOT_CANCELLABLE');
   });
-  it('con check-in, el cliente ya no cancela (D55)', async () => {
+  it('con check-in, el cliente SÍ cancela (D56, 12/11: revoca D55)', async () => {
     tx.booking.mockResolvedValue(reserva({ checkedIn: [{ segmentId: 'EA100-20261210', passengerId: 'P1' }] }));
-    expect(await codeOf(cancelar())).toBe('CUTOFF_PASSED');
+    expect((await cancelar()).status).toBe('CANCELLED');
   });
   it('con check-in, la aerolínea sí cancela si el vuelo se cancela', async () => {
     tx.booking.mockResolvedValue(reserva({ checkedIn: [{ segmentId: 'EA100-20261210', passengerId: 'P1' }] }));
@@ -511,9 +511,9 @@ describe('asistencia', () => {
     expect((await service.saveAssistance('b-1', 'P2', { type: 'WCHR' }, { ownerId: OWNER })).status).toBe('READY');
     expect((await service.saveAssistance('b-1', 'P2', { type: 'BLND' }, { ownerId: OWNER })).status).toBe('REQUESTED');
   });
-  it('después del check-in del pasajero → CUTOFF_PASSED', async () => {
+  it('después del check-in del pasajero la asistencia SÍ se pide (D56, 12/11: revoca D55)', async () => {
     tx.booking.mockResolvedValue(reserva({ checkedIn: [{ segmentId: 'EA100-20261210', passengerId: 'P2' }] }));
-    expect(await codeOf(service.saveAssistance('b-1', 'P2', { type: 'WCHR' }, { ownerId: OWNER }))).toBe('CUTOFF_PASSED');
+    expect(await codeOf(service.saveAssistance('b-1', 'P2', { type: 'WCHR' }, { ownerId: OWNER }))).toBeUndefined();
   });
   it('un pasajero que no es de la reserva → 404', async () => expect(await codeOf(service.deleteAssistance('b-1', 'NADIE', { ownerId: OWNER }))).toBe('NOT_FOUND'));
   it('marcar lista una asistencia que no existe → 404', async () => expect(await codeOf(service.setAssistanceStatus('b-1', 'P1', 'READY'))).toBe('NOT_FOUND'));

@@ -8,7 +8,7 @@ import { formatMoney } from '../../lib/format';
 import { useIdempotencyKey } from '../../lib/request-ids';
 
 /** Cotiza primero (monto a reembolsar y penalidad) y pide confirmación explícita antes de cancelar. */
-export function CancelPanel({ booking, onChanged }: { booking: BookingDetail; onChanged: () => Promise<void> }) {
+export function CancelPanel({ booking, checkedIn = false, onChanged }: { booking: BookingDetail; checkedIn?: boolean; onChanged: () => Promise<void> }) {
   const { token } = useAuth();
   const [quote, setQuote] = useState<CancellationQuoteResponse | null>(null);
   const [reason, setReason] = useState('');
@@ -48,6 +48,11 @@ export function CancelPanel({ booking, onChanged }: { booking: BookingDetail; on
 
   return (
     <div className="panel-form">
+      {checkedIn && (
+        <p className="alert alert-warning" role="note">
+          Ya hiciste check-in: si cancelas, tus pases de abordar dejan de ser válidos (también los guardados en este dispositivo).
+        </p>
+      )}
       {!quote && (
         <>
           <p className="muted">Primero te mostramos cuánto se reembolsa según tu tarifa. Nada se cancela hasta que lo confirmes.</p>

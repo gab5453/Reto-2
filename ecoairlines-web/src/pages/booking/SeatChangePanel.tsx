@@ -19,7 +19,7 @@ function currentSeats(booking: BookingDetail): SeatSelection {
  * EcoAirlines, así que no pide tarjeta. El mapa sale de `seatMap`: el `offerId` de una reserva se arma con sus itinerarios
  * (`itinerario~itinerario`), que Offers reconstruye a partir de sus ids.
  */
-export function SeatChangePanel({ booking, onChanged }: { booking: BookingDetail; onChanged: () => Promise<void> }) {
+export function SeatChangePanel({ booking, checkedIn = false, onChanged }: { booking: BookingDetail; checkedIn?: boolean; onChanged: () => Promise<void> }) {
   const { token } = useAuth();
   const original = useMemo(() => currentSeats(booking), [booking]);
   const [chosen, setChosen] = useState<SeatSelection>({});
@@ -82,6 +82,12 @@ export function SeatChangePanel({ booking, onChanged }: { booking: BookingDetail
 
   return (
     <div className="seat-change">
+      {checkedIn && (
+        <p className="alert alert-info" role="note">
+          Los pasajeros que ya hicieron check-in no pueden cambiar el asiento de ese vuelo (son las reglas de la aerolínea). Sí puedes
+          cambiarlo para un vuelo en el que todavía no hiciste check-in.
+        </p>
+      )}
       <p className="muted">
         Elige asientos libres de tu cabina para uno o varios pasajeros. Se cambian todos juntos: si alguno ya no está libre, no cambia ninguno. Los anteriores se liberan para otros
         viajeros.

@@ -36,15 +36,6 @@ const notFoundIs = (status: number) => (error: unknown) => {
   throw error;
 };
 
-/**
- * D55: después del check-in (de cualquier pasajero) el cliente ya no modifica la reserva: ni fecha, ni maletas, ni cancelación
- * (el asiento y la asistencia ya los bloquea Bookings). Se revisa en MS.G.CheckIn, la fuente del check-in, ANTES de consumir
- * la cotización o cobrar: nunca se cobra un cambio que después se rechaza.
- */
-async function assertNotCheckedIn(saga: SagaContext, d: SagaDeps, bookingId: string): Promise<void> {
-  const current = await saga.step('check-in.guard', () => d.upstreams.rest['check-in'].json<{ items?: Any[] }>('GET', `/check-ins/${bookingId}`).catch(notFoundIs(404)));
-  if ((current?.items ?? []).length) throw problem(409, 'CUTOFF_PASSED', 'Ya hiciste check-in: la reserva no se puede modificar.');
-}
 
 /** Dependencias comunes de las sagas de reservas. */
 @Injectable()
@@ -497,8 +488,9 @@ export interface CancelInput {
 
 /**
  * "Cancelar" (también el combo cancelado y cada reserva de un vuelo cancelado): Bookings → PostSale (consumir la cotización, o
- * `CalculateCompensationRefund` si es `SAGA_COMPENSATION` / `FLIGHT_CANCELLED`) → Offers libera asientos → reembolso →
- * Bookings `CANCELLED` (boletos `VOIDED`) → `booking.cancelled`. **No se deshace**: después de PostSale, un fallo se reintenta.
+ * `CalculateCompensationRefund` si es `SAGA_COMPENSATION` / `FLIGHT_CANCELLED`) → Offers libera asientos → CheckIn anula el
+ * check-in → reembolso → Bookings `CANCELLED` (boletos `VOIDED`) → `booking.cancelled`. **No se deshace**: después de PostSale,
+ * un fallo se reintenta. D56 (12/11, revoca D55): también se cancela después del check-in.
  */
 @Injectable()
 export class CancelBookingSaga implements SagaDefinition<CancelInput, Any> {
@@ -513,7 +505,6 @@ export class CancelBookingSaga implements SagaDefinition<CancelInput, Any> {
     if (!compensation && !request.quoteId) {
       throw new ProblemDetailsException({ status: 400, code: 'VALIDATION_FAILED', title: 'Falta quoteId.', invalidParams: [{ name: 'quoteId', reason: 'obligatorio salvo SAGA_COMPENSATION o FLIGHT_CANCELLED' }] });
     }
-    if (!compensation) await assertNotCheckedIn(saga, this.d, bookingId);
     const fares = await this.d.fares(saga, bookingId);
     const quote = await saga.step('post-sale.quote', async () =>
       compensation
@@ -522,6 +513,11 @@ export class CancelBookingSaga implements SagaDefinition<CancelInput, Any> {
     );
     saga.pointOfNoReturn();
     const released = await saga.step('offers.release', () => this.d.offers.call<Any>('ReleaseBookingInventory', { bookingId, sagaId: sub(saga, 'release'), segmentIds: [], reason: reasonCode }));
+    // D56: en TODA cancelación (también la del administrador o la de un vuelo cancelado) el check-in se anula y los pases dejan de
+    // ser válidos. Antes del 12/11 una cancelación del administrador dejaba el pase de abordar vigente. Idempotente por sagaId.
+    await saga.step('check-in.void', () =>
+      this.d.upstreams.rest['check-in'].json<Any>('POST', `/check-ins/${bookingId}/void`, { caller: this.d.caller(saga), json: { sagaId: sub(saga, 'check-in-void'), reason: 'BOOKING_CANCELLED' } }),
+    );
     const refund = await settleRefund(saga, this.d, {
       booking,
       amount: Number(quote['refundAmount']).toFixed(2),
@@ -586,7 +582,8 @@ export interface ChangeDateInput {
 /**
  * "Cambiar fecha": Bookings → (las alternativas de Offers y la oferta de PostSale ya se calcularon en la búsqueda) → PostSale
  * consume la oferta → pago* → Offers retiene cupos en los vuelos nuevos → Bookings cambia los itinerarios → Offers libera los
- * viejos → `booking.changed`. Compensación: liberar los cupos nuevos y la oferta.
+ * viejos → CheckIn anula el check-in de los vuelos viejos → `booking.changed`. Compensación: liberar los cupos nuevos y la oferta.
+ * D56 (12/11, revoca D55): también después del check-in; el pasajero vuelve a hacer check-in en el vuelo nuevo.
  */
 @Injectable()
 export class ChangeDateSaga implements SagaDefinition<ChangeDateInput, Any> {
@@ -597,7 +594,6 @@ export class ChangeDateSaga implements SagaDefinition<ChangeDateInput, Any> {
     const offer = await this.d.store.changeOffer(request.changeOfferId);
     if (!offer || offer.bookingId !== bookingId) throw problem(404, 'NOT_FOUND', 'La oferta de cambio no existe para esta reserva.');
     const booking = await this.d.booking(saga, bookingId);
-    await assertNotCheckedIn(saga, this.d, bookingId);
     const fares = await this.d.fares(saga, bookingId);
     const consumed = await saga.step(
       'post-sale.consume-offer',
@@ -642,6 +638,11 @@ export class ChangeDateSaga implements SagaDefinition<ChangeDateInput, Any> {
     saga.pointOfNoReturn();
     const oldSegments = replacements.flatMap((r) => booking.itineraries.find((i) => i.itineraryId === r.replacedItineraryId)?.segments.map((s) => s.segmentId) ?? []);
     await saga.step('offers.release-old', () => this.d.offers.call('ReleaseBookingInventory', { bookingId, sagaId: sub(saga, 'release-old'), segmentIds: oldSegments, reason: 'DATE_CHANGE' }));
+    // D56: el check-in de los vuelos viejos deja de valer (si no había, anula 0). Idempotente por sagaId; después del punto sin
+    // retorno se reintenta, no se compensa.
+    await saga.step('check-in.void-old', () =>
+      this.d.upstreams.rest['check-in'].json<Any>('POST', `/check-ins/${bookingId}/void`, { caller: this.d.caller(saga), json: { sagaId: sub(saga, 'check-in-void-old'), reason: 'DATE_CHANGED', segmentIds: oldSegments } }),
+    );
     await publishEvents(saga, this.d.events, [
       { name: 'booking.changed', subject: bookingId, data: { ...bookingEventData(applied), changeType: 'DATE_CHANGE', amountCharged: toPay, paymentReference: payment?.paymentReference ?? null }, ownerId: booking.ownerId },
     ]);
@@ -663,8 +664,8 @@ export class AddBaggageSaga implements SagaDefinition<AddBaggageInput, Any> {
   constructor(@Inject(SagaDeps) private readonly d: SagaDeps) {}
 
   async run(saga: SagaContext, { bookingId, request }: AddBaggageInput) {
+    // D56 (12/11, revoca D55): también después del check-in; el pase de abordar no cambia.
     const booking = await this.d.booking(saga, bookingId);
-    await assertNotCheckedIn(saga, this.d, bookingId);
     const fares = await this.d.fares(saga, bookingId);
     const line = baggageLine(booking, fares, request.passengerId, request.itineraryId);
     const validation = await saga.step('post-sale.validate-baggage', () => this.d.upstreams.postSale.call<Any>('ValidateBaggagePurchase', { bookingId, line, quantity: request.quantity }));
