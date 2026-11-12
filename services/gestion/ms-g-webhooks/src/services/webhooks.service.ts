@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { type CloudEvent, CLOUDEVENTS_CONTENT_TYPE, ProblemDetailsException, signWebhook, WEBHOOK_SIGNATURE_HEADER } from '@ecoairlines/shared';
+import { type CloudEvent, CLOUDEVENTS_CONTENT_TYPE, ProblemDetailsException, signWebhook, toContractFormat, WEBHOOK_SIGNATURE_HEADER } from '@ecoairlines/shared';
 import { countWebhookDelivery } from '@ecoairlines/shared/telemetry/metrics.js';
 import { WEBHOOKS_CONFIG, type WebhooksConfig } from '../config/config.js';
 import {
@@ -103,7 +103,7 @@ export class WebhooksService {
       afterSeq = batch.at(-1)!.seq;
       if (batch.length < 200) break;
     }
-    return { events: events.map((e) => e.event), metadata: { total: events.length, next_after: events.at(-1)?.id ?? after ?? null, timestamp: new Date(this.now()).toISOString() } };
+    return { events: events.map((e) => toContractFormat(e.event)), metadata: { total: events.length, next_after: events.at(-1)?.id ?? after ?? null, timestamp: new Date(this.now()).toISOString() } };
   }
 
   /** Historial completo (con los internos) para el panel; los eventos con datos de salud se muestran sin `data`. */
@@ -160,7 +160,8 @@ export class WebhooksService {
       await this.store.saveDelivery({ ...delivery, outcome: 'CANCELLED', nextRetryAt: null });
       return false;
     }
-    const body = JSON.stringify(event.event);
+    // Formato del contrato vigente (type corto, source `ecoairlines`), también para eventos guardados antes del 12/11/2026.
+    const body = JSON.stringify(toContractFormat(event.event));
     let status: number | null = null;
     try {
       if (!this.config.allowPrivateUrls) await assertAllowedUrl(subscription.url, true); // la URL pudo cambiar de destino (DNS)

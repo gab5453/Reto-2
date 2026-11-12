@@ -1,0 +1,7 @@
+{
+  // Solo para el EDITOR (VS Code): busca el `tsconfig.json` más cercano a cada archivo, y las pruebas de `tests/` no tenían uno
+  // (el chequeo de verdad, `npm run typecheck`, usa tsconfig.spec.json de la raíz). Sin él, el editor las abría sin los tipos de
+  // Node ni de Vitest y las marcaba en rojo aunque compilan bien.
+  "extends": "../tsconfig.spec.json",
+  "include": ["./**/*.ts"]
+}

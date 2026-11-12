@@ -29,8 +29,8 @@ describe('CloudEvents y firma de webhooks (contrato v2 §8)', () => {
     const event = runWithCorrelation(context, () => createCloudEvent({ name: 'booking.confirmed', visibility: 'public', data: { pnr: 'XK7P2Q' } }));
     expect(event).toMatchObject({
       specversion: '1.0',
-      type: 'ec.edu.epn.booking.vuelos.booking.confirmed',
-      source: '/aerolineas/ecoairlines/vuelos',
+      type: 'booking.confirmed',
+      source: 'ecoairlines',
       correlationid: 'corr-proceso-1',
       datacontenttype: 'application/json',
     });

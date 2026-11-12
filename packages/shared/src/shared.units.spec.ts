@@ -19,6 +19,7 @@ import {
   seatsPerRow,
   totalSeats,
 } from './domain/aircraft.js';
+import { createCloudEvent, eventName, isPublicEvent, toContractFormat } from './cloudevents/cloudevents.js';
 import { guardPool } from './database/pool.js';
 import { AIRPORTS, distanceKm } from './domain/airports.js';
 import { applyDiscount, formatCents, moneyFromCents, sameAmount, scaleMoney, sumMoney, toCents } from './domain/money.js';
@@ -364,5 +365,33 @@ describe('guardPool: una conexión inactiva que se cae no tumba el proceso (hall
   it('devuelve el mismo pool (se usa en línea: this.pool = guardPool(new pg.Pool(…), servicio))', () => {
     const pool = new EventEmitter();
     expect(guardPool(pool, 'x')).toBe(pool);
+  });
+});
+
+describe('formato de los eventos hacia Booking (contrato v2 §8 desde el 12/11/2026, BKG-16)', () => {
+  it('un evento público nuevo sale con type corto y source ecoairlines; uno interno conserva su prefijo', () => {
+    expect(createCloudEvent({ name: 'booking.checked_in', visibility: 'public', data: {} })).toMatchObject({ type: 'booking.checked_in', source: 'ecoairlines' });
+    expect(createCloudEvent({ name: 'pricing.changed', visibility: 'internal', data: {} }).type).toBe('ec.ecoairlines.internal.pricing.changed');
+  });
+
+  it('isPublicEvent: solo lo que puede salir hacia Booking; nunca un interno ni un evento que NOS envía Booking', () => {
+    expect(isPublicEvent({ type: 'booking.confirmed' })).toBe(true);
+    expect(isPublicEvent({ type: 'ec.edu.epn.booking.vuelos.booking.confirmed' })).toBe(true); // guardado antes del 12/11
+    expect(isPublicEvent({ type: 'ec.ecoairlines.internal.user.created' })).toBe(false);
+    expect(isPublicEvent({ type: 'ec.edu.epn.booking.pagos.payment.confirmed' })).toBe(false);
+    expect(isPublicEvent({ type: 'ec.edu.epn.booking.paquetes.package.cancelled' })).toBe(false);
+  });
+
+  it('eventName: el nombre corto en los tres formatos', () => {
+    expect(eventName('booking.confirmed')).toBe('booking.confirmed');
+    expect(eventName('ec.edu.epn.booking.vuelos.booking.confirmed')).toBe('booking.confirmed');
+    expect(eventName('ec.ecoairlines.internal.user.created')).toBe('user.created');
+  });
+
+  it('toContractFormat normaliza un evento del formato anterior sin tocar su id; uno actual queda igual', () => {
+    const actual = createCloudEvent({ name: 'booking.cancelled', visibility: 'public', data: { pnr: 'X' } });
+    expect(toContractFormat(actual)).toBe(actual);
+    const viejo = { ...actual, type: 'ec.edu.epn.booking.vuelos.booking.cancelled', source: '/aerolineas/ecoairlines/vuelos' };
+    expect(toContractFormat(viejo)).toEqual({ ...actual, type: 'booking.cancelled', source: 'ecoairlines' });
   });
 });

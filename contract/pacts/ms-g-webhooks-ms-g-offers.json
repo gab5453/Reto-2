@@ -14,11 +14,11 @@
         },
         "datacontenttype": "application/json",
         "id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
-        "source": "/aerolineas/ecoairlines/vuelos",
+        "source": "ecoairlines",
         "specversion": "1.0",
         "subject": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
         "time": "2026-12-01T12:00:00.000Z",
-        "type": "ec.edu.epn.booking.vuelos.hold.created"
+        "type": "hold.created"
       },
       "description": "un evento hold.created",
       "matchingRules": {

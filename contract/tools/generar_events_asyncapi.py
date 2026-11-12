@@ -13,7 +13,8 @@ SAGA_TYPES = ["CREATE_BOOKING", "ISSUE_TICKETS", "PAYMENT_FAILED", "CHANGE_SEATS
 OUT = Path(__file__).resolve().parent.parent / "events.asyncapi.yaml"
 C = "./vuelos-openapi-v2.yaml#/components/schemas"
 OAS = "application/vnd.oai.openapi;version=3.0.0"
-PUB = "ec.edu.epn.booking.vuelos."
+# Desde el 12/11/2026 el type público es el nombre corto (contrato v2 §8, a pedido de Booking); antes "ec.edu.epn.booking.vuelos.".
+PUB = ""
 INT = "ec.ecoairlines.internal."
 
 DESCRIPTION = """\
@@ -22,9 +23,10 @@ desde Booking. Decisiones D4, D33, D34, D37, D40 y D41 de `PLAN/PLAN.md`; contra
 
 ### Formato: CloudEvents 1.0 (contrato v2 §8)
 Todos los mensajes son CloudEvents en modo estructurado (`application/cloudevents+json`): `specversion`, `type`, `source =
-/aerolineas/ecoairlines/vuelos`, `id` (único, para deduplicar), `time`, `subject` (bookingId, holdId o vuelo/fecha),
+ecoairlines`, `id` (UUID v4 único, para deduplicar), `time`, `subject` (bookingId, holdId o vuelo/fecha),
 `correlationid` (el `X-Correlation-Id` del proceso que lo originó, **sin cambios**) y `data`.
-- `type` **público**: `ec.edu.epn.booking.vuelos.<evento>` (los define el contrato del grupo; sus schemas se referencian).
+- `type` **público**: el nombre corto `<evento>` (`booking.checked_in`; contrato del grupo §8 desde el 12/11/2026, antes
+  `ec.edu.epn.booking.vuelos.<evento>`; sus schemas se referencian).
 - `type` **interno**: `ec.ecoairlines.internal.<evento>` (nunca sale de EcoAirlines).
 
 ### Bus interno — RabbitMQ (D8)
@@ -230,7 +232,7 @@ doc = {
                 "properties": {
                     "specversion": {"type": "string", "const": "1.0"},
                     "type": {"type": "string"},
-                    "source": {"type": "string", "const": "/aerolineas/ecoairlines/vuelos"},
+                    "source": {"type": "string", "const": "ecoairlines"},
                     "id": {"type": "string", "description": "Único; los consumidores deduplican por él"},
                     "time": {"type": "string", "format": "date-time"},
                     "subject": {"type": "string"},

@@ -3424,3 +3424,35 @@ La VM ya no compila (compilar las 18 imágenes la dejaba ~15–20 min degradada,
   «Buscar» cuenta como una búsqueda nueva (`AdminTelemetryPage.tsx`). E-7 dejó de recargar la página entre reintentos: vuelve a
   pulsar «Buscar» y espera la consulta; sin la corrección, el segundo clic no consulta y E-7 falla.
 - **S-4 descartada** por el responsable: se mantiene la contraseña del ADMIN de demostración (riesgo aceptado el 04/11).
+
+### Integración · BKG-16 — Eventos con el formato de Booking: `id` UUID v4, `type` corto y `source` `ecoairlines` — ✅ HECHA (12/11)
+
+Booking explicó su webhook (`POST …/api/v2/webhooks/vuelos`): `Content-Type: application/cloudevents+json`,
+`X-Webhook-Signature: sha256=<HMAC-SHA256 en hex del cuerpo>`, `id` **UUID v4** distinto por evento, `time` ISO 8601, `data`
+objeto; responde 202 (recibido), 200 (duplicado), 401 (firma inválida), 400 (no cumple CloudEvents o Content-Type).
+- **Comparación con lo que enviábamos:** URL, `Content-Type`, nombre y formato de la firma y los campos de `data` de cada tipo
+  ya coincidían. Lo que no: el **`id` era UUID v5** (los eventos de las sagas del ESB usan `stableUuid`, determinista para que un
+  reintento no duplique). Es la causa más probable de los 75 rechazos con 400 (0 entregas). Los `hold.*` (Offers) ya eran v4.
+- **Cambio:** `stableEventId` (`services/esb/src/transversal/ids.ts`): el mismo cálculo determinista con formato v4. Un reintento
+  produce el mismo `id` (Booking lo toma como duplicado: 200). Solo para el `id` de los eventos (`support.ts`, `sagas.service.ts`);
+  los `sagaId` y las claves de idempotencia de pagos siguen con `stableUuid` (cambiarlos rompería las sagas en curso durante un
+  despliegue). El contrato del grupo admite cualquier texto como `id`: no se viola.
+- **Pruebas:** unitaria (formato v4, estable, distinto del `sagaId`) y en la saga de compra (todos los eventos publicados con
+  `id` v4); con el `id` v5 de antes, la de la saga falla.
+- **Contrato actualizado al formato de Booking (decisión del responsable, 12/11):** se prioriza lo que pide Booking sobre lo
+  acordado en el contrato del grupo. `vuelos-openapi-v2.yaml` §8 y §13: `type` = nombre corto (`booking.checked_in`), `source` =
+  `ecoairlines`, `id` UUID v4, `Content-Type` exacto y los códigos de respuesta de su webhook; los `enum` de los 12 tipos de
+  evento y los ejemplos. Los eventos que NOS envía Booking (`ec.edu.epn.booking.pagos.*`, `…paquetes.*`) no cambian.
+  Regenerados: `events.asyncapi.yaml` (con su generador), los tipos de `@ecoairlines/shared` (`openapi-typescript`) y el
+  contrato Pact `ms-g-webhooks-ms-g-offers.json`. También `README-vuelos-v2.md` y `ms-g-webhooks.openapi.yaml`.
+- **Código:** `createCloudEvent` produce el formato nuevo; `isPublicEvent` pasa a ser EXPLÍCITA (un nombre corto o el formato
+  anterior; nunca un interno ni un evento de Booking: con el prefijo vacío, todos habrían parecido públicos).
+  `toContractFormat` normaliza al entregar (webhook y `GET /vuelos/eventos`) los eventos guardados con el formato anterior,
+  sin tocar su `id` (clave de deduplicación y cursor del feed). El gateway y la web ya mostraban bien ambos formatos.
+- **Simulador de Booking con las reglas reales:** `Content-Type` exacto (400), `id` UUID v4, `type` corto, `time` ISO 8601 y
+  `data` objeto (400), firma (401), 202 recibido y 200 duplicado. La CI detecta si EcoAirlines vuelve a salirse del formato.
+- **Pruebas nuevas:** regla pública/interna (los eventos de Booking nunca salen), `eventName` en los tres formatos, normalización
+  sin tocar el `id`, el simulador con cada rechazo de Booking, y un evento guardado con el formato anterior que sale normalizado
+  en el webhook y en el feed (sin la normalización, falla). La conformidad v2 valida el feed contra el contrato nuevo.
+- **Secreto:** el que envió Booking **coincide** con el de la suscripción activa (comparado por huella SHA-256 dentro de la VM,
+  sin mostrar ninguno). La firma era válida desde el principio: los 400 venían del cuerpo (`id` v5 y `type` largo).

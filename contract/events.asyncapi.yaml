@@ -8,36 +8,37 @@ info:
   description: "Contrato de **eventos** de EcoAirlines (Reto 2). Documenta el bus interno, lo que sale hacia Booking Prototipo y lo\
     \ que llega\ndesde Booking. Decisiones D4, D33, D34, D37, D40 y D41 de `PLAN/PLAN.md`; contrato de Vuelos v2, §8.\n\n### Formato:\
     \ CloudEvents 1.0 (contrato v2 §8)\nTodos los mensajes son CloudEvents en modo estructurado (`application/cloudevents+json`): `specversion`,\
-    \ `type`, `source =\n/aerolineas/ecoairlines/vuelos`, `id` (único, para deduplicar), `time`, `subject` (bookingId, holdId o vuelo/fecha),\n\
-    `correlationid` (el `X-Correlation-Id` del proceso que lo originó, **sin cambios**) y `data`.\n- `type` **público**: `ec.edu.epn.booking.vuelos.<evento>`\
-    \ (los define el contrato del grupo; sus schemas se referencian).\n- `type` **interno**: `ec.ecoairlines.internal.<evento>` (nunca\
-    \ sale de EcoAirlines).\n\n### Bus interno — RabbitMQ (D8)\n- Exchange `ecoairlines.events`, tipo **topic**, durable. **Routing\
-    \ key = nombre corto** del evento (`booking.confirmed`).\n- Propiedades AMQP: `message_id` = `id` del CloudEvent, `correlation_id`\
-    \ = `correlationid`, `content_type` =\n  `application/cloudevents+json`, `delivery_mode` = 2 (persistente); cabecera `x-request-id`.\n\
-    - Cada productor publica desde su **outbox** (ESB y MS.G.Offers): el evento se guarda en la misma transacción que el cambio (en\
-    \ el\n  ESB, en el mismo paso de la saga) y un relé lo envía después con **confirmación del broker**, así no se pierden ni se publican\n\
-    \  eventos de cambios que no se guardaron. Entrega \"al menos una vez\": un evento puede repetirse (la réplica se cayó entre\n \
-    \ publicar y marcar), por eso los consumidores son **idempotentes** y deduplican por `id`.\n- **Reintentos y cola de fallidos**\
-    \ (por cada cola de consumidor `<cola>`): si el consumidor falla, el mensaje espera en\n  `<cola>.retry.1s`, `.5s`, `.30s` y `.2m`\
-    \ (colas con TTL fijo cuyo *dead letter* lo devuelve SOLO a `<cola>`, sin duplicarlo en\n  los otros consumidores) con la cabecera\
-    \ `x-attempts`. Al **5.º intento** fallido va al exchange `ecoairlines.dlx` (*direct*,\n  routing key = `<cola>`) y queda en `<cola>.dlq`\
-    \ con `x-last-error`, `x-original-routing-key` y `x-failed-at`; el consumidor\n  escribe una línea de ALERTA (la alerta de la plataforma\
-    \ de observabilidad llega en V2.16). Un mensaje ilegible va directo a\n  `<cola>.dlq`.\n\n| Cola | Enlaces (routing keys) | Consumidor\
-    \ |\n|------|------------------------|------------|\n| `webhooks.events` (+ `.retry.*`, `.dlq`) | `#` (todo) | MS.G.Webhooks: guarda\
-    \ el historial y entrega los **públicos** a los suscriptores |\n| `flight-status.schedule` (+ `.retry.*`, `.dlq`) | `schedule.published`\
-    \ | MS.G.FlightStatus: proyección `scheduled_flights` (D4) |\n| `esb.deferred` ← `esb.deferred.wait.<demora>` (TTL + DLX) | — (cola\
-    \ directa) | ESB: retoma una saga pendiente en el momento de su reintento (2 s, 10 s, 30 s, 2 min, 10 min, 30 min). Es un acelerador:\
-    \ si RabbitMQ no está, el ESB la encuentra igual en `saga_log` |\n\n### Hacia Booking\n1. **Webhooks** (obligatorio): MS.G.Webhooks\
-    \ hace `POST` a la URL de cada suscripción con el CloudEvent, firmado con\n   `X-Webhook-Signature: sha256=<HMAC-SHA256(secret,\
-    \ cuerpo)>`; reintentos a 1 min, 5 min, 30 min, 2 h y 6 h. Solo eventos\n   **públicos**, y de `booking.*` / `hold.*` solo los **del\
-    \ canal del partner** (D40). Respaldo: `GET /vuelos/eventos`.\n2. **Stock** (obligatorio): no es un evento de este contrato; MS.G.Offers\
-    \ llama por gRPC a `PushStockUpdate`\n   (`booking-inventory.proto`, D33).\n3. **Puente al bus del ecosistema** (opcional, si el\
-    \ grupo lo pide): el ESB republica los públicos en el exchange\n   `booking.events` con routing key `vuelos.<evento>`.\n\n### Desde\
-    \ Booking (hallazgo BKG-01: canal por confirmar)\n`payment.confirmed` → saga \"Emitir boletos\" · `payment.failed` → saga \"Pago\
-    \ fallido\" · `package.cancelled` → saga \"Cancelar\"\ncon `SAGA_COMPENSATION`. Mientras el grupo responde, el ESB acepta las dos\
-    \ vías documentadas abajo (AMQP en `booking.events` y\nwebhook firmado). Sin duplicados (D34): `inbound_events` por `id`, y sagas\
-    \ idempotentes.\n\n### Datos sensibles\nNingún evento lleva tokens, datos de tarjeta ni datos de salud. `booking.assistance_requested`\
-    \ solo dice **que** cambió la\nasistencia de un pasajero, no cuál es.\n"
+    \ `type`, `source =\necoairlines`, `id` (UUID v4 único, para deduplicar), `time`, `subject` (bookingId, holdId o vuelo/fecha),\n\
+    `correlationid` (el `X-Correlation-Id` del proceso que lo originó, **sin cambios**) y `data`.\n- `type` **público**: el nombre corto\
+    \ `<evento>` (`booking.checked_in`; contrato del grupo §8 desde el 12/11/2026, antes\n  `ec.edu.epn.booking.vuelos.<evento>`; sus\
+    \ schemas se referencian).\n- `type` **interno**: `ec.ecoairlines.internal.<evento>` (nunca sale de EcoAirlines).\n\n### Bus interno\
+    \ — RabbitMQ (D8)\n- Exchange `ecoairlines.events`, tipo **topic**, durable. **Routing key = nombre corto** del evento (`booking.confirmed`).\n\
+    - Propiedades AMQP: `message_id` = `id` del CloudEvent, `correlation_id` = `correlationid`, `content_type` =\n  `application/cloudevents+json`,\
+    \ `delivery_mode` = 2 (persistente); cabecera `x-request-id`.\n- Cada productor publica desde su **outbox** (ESB y MS.G.Offers):\
+    \ el evento se guarda en la misma transacción que el cambio (en el\n  ESB, en el mismo paso de la saga) y un relé lo envía después\
+    \ con **confirmación del broker**, así no se pierden ni se publican\n  eventos de cambios que no se guardaron. Entrega \"al menos\
+    \ una vez\": un evento puede repetirse (la réplica se cayó entre\n  publicar y marcar), por eso los consumidores son **idempotentes**\
+    \ y deduplican por `id`.\n- **Reintentos y cola de fallidos** (por cada cola de consumidor `<cola>`): si el consumidor falla, el\
+    \ mensaje espera en\n  `<cola>.retry.1s`, `.5s`, `.30s` y `.2m` (colas con TTL fijo cuyo *dead letter* lo devuelve SOLO a `<cola>`,\
+    \ sin duplicarlo en\n  los otros consumidores) con la cabecera `x-attempts`. Al **5.º intento** fallido va al exchange `ecoairlines.dlx`\
+    \ (*direct*,\n  routing key = `<cola>`) y queda en `<cola>.dlq` con `x-last-error`, `x-original-routing-key` y `x-failed-at`; el\
+    \ consumidor\n  escribe una línea de ALERTA (la alerta de la plataforma de observabilidad llega en V2.16). Un mensaje ilegible va\
+    \ directo a\n  `<cola>.dlq`.\n\n| Cola | Enlaces (routing keys) | Consumidor |\n|------|------------------------|------------|\n\
+    | `webhooks.events` (+ `.retry.*`, `.dlq`) | `#` (todo) | MS.G.Webhooks: guarda el historial y entrega los **públicos** a los suscriptores\
+    \ |\n| `flight-status.schedule` (+ `.retry.*`, `.dlq`) | `schedule.published` | MS.G.FlightStatus: proyección `scheduled_flights`\
+    \ (D4) |\n| `esb.deferred` ← `esb.deferred.wait.<demora>` (TTL + DLX) | — (cola directa) | ESB: retoma una saga pendiente en el\
+    \ momento de su reintento (2 s, 10 s, 30 s, 2 min, 10 min, 30 min). Es un acelerador: si RabbitMQ no está, el ESB la encuentra igual\
+    \ en `saga_log` |\n\n### Hacia Booking\n1. **Webhooks** (obligatorio): MS.G.Webhooks hace `POST` a la URL de cada suscripción con\
+    \ el CloudEvent, firmado con\n   `X-Webhook-Signature: sha256=<HMAC-SHA256(secret, cuerpo)>`; reintentos a 1 min, 5 min, 30 min,\
+    \ 2 h y 6 h. Solo eventos\n   **públicos**, y de `booking.*` / `hold.*` solo los **del canal del partner** (D40). Respaldo: `GET\
+    \ /vuelos/eventos`.\n2. **Stock** (obligatorio): no es un evento de este contrato; MS.G.Offers llama por gRPC a `PushStockUpdate`\n\
+    \   (`booking-inventory.proto`, D33).\n3. **Puente al bus del ecosistema** (opcional, si el grupo lo pide): el ESB republica los\
+    \ públicos en el exchange\n   `booking.events` con routing key `vuelos.<evento>`.\n\n### Desde Booking (hallazgo BKG-01: canal por\
+    \ confirmar)\n`payment.confirmed` → saga \"Emitir boletos\" · `payment.failed` → saga \"Pago fallido\" · `package.cancelled` → saga\
+    \ \"Cancelar\"\ncon `SAGA_COMPENSATION`. Mientras el grupo responde, el ESB acepta las dos vías documentadas abajo (AMQP en `booking.events`\
+    \ y\nwebhook firmado). Sin duplicados (D34): `inbound_events` por `id`, y sagas idempotentes.\n\n### Datos sensibles\nNingún evento\
+    \ lleva tokens, datos de tarjeta ni datos de salud. `booking.assistance_requested` solo dice **que** cambió la\nasistencia de un\
+    \ pasajero, no cuál es.\n"
   license:
     name: Uso académico — Integración de Sistemas (sin licencia de distribución)
 defaultContentType: application/cloudevents+json
@@ -929,7 +930,7 @@ components:
           type: string
         source:
           type: string
-          const: /aerolineas/ecoairlines/vuelos
+          const: ecoairlines
         id:
           type: string
           description: Único; los consumidores deduplican por él
@@ -1025,9 +1026,6 @@ components:
           type: string
         registration:
           type: string
-        turnaroundMinutes:
-          type: integer
-          description: Tiempo mínimo en tierra del tipo (M-2); FlightStatus lo usa para los retrasos
     DeferredTask:
       type: object
       required:
@@ -1082,7 +1080,7 @@ components:
           contentEncoding: utf-8
           messageType: cloudevent
           bindingVersion: 0.3.0
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.hold.created
+      x-cloudevent-type: hold.created
       x-public: true
       headers:
         type: object
@@ -1113,7 +1111,7 @@ components:
         schema:
           $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventHoldExpired
       bindings: *id005
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.hold.expired
+      x-cloudevent-type: hold.expired
       x-public: true
       headers:
         type: object
@@ -1144,7 +1142,7 @@ components:
         schema:
           $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventBookingConfirmed
       bindings: *id005
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.confirmed
+      x-cloudevent-type: booking.confirmed
       x-public: true
       headers:
         type: object
@@ -1175,7 +1173,7 @@ components:
         schema:
           $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventBookingFailed
       bindings: *id005
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.failed
+      x-cloudevent-type: booking.failed
       x-public: true
       headers:
         type: object
@@ -1211,7 +1209,7 @@ components:
               type:
                 type: string
                 enum:
-                - ec.edu.epn.booking.vuelos.booking.ticket_issuing
+                - booking.ticket_issuing
               data:
                 type: object
                 required:
@@ -1230,7 +1228,7 @@ components:
                     type: string
                     example: TICKET_ISSUANCE_FAILED
       bindings: *id005
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.ticket_issuing
+      x-cloudevent-type: booking.ticket_issuing
       x-public: true
       headers:
         type: object
@@ -1261,7 +1259,7 @@ components:
         schema:
           $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventTicketIssued
       bindings: *id005
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.ticket_issued
+      x-cloudevent-type: booking.ticket_issued
       x-public: true
       headers:
         type: object
@@ -1297,7 +1295,7 @@ components:
               type:
                 type: string
                 enum:
-                - ec.edu.epn.booking.vuelos.booking.ticket_failed
+                - booking.ticket_failed
               data:
                 type: object
                 required:
@@ -1306,7 +1304,7 @@ components:
                 - status
                 properties: *id006
       bindings: *id005
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.ticket_failed
+      x-cloudevent-type: booking.ticket_failed
       x-public: true
       headers:
         type: object
@@ -1337,7 +1335,7 @@ components:
         schema:
           $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventBookingChanged
       bindings: *id005
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.changed
+      x-cloudevent-type: booking.changed
       x-public: true
       headers:
         type: object
@@ -1368,7 +1366,7 @@ components:
         schema:
           $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventBookingChanged
       bindings: *id005
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.baggage_added
+      x-cloudevent-type: booking.baggage_added
       x-public: true
       headers:
         type: object
@@ -1399,7 +1397,7 @@ components:
         schema:
           $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventBookingChanged
       bindings: *id005
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.seat_changed
+      x-cloudevent-type: booking.seat_changed
       x-public: true
       headers:
         type: object
@@ -1430,7 +1428,7 @@ components:
         schema:
           $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventBookingCancelled
       bindings: *id005
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.cancelled
+      x-cloudevent-type: booking.cancelled
       x-public: true
       headers:
         type: object
@@ -1461,7 +1459,7 @@ components:
         schema:
           $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventCheckedIn
       bindings: *id005
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.booking.checked_in
+      x-cloudevent-type: booking.checked_in
       x-public: true
       headers:
         type: object
@@ -1492,7 +1490,7 @@ components:
         schema:
           $ref: ./vuelos-openapi-v2.yaml#/components/schemas/EventFlightStatusChanged
       bindings: *id005
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.flight.status_changed
+      x-cloudevent-type: flight.status_changed
       x-public: true
       headers:
         type: object
@@ -1522,7 +1520,7 @@ components:
               type:
                 type: string
                 enum:
-                - ec.edu.epn.booking.vuelos.flight.cancelled
+                - flight.cancelled
               data:
                 type: object
                 required:
@@ -1544,7 +1542,7 @@ components:
                     format: date-time
                     nullable: true
       bindings: *id005
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.flight.cancelled
+      x-cloudevent-type: flight.cancelled
       x-public: true
       headers:
         type: object
@@ -1574,7 +1572,7 @@ components:
               type:
                 type: string
                 enum:
-                - ec.edu.epn.booking.vuelos.flight.schedule_changed
+                - flight.schedule_changed
               data:
                 type: object
                 required:
@@ -1583,7 +1581,7 @@ components:
                 - newStatus
                 properties: *id007
       bindings: *id005
-      x-cloudevent-type: ec.edu.epn.booking.vuelos.flight.schedule_changed
+      x-cloudevent-type: flight.schedule_changed
       x-public: true
       headers:
         type: object

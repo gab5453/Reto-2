@@ -13,7 +13,7 @@ import { matchRoute, pathExists } from './router/routes.js';
 import type { SagaContext } from './sagas/engine.js';
 import { bookingEventData, collectPayment, fromProto, international, isPartner, partnerIdOf, publicOwner, settleRefund } from './sagas/support.js';
 import { assertAmountMatches, assertBookingPaymentReference } from './transversal/booking-reference.js';
-import { stableUuid } from './transversal/ids.js';
+import { stableEventId, stableUuid } from './transversal/ids.js';
 import { IdempotencyService } from './transversal/idempotency.service.js';
 
 /**
@@ -247,6 +247,13 @@ describe('ayudas de las sagas', () => {
   it('stableUuid: el mismo texto da el mismo UUID versión 5', () => {
     expect(stableUuid('saga:1')).toBe(stableUuid('saga:1'));
     expect(stableUuid('saga:1')).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+  it('stableEventId: igual de estable, pero con formato de UUID versión 4 (Booking lo exige en sus webhooks, BKG-16)', () => {
+    expect(stableEventId('saga:1:0:booking.confirmed')).toBe(stableEventId('saga:1:0:booking.confirmed'));
+    expect(stableEventId('saga:1:0:booking.confirmed')).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(stableEventId('saga:1:0:booking.confirmed')).not.toBe(stableEventId('saga:1:1:booking.ticket_issued'));
+    // El id de un evento nunca coincide con el sagaId del mismo texto (son espacios distintos).
+    expect(stableEventId('saga:1')).not.toBe(stableUuid('saga:1'));
   });
 });
 

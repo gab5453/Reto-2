@@ -1490,7 +1490,7 @@ export interface components {
             };
         };
         /**
-         * @description Nombre corto del evento. El `type` CloudEvents es `ec.edu.epn.booking.vuelos.<nombre>`.
+         * @description Nombre del evento; es también el `type` CloudEvents (desde el 12/11/2026, §8).
          *     `flight.schedule_changed`, `flight.cancelled` y `booking.ticket_issuing` se mantienen por compatibilidad con v1
          *     (los nuevos suscriptores deben usar `flight.status_changed`).
          * @example booking.confirmed
@@ -1519,13 +1519,13 @@ export interface components {
              * @enum {string}
              */
             specversion: "1.0";
-            /** @example ec.edu.epn.booking.vuelos.booking.confirmed */
+            /** @example booking.confirmed */
             type: string;
-            /** @example /aerolineas/ecoairlines/vuelos */
+            /** @example ecoairlines */
             source: string;
             /**
-             * @description Único por evento; los consumidores lo usan para deduplicar.
-             * @example evt-vue-000120
+             * @description Único por evento; los consumidores lo usan para deduplicar. Los eventos de vuelos usan un **UUID v4** (§8).
+             * @example 8f0c1c2e-4b7a-4d3e-9a51-2f6c7d8e9a10
              */
             id: string;
             /**
@@ -1562,7 +1562,7 @@ export interface components {
         };
         EventHoldCreated: components["schemas"]["CloudEventBase"] & {
             /** @enum {string} */
-            type?: "ec.edu.epn.booking.vuelos.hold.created";
+            type?: "hold.created";
             data?: {
                 /** Format: uuid */
                 holdId?: string;
@@ -1575,7 +1575,7 @@ export interface components {
         };
         EventHoldExpired: components["schemas"]["CloudEventBase"] & {
             /** @enum {string} */
-            type?: "ec.edu.epn.booking.vuelos.hold.expired";
+            type?: "hold.expired";
             data?: {
                 /** Format: uuid */
                 holdId?: string;
@@ -1587,12 +1587,12 @@ export interface components {
         };
         EventBookingConfirmed: components["schemas"]["CloudEventBase"] & {
             /** @enum {string} */
-            type?: "ec.edu.epn.booking.vuelos.booking.confirmed";
+            type?: "booking.confirmed";
             data?: components["schemas"]["BookingEventData"];
         };
         EventBookingFailed: components["schemas"]["CloudEventBase"] & {
             /** @enum {string} */
-            type?: "ec.edu.epn.booking.vuelos.booking.failed";
+            type?: "booking.failed";
             data?: components["schemas"]["BookingEventData"] & {
                 /** @example PNR_CREATION_FAILED */
                 errorCode?: string;
@@ -1600,7 +1600,7 @@ export interface components {
         };
         EventTicketIssued: components["schemas"]["CloudEventBase"] & {
             /** @enum {string} */
-            type?: "ec.edu.epn.booking.vuelos.booking.ticket_issued";
+            type?: "booking.ticket_issued";
             data?: components["schemas"]["BookingEventData"] & {
                 /** @example PAY-BKP-20261023-000981 */
                 paymentReference?: string;
@@ -1613,7 +1613,7 @@ export interface components {
         };
         EventBookingChanged: components["schemas"]["CloudEventBase"] & {
             /** @enum {string} */
-            type?: "ec.edu.epn.booking.vuelos.booking.changed" | "ec.edu.epn.booking.vuelos.booking.baggage_added" | "ec.edu.epn.booking.vuelos.booking.seat_changed";
+            type?: "booking.changed" | "booking.baggage_added" | "booking.seat_changed";
             data?: components["schemas"]["BookingEventData"] & {
                 /** @enum {string} */
                 changeType?: "DATE_CHANGE" | "BAGGAGE" | "SEAT";
@@ -1623,7 +1623,7 @@ export interface components {
         };
         EventBookingCancelled: components["schemas"]["CloudEventBase"] & {
             /** @enum {string} */
-            type?: "ec.edu.epn.booking.vuelos.booking.cancelled";
+            type?: "booking.cancelled";
             data?: components["schemas"]["BookingEventData"] & {
                 /** @example SAGA_COMPENSATION */
                 reasonCode?: string;
@@ -1637,7 +1637,7 @@ export interface components {
         };
         EventCheckedIn: components["schemas"]["CloudEventBase"] & {
             /** @enum {string} */
-            type?: "ec.edu.epn.booking.vuelos.booking.checked_in";
+            type?: "booking.checked_in";
             data?: components["schemas"]["BookingEventData"] & {
                 /** @example 2 */
                 passengersCheckedIn?: number;
@@ -1645,7 +1645,7 @@ export interface components {
         };
         EventFlightStatusChanged: components["schemas"]["CloudEventBase"] & {
             /** @enum {string} */
-            type?: "ec.edu.epn.booking.vuelos.flight.status_changed";
+            type?: "flight.status_changed";
             data?: {
                 /** @example AV1632 */
                 flightNumber?: string;
@@ -1668,9 +1668,9 @@ export interface components {
          * @description Cualquier evento publicado por la vertical de vuelos.
          * @example {
          *       "specversion": "1.0",
-         *       "type": "ec.edu.epn.booking.vuelos.booking.confirmed",
-         *       "source": "/aerolineas/ecoairlines/vuelos",
-         *       "id": "evt-vue-000120",
+         *       "type": "booking.confirmed",
+         *       "source": "ecoairlines",
+         *       "id": "8f0c1c2e-4b7a-4d3e-9a51-2f6c7d8e9a10",
          *       "time": "2026-10-23T10:05:12Z",
          *       "subject": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
          *       "datacontenttype": "application/json",

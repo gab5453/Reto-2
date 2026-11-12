@@ -226,7 +226,7 @@ describe('holds y stock a Booking (D33, D34)', () => {
     await stock.flush();
     expect(lastStock('EA102')).toMatchObject({ available_units: 160, correlationId: 'corr-hold-1' });
     const events = await store.outbox();
-    expect(events.at(-1)).toMatchObject({ type: 'ec.edu.epn.booking.vuelos.hold.created' });
+    expect(events.at(-1)).toMatchObject({ type: 'hold.created' });
     expect((events.at(-1)!.event as Any)['data']).toMatchObject({ holdId: hold.holdId, seatsHeld: 2 });
     // V2.11: el relé lo toma (con el dueño, para el filtro D40 de Webhooks) y, publicado, no se vuelve a tomar.
     const claimed = (await store.claimOutbox(100, 30_000)).find((e) => e.id === events.at(-1)!.id)!;
@@ -281,7 +281,7 @@ describe('holds y stock a Booking (D33, D34)', () => {
     }
     expect((await rpc('HoldService', 'GetHold', { holdId: hold.holdId }))['hold'].status).toBe('HOLD_STATUS_EXPIRED');
     const events = await store.outbox();
-    expect(events.some((e) => e.type === 'ec.edu.epn.booking.vuelos.hold.expired' && (e.event as Any)['data']['holdId'] === hold.holdId)).toBe(true);
+    expect(events.some((e) => e.type === 'hold.expired' && (e.event as Any)['data']['holdId'] === hold.holdId)).toBe(true);
     await stock.flush();
     expect(lastStock('EA100', 'ECONOMY', NEXT)).toMatchObject({ available_units: 162 });
   });

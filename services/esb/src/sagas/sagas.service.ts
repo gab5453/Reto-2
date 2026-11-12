@@ -4,7 +4,7 @@ import type { Caller } from '../clients/rest.client.js';
 import { UPSTREAMS, type Upstreams } from '../clients/upstreams.js';
 import { ESB_CONFIG, type EsbConfig } from '../config/config.js';
 import { EVENTS_PUBLISHER, type EventsPublisher } from '../inbound/events-publisher.js';
-import { stableUuid } from '../transversal/ids.js';
+import { stableEventId } from '../transversal/ids.js';
 import type { SagaRecord, StoredResponse } from '../repositories/esb.store.js';
 import { problemResponse } from '../router/router.service.js';
 import {
@@ -88,7 +88,7 @@ export class SagasService {
       // Compatibilidad con v1: la emisión quedó en curso (se responde 202). Un id estable: un reintento no lo duplica.
       if (status === 202 && booking['status'] === 'TICKET_ISSUING') {
         await this.events.publish(
-          { ...createCloudEvent({ name: 'booking.ticket_issuing', visibility: 'public', subject: bookingId, data: { bookingId, pnr: booking['pnr'], status: 'TICKET_ISSUING' } }), id: stableUuid(`${sagaId}:booking.ticket_issuing`) },
+          { ...createCloudEvent({ name: 'booking.ticket_issuing', visibility: 'public', subject: bookingId, data: { bookingId, pnr: booking['pnr'], status: 'TICKET_ISSUING' } }), id: stableEventId(`${sagaId}:booking.ticket_issuing`) },
           caller.ownerId,
         );
       }

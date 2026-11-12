@@ -110,7 +110,8 @@ Están agrupados por el microservicio de respuesta que debería implementarlos:
 ## 6. Eventos que deben publicar
 
 Se entregan a Booking por **webhooks** (y opcionalmente por RabbitMQ/Kafka) con
-`type = ec.edu.epn.booking.vuelos.<evento>`:
+`type = <evento>` (nombre corto, p. ej. `booking.checked_in`), `source = ecoairlines` e `id` UUID v4 (desde el 12/11/2026;
+antes `ec.edu.epn.booking.vuelos.<evento>`):
 
 | Evento | Cuándo |
 |---|---|

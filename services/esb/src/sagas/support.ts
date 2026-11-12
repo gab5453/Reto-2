@@ -2,7 +2,7 @@ import { AIRPORTS, createCloudEvent, type MoneyAmount, ProblemDetailsException, 
 import type { Upstreams } from '../clients/upstreams.js';
 import type { EsbConfig } from '../config/config.js';
 import type { EventsPublisher } from '../inbound/events-publisher.js';
-import { stableUuid } from '../transversal/ids.js';
+import { stableEventId, stableUuid } from '../transversal/ids.js';
 import { assertAmountMatches, assertBookingPaymentReference } from '../transversal/booking-reference.js';
 import type { SagaContext } from './engine.js';
 
@@ -121,7 +121,7 @@ export async function publishEvents(
   return saga.step('events', async () => {
     const ids: string[] = [];
     for (const [index, item] of list.entries()) {
-      const event = { ...createCloudEvent({ name: item.name, visibility: item.visibility ?? 'public', subject: item.subject, data: item.data }), id: stableUuid(`${saga.sagaId}:${index}:${item.name}`) };
+      const event = { ...createCloudEvent({ name: item.name, visibility: item.visibility ?? 'public', subject: item.subject, data: item.data }), id: stableEventId(`${saga.sagaId}:${index}:${item.name}`) };
       await events.publish(event, item.ownerId);
       ids.push(event.id);
     }

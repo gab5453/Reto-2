@@ -37,8 +37,8 @@ describe('MS.G.Offers → MS.G.Webhooks: evento hold.created (bus)', () => {
       .withContent({
         specversion: '1.0',
         id: uuid('3f2504e0-4f89-41d3-9a0c-0305e82c3301'),
-        source: like('/aerolineas/ecoairlines/vuelos'),
-        type: 'ec.edu.epn.booking.vuelos.hold.created',
+        source: like('ecoairlines'),
+        type: 'hold.created',
         time: datetime("yyyy-MM-dd'T'HH:mm:ss.SSSX", '2026-12-01T12:00:00.000Z'),
         subject: uuid('9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d'),
         datacontenttype: 'application/json',

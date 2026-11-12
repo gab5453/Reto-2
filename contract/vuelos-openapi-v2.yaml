@@ -110,8 +110,12 @@ info:
 
     ## 8. Eventos (CloudEvents v1.0)
     Un evento es un **hecho que ya ocurrió**; no es una validación (las validaciones son síncronas por REST).
-    * `type` = `ec.edu.epn.booking.vuelos.<evento>` · `source` = `/aerolineas/{codigo}/vuelos` · extensión `correlationid`.
-    * **Entrega a Booking:** webhooks (`POST /vuelos/webhooks`), firmados con HMAC-SHA256 (`X-Webhook-Signature`).
+    * `type` = `<evento>` (nombre corto: `booking.checked_in`) · `source` = `ecoairlines` · `id` = **UUID v4** único por evento
+      (deduplicación) · `time` ISO 8601 · `data` objeto · extensión `correlationid`. *Cambio del 12/11/2026, a pedido de Booking:
+      antes `type` = `ec.edu.epn.booking.vuelos.<evento>` y `source` = `/aerolineas/{codigo}/vuelos` (ver §13).*
+    * **Entrega a Booking:** webhooks (`POST /vuelos/webhooks`) con `Content-Type: application/cloudevents+json` (exacto) y
+      firmados con `X-Webhook-Signature: sha256=<HMAC-SHA256 en hex del cuerpo enviado>`. Booking responde 202 (recibido),
+      200 (duplicado por `id`), 401 (firma inválida), 400 (no cumple CloudEvents o `Content-Type`) y 413 (más de 1 MB).
     * **Bus interno opcional del ecosistema:** RabbitMQ exchange `booking.events` (routing key `vuelos.<evento>`) y
       Kafka topic `topic-ordenes-b2b` (key = `bookingId`).
     * **Feed de respaldo (outbox):** `GET /vuelos/eventos`.
@@ -213,6 +217,7 @@ info:
     | Ampliado | Respuesta de `cancel` (reembolso + restauración de inventario), `_links` HATEOAS, `salesChannel`, `ttlMinutes` del hold, `status` por asiento en el seatmap |
     | Ampliado | Webhooks entregan CloudEvents firmados; nuevos tipos de evento |
     | Nuevo | Encabezados `X-Correlation-Id`, `X-Request-Id`, `X-User-Id` en todo el contrato |
+    | **Cambio (12/11/2026)** | Eventos de vuelos (§8): `type` corto (`booking.checked_in`, antes `ec.edu.epn.booking.vuelos.booking.checked_in`), `source` = `ecoairlines` (antes `/aerolineas/ecoairlines/vuelos`) e `id` UUID v4. Lo pidió Booking (su webhook rechazaba el formato anterior con 400) y se priorizó sobre el formato acordado. Vale para los webhooks y para `GET /vuelos/eventos` |
 servers:
   - url: /api/v2
     description: Ruta relativa canónica v2 (detrás del gateway)
@@ -3215,7 +3220,7 @@ components:
     VuelosEventName:
       type: string
       description: |
-        Nombre corto del evento. El `type` CloudEvents es `ec.edu.epn.booking.vuelos.<nombre>`.
+        Nombre del evento; es también el `type` CloudEvents (desde el 12/11/2026, §8).
         `flight.schedule_changed`, `flight.cancelled` y `booking.ticket_issuing` se mantienen por compatibilidad con v1
         (los nuevos suscriptores deben usar `flight.status_changed`).
       enum:
@@ -3279,14 +3284,14 @@ components:
           example: '1.0'
         type:
           type: string
-          example: ec.edu.epn.booking.vuelos.booking.confirmed
+          example: booking.confirmed
         source:
           type: string
-          example: /aerolineas/ecoairlines/vuelos
+          example: ecoairlines
         id:
           type: string
-          description: Único por evento; los consumidores lo usan para deduplicar.
-          example: evt-vue-000120
+          description: Único por evento; los consumidores lo usan para deduplicar. Los eventos de vuelos usan un **UUID v4** (§8).
+          example: 8f0c1c2e-4b7a-4d3e-9a51-2f6c7d8e9a10
         time:
           type: string
           format: date-time
@@ -3336,7 +3341,7 @@ components:
           properties:
             type:
               type: string
-              enum: [ec.edu.epn.booking.vuelos.hold.created]
+              enum: [hold.created]
             data:
               type: object
               properties:
@@ -3351,7 +3356,7 @@ components:
           properties:
             type:
               type: string
-              enum: [ec.edu.epn.booking.vuelos.hold.expired]
+              enum: [hold.expired]
             data:
               type: object
               properties:
@@ -3365,7 +3370,7 @@ components:
           properties:
             type:
               type: string
-              enum: [ec.edu.epn.booking.vuelos.booking.confirmed]
+              enum: [booking.confirmed]
             data:
               $ref: '#/components/schemas/BookingEventData'
     EventBookingFailed:
@@ -3375,7 +3380,7 @@ components:
           properties:
             type:
               type: string
-              enum: [ec.edu.epn.booking.vuelos.booking.failed]
+              enum: [booking.failed]
             data:
               allOf:
                 - $ref: '#/components/schemas/BookingEventData'
@@ -3389,7 +3394,7 @@ components:
           properties:
             type:
               type: string
-              enum: [ec.edu.epn.booking.vuelos.booking.ticket_issued]
+              enum: [booking.ticket_issued]
             data:
               allOf:
                 - $ref: '#/components/schemas/BookingEventData'
@@ -3412,9 +3417,9 @@ components:
             type:
               type: string
               enum:
-                - ec.edu.epn.booking.vuelos.booking.changed
-                - ec.edu.epn.booking.vuelos.booking.baggage_added
-                - ec.edu.epn.booking.vuelos.booking.seat_changed
+                - booking.changed
+                - booking.baggage_added
+                - booking.seat_changed
             data:
               allOf:
                 - $ref: '#/components/schemas/BookingEventData'
@@ -3431,7 +3436,7 @@ components:
           properties:
             type:
               type: string
-              enum: [ec.edu.epn.booking.vuelos.booking.cancelled]
+              enum: [booking.cancelled]
             data:
               allOf:
                 - $ref: '#/components/schemas/BookingEventData'
@@ -3448,7 +3453,7 @@ components:
           properties:
             type:
               type: string
-              enum: [ec.edu.epn.booking.vuelos.booking.checked_in]
+              enum: [booking.checked_in]
             data:
               allOf:
                 - $ref: '#/components/schemas/BookingEventData'
@@ -3462,7 +3467,7 @@ components:
           properties:
             type:
               type: string
-              enum: [ec.edu.epn.booking.vuelos.flight.status_changed]
+              enum: [flight.status_changed]
             data:
               type: object
               properties:
@@ -3493,9 +3498,9 @@ components:
         - $ref: '#/components/schemas/EventFlightStatusChanged'
       example:
         specversion: '1.0'
-        type: ec.edu.epn.booking.vuelos.booking.confirmed
-        source: /aerolineas/ecoairlines/vuelos
-        id: evt-vue-000120
+        type: booking.confirmed
+        source: ecoairlines
+        id: 8f0c1c2e-4b7a-4d3e-9a51-2f6c7d8e9a10
         time: '2026-10-23T10:05:12Z'
         subject: 7c9e6679-7425-40de-944b-e07fc1f90ae7
         datacontenttype: application/json

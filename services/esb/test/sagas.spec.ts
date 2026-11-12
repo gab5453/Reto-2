@@ -362,6 +362,8 @@ describe('Crear reserva', () => {
     expect(types()).toEqual(['booking.confirmed', 'booking.ticket_issued']);
     expect(publisher.published[0].ownerId).toBe(OWNER);
     expect(publisher.published[0].event.correlationid).toBe('corr-sagas-v210');
+    // BKG-16: Booking solo acepta webhooks con un id UUID versión 4 (antes salían v5 y respondía 400).
+    for (const { event } of publisher.published) expect(event.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     const saga = await sagaOf('CREATE_BOOKING');
     expect(saga.status).toBe('COMPLETED');
     expect(saga.steps.every((s) => s.status === 'DONE')).toBe(true);

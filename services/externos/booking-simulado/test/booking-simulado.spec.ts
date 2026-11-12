@@ -46,22 +46,23 @@ const sendWebhook = (event: object, signature?: string) => {
     .send(body);
 };
 
-describe('booking-simulado — webhooks (contrato v2 §8)', () => {
+describe('booking-simulado — webhooks con las reglas reales de Booking (contrato v2 §8, BKG-16)', () => {
   const event = runWithCorrelation({ correlationId: 'corr-compra-1', requestId: 'r' }, () =>
     createCloudEvent({ name: 'booking.confirmed', visibility: 'public', subject: 'b-1', data: { bookingId: 'b-1', pnr: 'XK7P2Q', status: 'CONFIRMED' } }),
   );
 
-  it('acepta un CloudEvent firmado (204) y lo registra con su correlationid', async () => {
+  it('acepta un CloudEvent firmado con el formato del contrato (202) y lo registra con su correlationid', async () => {
     await request(app.getHttpServer()).delete('/simulador');
+    expect(event).toMatchObject({ type: 'booking.confirmed', source: 'ecoairlines' });
     const response = await sendWebhook(event);
-    expect(response.status).toBe(204);
+    expect(response.status).toBe(202);
     const received = await request(app.getHttpServer()).get('/simulador/webhooks?type=booking.confirmed');
     expect(received.body).toHaveLength(1);
     expect(received.body[0]).toMatchObject({ id: event.id, correlationId: 'corr-compra-1', headerCorrelationId: 'corr-compra-1', deliveries: 1 });
   });
 
-  it('un reintento con el mismo id no se duplica (solo cuenta la entrega)', async () => {
-    expect((await sendWebhook(event)).status).toBe(204);
+  it('un reintento con el mismo id es un duplicado: 200 y no se registra dos veces', async () => {
+    expect((await sendWebhook(event)).status).toBe(200);
     const received = await request(app.getHttpServer()).get('/simulador/webhooks');
     expect(received.body).toHaveLength(1);
     expect(received.body[0].deliveries).toBe(2);
@@ -73,13 +74,30 @@ describe('booking-simulado — webhooks (contrato v2 §8)', () => {
     expect(response.body).toMatchObject({ code: 'UNAUTHORIZED', correlation_id: 'corr-compra-1' });
   });
 
-  it('rechaza con 400 un evento que no es un CloudEvent público', async () => {
-    const internal = { ...event, type: 'ec.ecoairlines.internal.pricing.changed' };
-    expect((await sendWebhook(internal)).status).toBe(400);
-    const { correlationid: _omit, ...withoutCorrelation } = event;
-    const response = await sendWebhook(withoutCorrelation);
+  it('rechaza con 400 lo que Booking rechaza: id que no es UUID v4, type largo o interno, data que no es objeto', async () => {
+    const casos: [string, object][] = [
+      ['id', { ...event, id: 'f5b5377c-7b9e-50ba-9863-22891c3a39e3' }], // UUID v5: lo que enviábamos antes (BKG-16)
+      ['type', { ...event, type: 'ec.edu.epn.booking.vuelos.booking.confirmed' }], // formato anterior del contrato
+      ['type', { ...event, type: 'ec.ecoairlines.internal.pricing.changed' }],
+      ['data', { ...event, data: 'texto' }],
+      ['time', { ...event, time: '12/11/2026' }],
+    ];
+    for (const [campo, malo] of casos) {
+      const response = await sendWebhook(malo);
+      expect(response.status, campo).toBe(400);
+      expect(response.body.invalidParams.map((p: { name: string }) => p.name)).toContain(campo);
+    }
+  });
+
+  it('rechaza con 400 un Content-Type que no sea exactamente application/cloudevents+json', async () => {
+    const body = JSON.stringify(event);
+    const response = await request(app.getHttpServer()).post('/webhooks/vuelos').set('content-type', 'application/json').set('X-Webhook-Signature', signWebhook(webhookSecret(), body)).send(body);
     expect(response.status).toBe(400);
-    expect(response.body.invalidParams).toEqual([{ name: 'correlationid', reason: 'obligatorio en CloudEvents 1.0' }]);
+  });
+
+  it('correlationid es opcional para Booking (es una extensión de CloudEvents)', async () => {
+    const { correlationid: _omit, ...withoutCorrelation } = { ...event, id: '0b8c1f9e-2d3a-4c5b-8e6f-7a8b9c0d1e2f' };
+    expect((await sendWebhook(withoutCorrelation)).status).toBe(202);
   });
 });
 

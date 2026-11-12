@@ -112,6 +112,20 @@ describe('suscripciones', () => {
 });
 
 describe('entrega firmada y filtro D40', () => {
+  it('BKG-16: un evento guardado con el formato ANTERIOR sale con el del contrato vigente (type corto, source ecoairlines), en el webhook y en el feed', async () => {
+    received.length = 0;
+    const nuevo = event('flight.status_changed', { flightNumber: 'EA100', newStatus: 'DELAYED' });
+    const viejo = { ...nuevo, type: 'ec.edu.epn.booking.vuelos.flight.status_changed', source: '/aerolineas/ecoairlines/vuelos' };
+    await service.ingest(viejo, undefined);
+    await flush();
+    const toBooking = received.filter((r) => r.path === '/booking');
+    expect(toBooking).toHaveLength(1);
+    expect(toBooking[0]).toMatchObject({ signatureOk: true, body: { id: nuevo.id, type: 'flight.status_changed', source: 'ecoairlines' } });
+    expect(toBooking[0].raw).not.toContain('ec.edu.epn');
+    const feed = await esb('get', '/events?limit=100', PARTNER);
+    expect(feed.body.events.find((e: Any) => e.id === nuevo.id)).toMatchObject({ type: 'flight.status_changed', source: 'ecoairlines' });
+  });
+
   it('reserva de Booking → se entrega a Booking firmada, con X-Correlation-Id y SIN el dueño en el cuerpo', async () => {
     received.length = 0;
     const confirmed = event('booking.confirmed', { bookingId: randomUUID(), pnr: 'XK7P2Q', status: 'CONFIRMED' });
@@ -119,7 +133,7 @@ describe('entrega firmada y filtro D40', () => {
     await flush();
     const toBooking = received.filter((r) => r.path === '/booking');
     expect(toBooking).toHaveLength(1);
-    expect(toBooking[0]).toMatchObject({ signatureOk: true, correlationId: confirmed.correlationid, body: { id: confirmed.id, type: 'ec.edu.epn.booking.vuelos.booking.confirmed' } });
+    expect(toBooking[0]).toMatchObject({ signatureOk: true, correlationId: confirmed.correlationid, body: { id: confirmed.id, type: 'booking.confirmed' } });
     expect(toBooking[0].raw).not.toMatch(/usr-4f9a2c|partner:/);
     expect(received.filter((r) => r.path === '/admin')).toHaveLength(1); // el administrador recibe todo
   });
@@ -131,7 +145,7 @@ describe('entrega firmada y filtro D40', () => {
     await service.ingest(event('schedule.published', { publishId: randomUUID(), flights: [] }, 'timetable', 'internal'), undefined);
     await service.ingest(event('booking.confirmed', { bookingId: randomUUID() }), 'partner:OTRO_PARTNER:u1');
     await flush();
-    expect(received.filter((r) => r.path === '/booking').map((r) => r.body.type)).toEqual(['ec.edu.epn.booking.vuelos.flight.status_changed']);
+    expect(received.filter((r) => r.path === '/booking').map((r) => r.body.type)).toEqual(['flight.status_changed']);
     expect(received.filter((r) => r.path === '/admin')).toHaveLength(2);
     expect(received.every((r) => r.signatureOk)).toBe(true);
   });

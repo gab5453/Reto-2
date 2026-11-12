@@ -436,7 +436,7 @@ describe('entrada de eventos de Booking (D34)', () => {
     expect(offers.calls.filter((c) => c.rpc === 'TransitionBookingSeats')).toHaveLength(1);
     expect(offers.calls[0].request).toMatchObject({ bookingId: booking.bookingId, fromStatus: 'SEAT_STATUS_BOOKED', toStatus: 'SEAT_STATUS_TICKETED' });
     expect(booking.tickets.every((t) => t.status === 'ISSUED')).toBe(true);
-    const issued = publisher.published.filter((p) => p.event.type === 'ec.edu.epn.booking.vuelos.booking.ticket_issued');
+    const issued = publisher.published.filter((p) => p.event.type === 'booking.ticket_issued');
     expect(issued).toHaveLength(1);
     // Mismo proceso de negocio: el evento publicado y cada llamada llevan el correlationid de Booking.
     expect(issued[0].event.correlationid).toBe('corr-combo-booking-77');
@@ -504,7 +504,7 @@ describe('entrada de eventos de Booking (D34)', () => {
     await settle();
     expect(booking.status).toBe('FAILED');
     expect(JSON.parse(msg.calls('bookings', 'POST')[0].body)).toEqual({ errorCode: 'PAYMENT_NOT_AUTHORIZED', reason: 'Fondos insuficientes' });
-    expect(publisher.published.map((p) => p.event.type)).toEqual(['ec.edu.epn.booking.vuelos.booking.failed']);
+    expect(publisher.published.map((p) => p.event.type)).toEqual(['booking.failed']);
     const again = cloudEvent('payment.failed', { bookingId: booking.bookingId });
     await deliver(again);
     await settle();
