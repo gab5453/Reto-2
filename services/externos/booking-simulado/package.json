@@ -11,12 +11,12 @@
   },
   "dependencies": {
     "@ecoairlines/shared": "1.0.0",
-    "@grpc/grpc-js": "~1.14.5",
+    "@grpc/grpc-js": "~1.14.7",
     "@grpc/proto-loader": "~0.8.1",
     "@nestjs/common": "12.3.2",
     "@nestjs/core": "12.3.2",
     "@nestjs/platform-express": "12.3.2",
-    "class-validator": "^0.14.1",
+    "class-validator": "^0.15.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },
