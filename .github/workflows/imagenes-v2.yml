@@ -55,7 +55,7 @@ jobs:
       # El commit que probó la CI (en workflow_run, `github.sha` es el de la rama por defecto, no el probado).
       SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.SHA }}
 
