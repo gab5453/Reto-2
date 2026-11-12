@@ -70,7 +70,7 @@ jobs:
       # Siempre se compilan las 18 (con la caché, una sin cambios tarda segundos): así cada commit tiene TODAS sus imágenes y se
       # despliega una versión exacta y completa (y se puede volver a la anterior).
       - name: Compilar ${{ matrix.servicio.nombre }} (arm64)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: infra/docker/node-service.Dockerfile
