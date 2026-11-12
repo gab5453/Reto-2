@@ -3350,7 +3350,7 @@ sistema ENTERO levantado con docker compose y la web compilada como en producci�
 - **Pendiente del responsable:** el *gate* de calidad es una opción de GitHub (*Settings → Branches → Required status checks*,
   S-7 en `Seguridad.md`).
 
-### Despliegue · CD-1 — Imágenes en GitHub y despliegue por `pull` (opción B) — ✅ HECHA (11/11), falta el primer despliegue
+### Despliegue · CD-1 — Imágenes en GitHub y despliegue por `pull` (opción B) — ✅ HECHA (11/11), desplegada el 12/11
 
 La VM ya no compila (compilar las 18 imágenes la dejaba ~15–20 min degradada, incidente del 09–10/11).
 - **`.github/workflows/imagenes-v2.yml` reactivado** (estaba en pausa desde el 02/11): corre con `workflow_run` cuando la CI termina
@@ -3369,3 +3369,9 @@ La VM ya no compila (compilar las 18 imágenes la dejaba ~15–20 min degradada,
   libres y, al final, borra las imágenes que ningún contenedor usa (las compiladas en la VM).
 - **Pendiente del responsable:** hacer públicos los 18 paquetes en GHCR (se crean privados) o `docker login` en la VM, y el primer
   despliegue real con el script.
+- **Primer despliegue real (12/11, lo ejecutó el responsable):** versión `dd490f2`. CI en verde → «Imágenes v2» compiló las 18
+  (la ejecución de la CI cancelada no compiló nada: el gate funcionó). Despliegue de 14:50 a 15:03 UTC sin compilar en la VM; los 26
+  contenedores sanos; humo 5/5; 67 reservas y 10 usuarios intactos; disco del 83 % al 44 % (caché de compilación e imágenes
+  viejas borradas); 0 errores del ESB. PostgreSQL y RabbitMQ se recrearon porque su etiqueta traía una versión nueva (datos en
+  volúmenes). Los paquetes de GHCR salieron públicos solos (la cuenta hereda la visibilidad del repositorio). Lección: en
+  PowerShell `bash` abre WSL; el script va en Git Bash.
