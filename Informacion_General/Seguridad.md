@@ -106,14 +106,14 @@ Las **reglas de arquitectura** (por ejemplo, que un MS de respuesta solo hable c
 | S-1 | **Actualizar las dependencias de desarrollo con avisos** | ✅ **Hecha** (12/11) | Vitest y `@vitest/coverage-v8` 4.1.12 en la raíz; `vite` 8.3.5 en la raíz (vía Vitest) y en la web (corrige el aviso alto); `rolldown` 1.2.15. Lo que queda es moderado o bajo, de herramientas |
 | S-2 | **Revisión de dependencias en la CI** | ✅ **Hecha** (12/11) | `scripts/ci/auditoria.mjs` en la etapa de calidad y en la de la web: **falla con un aviso alto o crítico en producción**, salvo excepciones con fecha de vencimiento (hoy, solo la de `@nestjs/graphql`, hasta el 18/11). Los de desarrollo solo se informan. Escribe el resumen en cada ejecución |
 | S-3 | **Dependabot y secret scanning de GitHub** | ✅ Configurado (12/11); falta activarlo | `.github/dependabot.yml`: npm (raíz y web), GitHub Actions y la imagen base de Docker, semanal o mensual, con **`cooldown` de 14 días** (la regla del proyecto), las menores agrupadas en una sola PR y **sin versiones mayores** de npm ni de Node (se migran a propósito; al activarse abrió 14 PR, varias mayores). **El responsable activa** en *Settings → Advanced Security*: *Dependabot alerts*, *Dependabot security updates*, *Secret scanning* y *Push protection* (gratis en un repositorio público) |
-| S-4 | **Cambiar la contraseña del ADMIN de demostración** al terminar la evaluación | Bajo | Una variable en `infra/cloud/.env` (`ADMIN_PASSWORD`) y reiniciar Identity |
+| S-4 | ~~Cambiar la contraseña del ADMIN de demostración~~ | **Descartada por el responsable** (12/11) | Se mantiene la contraseña publicada (riesgo aceptado el 04/11, sección 3). Si algún día se quisiera cambiar: `ADMIN_PASSWORD` en `infra/cloud/.env` y reiniciar Identity |
 | S-5 | **CSP y HSTS en la web** | Medio | Agregar a `staticwebapp.config.json`: `Content-Security-Policy` con `connect-src` al gateway (https y wss) y a la Payment API, y `Strict-Transport-Security`. Requiere probar la web completa: una CSP mal escrita rompe el pago o el WebSocket |
 | S-6 | **ESLint con reglas de tipos** | Medio | Ya está en el plan de pruebas (CI-2): detecta promesas olvidadas, que en las sagas pueden dejar operaciones a medias |
 | S-7 | **Proteger la rama** en GitHub | Bajo | *Required status checks*: no se puede fusionar con la CI en rojo (el «gate» del PDF de la Semana 9). Útil si se empieza a trabajar con pull requests |
 | S-8 | Revisar las imágenes Docker con **Trivy** | Medio | La opción B ya está (CD-1): un paso de Trivy en `imagenes-v2.yml` revisaría cada imagen antes de subirla. Las imágenes no llevan secretos (los recibe cada servicio de `cloud/.env` al arrancar) |
 
-**Estado (12/11):** S-0 (salvo `@nestjs/graphql`, desde el 18/11), S-1, S-2 y S-3 hechas. Quedan: activar S-3 en GitHub, S-4 al
-terminar la evaluación, y S-5 a S-8 como mejoras opcionales (S-5 conviene solo si queda tiempo, porque hay que probar la web
+**Estado (12/11):** S-0 (salvo `@nestjs/graphql`, desde el 18/11), S-1, S-2 y S-3 hechas. Quedan: activar S-3 en GitHub (el responsable lo activó el 12/11), S-4 descartada por el
+responsable, y S-5 a S-8 como mejoras opcionales (S-5 conviene solo si queda tiempo, porque hay que probar la web
 completa después de agregarla).
 
 **Cómo se actualizó (lección de SEG-1):** `npm audit fix` y `npm dedupe` toman la versión **más nueva**, que puede tener días (el

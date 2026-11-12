@@ -1,3 +1,4 @@
+import { guardPool } from '@ecoairlines/shared';
 import pg from 'pg';
 import {
   type AircraftRecord,
@@ -213,7 +214,7 @@ export class PostgresScheduleRepository implements ScheduleRepository {
   constructor(connectionString: string) {
     // `date` (OID 1082) como texto YYYY-MM-DD: sin convertirlo a la zona horaria del proceso.
     const types = { getTypeParser: (oid: number, format?: 'text' | 'binary') => (oid === 1082 ? (value: string) => value : pg.types.getTypeParser(oid, format)) };
-    this.pool = new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000, types: types });
+    this.pool = guardPool(new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000, types: types }), 'ms-g-schedule');
   }
 
   async init(): Promise<void> {

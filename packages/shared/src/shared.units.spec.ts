@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events';
+import { Logger } from '@nestjs/common';
 import type { Request } from 'express';
 import type { TokenVerifier } from './auth/service-token.guard.js';
 import { CircuitBreaker, isUnavailable } from './clients/circuit-breaker.js';
@@ -17,6 +19,7 @@ import {
   seatsPerRow,
   totalSeats,
 } from './domain/aircraft.js';
+import { guardPool } from './database/pool.js';
 import { AIRPORTS, distanceKm } from './domain/airports.js';
 import { applyDiscount, formatCents, moneyFromCents, sameAmount, scaleMoney, sumMoney, toCents } from './domain/money.js';
 import { countPassengers, countsByType, resolvePassengerCounts, seatsRequired } from './domain/passenger-counts.js';
@@ -340,5 +343,26 @@ describe('authenticate: quién llama a un MS de respuesta (D22, D29)', () => {
   it('ownerOf: un partner sin usuario usa la huella del dispositivo, y sin ninguna → 400', () => {
     expect(ownerOf({ kind: 'partner', clientId: 'BOOKING_PROTOTIPO', scopes: [], fingerprint: 'fp1' })).toBe('partner:BOOKING_PROTOTIPO:fp:fp1');
     expect(() => ownerOf({ kind: 'partner', clientId: 'BOOKING_PROTOTIPO', scopes: [] })).toThrow(ProblemDetailsException);
+  });
+});
+
+describe('guardPool: una conexión inactiva que se cae no tumba el proceso (hallazgo de E2E-1)', () => {
+  const caida = () => Object.assign(new Error('terminating connection due to administrator command'), { code: '57P01' });
+
+  it('sin guardPool, el "error" del pool se lanza (en Node, sin manejador, termina el proceso)', () => {
+    const pool = new EventEmitter();
+    expect(() => pool.emit('error', caida())).toThrow('terminating connection');
+  });
+
+  it('con guardPool, el error se registra como aviso con el servicio y el proceso sigue', () => {
+    const aviso = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const pool = guardPool(new EventEmitter(), 'esb');
+    expect(() => pool.emit('error', caida())).not.toThrow();
+    expect(aviso).toHaveBeenCalledWith(expect.stringContaining('[esb] PostgreSQL cerró una conexión inactiva (terminating connection'));
+  });
+
+  it('devuelve el mismo pool (se usa en línea: this.pool = guardPool(new pg.Pool(…), servicio))', () => {
+    const pool = new EventEmitter();
+    expect(guardPool(pool, 'x')).toBe(pool);
   });
 });

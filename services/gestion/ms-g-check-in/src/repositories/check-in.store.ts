@@ -1,3 +1,4 @@
+import { guardPool } from '@ecoairlines/shared';
 import pg from 'pg';
 import type { AssistanceReadyRecord, CheckInRecord } from '../domain/boarding.js';
 
@@ -147,7 +148,7 @@ export class PostgresCheckInStore implements CheckInStore {
   private readonly pool: pg.Pool;
 
   constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000 });
+    this.pool = guardPool(new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000 }), 'ms-g-check-in');
   }
   async init(): Promise<void> {
     await this.pool.query(SCHEMA);

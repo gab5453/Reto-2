@@ -1,3 +1,4 @@
+import { guardPool } from '@ecoairlines/shared';
 import pg from 'pg';
 import type { PaymentMethodRecord, PaymentRecord, RefundRecord } from '../domain/payments.js';
 
@@ -190,9 +191,7 @@ export class PostgresPaymentsStore implements PaymentsStore {
   private readonly pool: pg.Pool;
 
   constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString, max: 5 });
-    // Un error de una conexión inactiva (la base se reinició) no debe tumbar el proceso.
-    this.pool.on('error', () => undefined);
+    this.pool = guardPool(new pg.Pool({ connectionString, max: 5 }), 'payment-api');
   }
 
   async init(): Promise<void> {

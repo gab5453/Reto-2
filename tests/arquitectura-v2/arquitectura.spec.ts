@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url';
  *    base de datos.
  * 7. El gateway solo habla con los MS de respuesta (V2.13, PLAN.md §4.4): no nombra al ESB (su URL ni sus rutas
  *    `/router`, `/sagas`, `/composition`) ni a un MS.G, ni usa gRPC, SOAP, RabbitMQ o una base de datos.
+ * 8. Todo pool de PostgreSQL (`new pg.Pool(…)`) se protege con `guardPool` de la librería compartida: sin manejador de
+ *    `'error'`, una conexión inactiva que PostgreSQL corta (se reinició la base) termina el proceso (hallazgo de E2E-1, 11/11).
  * Cada regla tiene además un caso sintético que comprueba que SÍ detecta la violación (para que no pase en vacío mientras
  * hay pocos servicios).
  */
@@ -108,6 +110,14 @@ export function bookingViolations(source: string, own: Workspace): string[] {
   return match ? [`usa ${match[0]}: hacia Booking solo hablan Offers, Webhooks y el ESB`] : [];
 }
 
+/** Regla 8: cada `new pg.Pool(…)` está envuelto en `guardPool(…)` (sin contar los comentarios). */
+export function poolViolations(source: string): string[] {
+  const code = withoutComments(source);
+  const pools = code.match(/new pg\.Pool\(/g)?.length ?? 0;
+  const guarded = code.match(/guardPool\(\s*new pg\.Pool\(/g)?.length ?? 0;
+  return pools > guarded ? [`${pools - guarded} pg.Pool sin guardPool: una conexión que PostgreSQL corta tumbaría el proceso`] : [];
+}
+
 describe('arquitectura del Reto 2 (microservicios)', () => {
   const all = workspaces();
 
@@ -119,10 +129,10 @@ describe('arquitectura del Reto 2 (microservicios)', () => {
     expect(all.filter((w) => w.kind === 'respuesta').map((w) => w.name).sort()).toEqual(['ms-admin', 'ms-clientes', 'ms-postventa', 'ms-reservas', 'ms-vuelos']);
   });
 
-  it.each(all.map((w) => [w.name, w] as const))('%s respeta las reglas 1 a 6', (_name, workspace) => {
+  it.each(all.map((w) => [w.name, w] as const))('%s respeta las reglas 1 a 8', (_name, workspace) => {
     const errors = sourceFiles(workspace.dir).flatMap((file) => {
       const source = readFileSync(file, 'utf8');
-      return [...importViolations(file, source, workspace), ...crossMsgViolations(source, workspace), ...bookingViolations(source, workspace), ...(file.includes(`${sep}src${sep}`) ? [...responseViolations(source, workspace), ...gatewayViolations(source, workspace)] : [])].map(
+      return [...importViolations(file, source, workspace), ...crossMsgViolations(source, workspace), ...bookingViolations(source, workspace), ...(file.includes(`${sep}src${sep}`) ? [...responseViolations(source, workspace), ...gatewayViolations(source, workspace), ...poolViolations(source)] : [])].map(
         (error) => `${relative(ROOT, file)}: ${error}`,
       );
     });
@@ -193,6 +203,14 @@ const x = 1;`, gateway)).toEqual([]);
       expect(bookingViolations(`process.env.BOOKING_GRPC_ADDRESS`, bookings)).toHaveLength(1);
       // Identity autentica al partner Booking sin hablarle: su secreto y su clientId no son comunicación.
       expect(bookingViolations(`env['BOOKING_CLIENT_SECRET']; const id = 'BOOKING_PROTOTIPO';`, bookings)).toEqual([]);
+    });
+
+    it('regla 8: todo pg.Pool se protege con guardPool', () => {
+      expect(poolViolations(`this.pool = new pg.Pool({ connectionString });`)).toHaveLength(1);
+      expect(poolViolations(`this.pool = guardPool(new pg.Pool({ connectionString }), 'esb');`)).toEqual([]);
+      expect(poolViolations(`// antes: new pg.Pool({ connectionString })
+this.pool = guardPool(new pg.Pool({}), 'x');`)).toEqual([]);
+      expect(poolViolations(`const a = guardPool(new pg.Pool({}), 'x'); const b = new pg.Pool({});`)).toHaveLength(1);
     });
   });
 });

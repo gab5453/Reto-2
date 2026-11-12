@@ -63,7 +63,10 @@ export function AdminTelemetryPage() {
   // proceso (T-2): ya no hace falta elegir cuántas horas buscar.
   const from = params.get('desde') ?? undefined;
   const to = params.get('hasta') ?? undefined;
-  const key = `${searched}|${from ?? ''}|${to ?? ''}`;
+  // Cada «Buscar» cuenta como búsqueda nueva aunque el ID sea el mismo: los pasos de un proceso reciente llegan a Loki y Tempo
+  // unos segundos después, y volver a buscar debe traerlos (antes había que recargar la página).
+  const [attempt, setAttempt] = useState(0);
+  const key = `${searched}|${from ?? ''}|${to ?? ''}|${attempt}`;
   const [correlationId, setCorrelationId] = useState(searched);
   const [result, setResult] = useState<{ key: string; trace?: CorrelationTrace | null; error?: unknown } | null>(null);
 
@@ -132,7 +135,9 @@ export function AdminTelemetryPage() {
   const search = (event: FormEvent) => {
     event.preventDefault();
     const value = correlationId.trim();
-    if (value) setParams({ correlationId: value });
+    if (!value) return;
+    setParams({ correlationId: value });
+    setAttempt((count) => count + 1);
   };
 
   const services = health.value ?? [];

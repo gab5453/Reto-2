@@ -3405,3 +3405,22 @@ La VM ya no compila (compilar las 18 imágenes la dejaba ~15–20 min degradada,
 - **Dependabot abrió 14 PR al activarse** (normal la primera vez). Casi todas fallaron por ese lockfile de la web, y varias eran
   versiones MAYORES (Vitest 5, TypeScript 7, Node 26, protobufjs 8, `@graphql-tools` 11–13). Ajuste: se ignoran las mayores de npm
   y de la imagen de Node (se migran a propósito, no en una PR semanal); las de GitHub Actions sí se proponen.
+
+### Correcciones · Hallazgos de E2E-1: pools de PostgreSQL y búsqueda de Telemetría — ✅ HECHA (12/11)
+
+- **Los servicios ya no se caen si PostgreSQL corta sus conexiones** (hallazgo 1 de E2E-1: el 11/11 el ESB terminó con
+  `Exited (1)` al reiniciarse PostgreSQL). Nueva función `guardPool(pool, servicio)` en `@ecoairlines/shared`
+  (`packages/shared/src/database/pool.ts`): maneja el `'error'` del pool con un aviso y el pool abre otra conexión en la
+  próxima consulta. La usan los **11** servicios con PostgreSQL (la Payment API ignoraba el error en silencio; ahora lo registra).
+  - Prueba unitaria: sin `guardPool` el `'error'` se lanza; con él se registra el aviso con el servicio.
+  - Prueba con **PostgreSQL real** (`pool.postgres.spec.ts`, en `npm run test:infra` y en la CI): corta con
+    `pg_terminate_backend` las conexiones de la prueba (solo las suyas, por `application_name`) y comprueba que el proceso sigue
+    y la siguiente consulta funciona. **Sin `guardPool` falla con el mismo error que tumbó al ESB** (`terminating connection due
+    to administrator command`).
+  - **Regla de arquitectura 8** (`arquitectura.spec.ts`): todo `new pg.Pool(…)` debe ir dentro de `guardPool(…)`; quitarlo de
+    un servicio hace fallar la prueba con el archivo y el motivo.
+- **Telemetría: «Buscar» con el mismo correlation ID vuelve a consultar** (hallazgo 2). El ID vive en la URL y, si no cambiaba,
+  la web no repetía la búsqueda: los pasos que llegaban a Loki unos segundos después solo se veían recargando. Ahora cada
+  «Buscar» cuenta como una búsqueda nueva (`AdminTelemetryPage.tsx`). E-7 dejó de recargar la página entre reintentos: vuelve a
+  pulsar «Buscar» y espera la consulta; sin la corrección, el segundo clic no consulta y E-7 falla.
+- **S-4 descartada** por el responsable: se mantiene la contraseña del ADMIN de demostración (riesgo aceptado el 04/11).

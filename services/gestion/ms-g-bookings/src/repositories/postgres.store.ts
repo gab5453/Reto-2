@@ -1,3 +1,4 @@
+import { guardPool } from '@ecoairlines/shared';
 import pg from 'pg';
 import type { AssistanceRecord, BookingRecord, DocumentClaim, PaymentRecord } from '../domain/model.js';
 import { segmentsOf } from '../domain/rules.js';
@@ -99,7 +100,7 @@ export class PostgresBookingsStore implements BookingsStore {
   private readonly pool: pg.Pool;
 
   constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString, max: 10, connectionTimeoutMillis: 5_000 });
+    this.pool = guardPool(new pg.Pool({ connectionString, max: 10, connectionTimeoutMillis: 5_000 }), 'ms-g-bookings');
   }
 
   async init(): Promise<void> {

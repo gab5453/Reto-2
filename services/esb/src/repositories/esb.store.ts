@@ -1,3 +1,4 @@
+import { guardPool } from '@ecoairlines/shared';
 import pg from 'pg';
 import type { CloudEvent } from '@ecoairlines/shared';
 import type { OutboxEntry, OutboxSource } from '@ecoairlines/shared/bus/outbox.js';
@@ -425,7 +426,7 @@ export class PostgresEsbStore implements EsbStore {
   private readonly pool: pg.Pool;
 
   constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString, max: 10, connectionTimeoutMillis: 5_000 });
+    this.pool = guardPool(new pg.Pool({ connectionString, max: 10, connectionTimeoutMillis: 5_000 }), 'esb');
   }
   async init() {
     await this.pool.query(SCHEMA);

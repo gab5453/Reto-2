@@ -1,3 +1,4 @@
+import { guardPool } from '@ecoairlines/shared';
 import pg from 'pg';
 import type { FlightState, ScheduledFlightRecord, StatusChangeRecord } from '../domain/status.js';
 
@@ -148,7 +149,7 @@ export class PostgresFlightStatusStore implements FlightStatusStore {
 
   constructor(connectionString: string) {
     const types = { getTypeParser: (oid: number, format?: 'text' | 'binary') => (oid === 1082 ? (value: string) => value : pg.types.getTypeParser(oid, format)) };
-    this.pool = new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000, types: types });
+    this.pool = guardPool(new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000, types: types }), 'ms-g-flight-status');
   }
   async init(): Promise<void> {
     await this.pool.query(SCHEMA);

@@ -1,3 +1,4 @@
+import { guardPool } from '@ecoairlines/shared';
 import pg from 'pg';
 import type { CancellationQuote, DateChangeOffer } from '../domain/rules.js';
 
@@ -105,7 +106,7 @@ export class PostgresPostSaleStore implements PostSaleStore {
   private readonly pool: pg.Pool;
 
   constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000 });
+    this.pool = guardPool(new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000 }), 'ms-g-post-sale');
   }
   async init(): Promise<void> {
     await this.pool.query(SCHEMA);

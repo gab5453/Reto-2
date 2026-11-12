@@ -7,6 +7,7 @@ export * from './correlation/correlation.js';
 export * from './problem-details/problem-details.js';
 export * from './problem-details/problem-details.filter.js';
 export * from './logging/logging.js';
+export * from './database/pool.js';
 export * from './health/health.js';
 export * from './cloudevents/cloudevents.js';
 export * from './service/service.js';

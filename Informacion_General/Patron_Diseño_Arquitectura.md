@@ -296,6 +296,7 @@ Las reglas del diseño no son solo documentación: **las pruebas las comprueban*
 | 5 | Solo Offers, Webhooks y el ESB hablan con Booking |
 | 6 | Un MS de respuesta solo habla con el ESB (no nombra un MS.G, no usa gRPC, SOAP ni una base de datos) |
 | 7 | El gateway solo habla con los 5 MS de respuesta |
+| 8 | Todo pool de PostgreSQL se crea con `guardPool` (una conexión que la base corta no tumba el servicio) |
 
 Cada regla tiene además un caso sintético que comprueba que la prueba **sí detecta** la violación.
 

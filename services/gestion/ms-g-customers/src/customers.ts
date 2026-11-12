@@ -3,7 +3,7 @@ import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, Length, Matches, MaxLen
 import pg from 'pg';
 import { Body, Controller, createParamDecorator, type ExecutionContext, Get, Inject, Injectable, Put, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { ProblemDetailsException, ServiceTokenGuard } from '@ecoairlines/shared';
+import { guardPool, ProblemDetailsException, ServiceTokenGuard } from '@ecoairlines/shared';
 
 /**
  * MS.G.Customers (contract/ms-g-customers.openapi.yaml 1.1.0): el perfil del cliente de NUESTRA web (para autocompletar el
@@ -73,7 +73,7 @@ export class PostgresProfilesStore implements ProfilesStore {
   readonly kind = 'postgres' as const;
   private readonly pool: pg.Pool;
   constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000 });
+    this.pool = guardPool(new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000 }), 'ms-g-customers');
   }
   async init() {
     await this.pool.query('CREATE TABLE IF NOT EXISTS profiles (owner_id uuid PRIMARY KEY, data jsonb NOT NULL, updated_at timestamptz NOT NULL)');

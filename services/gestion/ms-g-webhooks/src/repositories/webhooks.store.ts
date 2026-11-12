@@ -1,3 +1,4 @@
+import { guardPool } from '@ecoairlines/shared';
 import pg from 'pg';
 import type { DeliveryRecord, EventRecord, SubscriptionRecord } from '../domain/rules.js';
 
@@ -198,7 +199,7 @@ export class PostgresWebhooksStore implements WebhooksStore {
   private readonly pool: pg.Pool;
 
   constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000 });
+    this.pool = guardPool(new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000 }), 'ms-g-webhooks');
   }
   async init() {
     await this.pool.query(SCHEMA);

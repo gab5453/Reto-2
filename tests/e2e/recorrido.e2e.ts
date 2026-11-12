@@ -16,13 +16,16 @@ test('E-7: con el correlation ID de una compra, el administrador ve su recorrido
   await ingresar(page, USUARIOS.admin);
   const tarjeta = page.locator('section', { has: page.getByRole('heading', { name: 'Buscar un proceso por correlation ID' }) });
 
-  // Los logs y las trazas llegan a Loki y Tempo en lotes (≈1–3 s): se repite la búsqueda hasta que estén los pasos de la compra
-  // en varios servicios. Cada intento recarga la pantalla, porque la web no repite una búsqueda con el mismo ID.
+  // Los logs y las trazas llegan a Loki y Tempo en lotes (≈1–3 s): el administrador vuelve a pulsar «Buscar» con el MISMO ID
+  // hasta que estén los pasos de la compra en varios servicios. Cada clic debe consultar de nuevo (antes la web no repetía la
+  // búsqueda y había que recargar: hallazgo de E2E-1, corregido); se espera esa respuesta para no leer el resultado anterior.
+  await page.goto('/admin/telemetria');
+  await tarjeta.getByLabel('X-Correlation-Id').fill(correlationId);
   let texto = '';
   await expect(async () => {
-    await page.goto('/admin/telemetria');
-    await tarjeta.getByLabel('X-Correlation-Id').fill(correlationId);
+    const respuesta = page.waitForResponse((r) => r.url().includes('/api/graphql') && (r.request().postData() ?? '').includes(correlationId));
     await tarjeta.getByRole('button', { name: 'Buscar' }).click();
+    await respuesta;
     await expect(tarjeta.getByText(/\d+ pasos en \d+ servicios/)).toBeVisible({ timeout: 10_000 });
     texto = (await tarjeta.innerText()).replace(/\s+/g, ' ');
     // La compra pasó por varios servicios: MS de respuesta, ESB, MS.G, Payment API…

@@ -1,3 +1,4 @@
+import { guardPool } from '@ecoairlines/shared';
 import pg from 'pg';
 import type { AccountStatus, PartnerRecord, PartnerScope, RoleName, UserRecord } from '../domain/model.js';
 import { type AdminChange, encodeCursor, type IdentityRepository, type Page, type PartnerPatch, type UserFilter } from './identity.repository.js';
@@ -85,7 +86,7 @@ export class PostgresIdentityRepository implements IdentityRepository {
   private readonly pool: pg.Pool;
 
   constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000 });
+    this.pool = guardPool(new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000 }), 'ms-g-identity');
   }
 
   async init(): Promise<void> {
