@@ -1,0 +1,65 @@
+# CD-1 (Informacion_General/Pruebas.md §10, opción B): la nube con las imágenes que compiló GitHub Actions (.github/workflows/
+# imagenes-v2.yml), en lugar de compilarlas en la VM. Se agrega DESPUÉS de cloud/docker-compose.cloud.yml:
+#   IMAGE_TAG=<sha del commit> docker compose -f docker-compose.yml -f cloud/docker-compose.cloud.yml \
+#     -f cloud/docker-compose.imagenes.yml --env-file cloud/.env pull && ... up -d
+# Lo ejecuta scripts/cloud/desplegar-imagenes.sh. IMAGE_TAG es obligatorio: siempre se despliega una versión exacta (y volver a la
+# anterior es desplegar su sha). Las imágenes no llevan secretos: los recibe cada servicio de cloud/.env al arrancar.
+# `pull_policy: missing` + `build` intacto: si alguna vez hiciera falta, `--build` sigue compilando en la VM como antes.
+x-imagen: &imagen
+  pull_policy: missing
+
+services:
+  booking-simulado:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-booking-simulado:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  esb:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-esb:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  gateway:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-gateway:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  ms-admin:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-ms-admin:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  ms-clientes:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-ms-clientes:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  ms-g-bookings:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-ms-g-bookings:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  ms-g-check-in:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-ms-g-check-in:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  ms-g-customers:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-ms-g-customers:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  ms-g-flight-status:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-ms-g-flight-status:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  ms-g-identity:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-ms-g-identity:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  ms-g-offers:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-ms-g-offers:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  ms-g-post-sale:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-ms-g-post-sale:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  ms-g-schedule:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-ms-g-schedule:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  ms-g-webhooks:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-ms-g-webhooks:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  ms-postventa:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-ms-postventa:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  ms-reservas:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-ms-reservas:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  ms-vuelos:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-ms-vuelos:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64
+  payment-api:
+    <<: *imagen
+    image: ghcr.io/${GHCR_OWNER:-gab5453}/ecoairlines-payment-api:${IMAGE_TAG:?falta IMAGE_TAG (sha del commit)}-arm64

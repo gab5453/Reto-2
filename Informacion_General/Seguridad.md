@@ -110,7 +110,7 @@ Las **reglas de arquitectura** (por ejemplo, que un MS de respuesta solo hable c
 | S-5 | **CSP y HSTS en la web** | Medio | Agregar a `staticwebapp.config.json`: `Content-Security-Policy` con `connect-src` al gateway (https y wss) y a la Payment API, y `Strict-Transport-Security`. Requiere probar la web completa: una CSP mal escrita rompe el pago o el WebSocket |
 | S-6 | **ESLint con reglas de tipos** | Medio | Ya está en el plan de pruebas (CI-2): detecta promesas olvidadas, que en las sagas pueden dejar operaciones a medias |
 | S-7 | **Proteger la rama** en GitHub | Bajo | *Required status checks*: no se puede fusionar con la CI en rojo (el «gate» del PDF de la Semana 9). Útil si se empieza a trabajar con pull requests |
-| S-8 | Revisar las imágenes Docker con **Trivy** | Medio | Solo si se adopta la opción B de despliegue (imágenes en GitHub, `Pruebas.md` §10) |
+| S-8 | Revisar las imágenes Docker con **Trivy** | Medio | La opción B ya está (CD-1): un paso de Trivy en `imagenes-v2.yml` revisaría cada imagen antes de subirla. Las imágenes no llevan secretos (los recibe cada servicio de `cloud/.env` al arrancar) |
 
 **Recomendación:** **S-0 primero** (son dependencias que corren en producción), y luego S-1, S-3 y S-4, que son de bajo esfuerzo y cubren lo más visible. S-5 conviene solo si queda tiempo, porque hay que
 probar la web completa después de agregarla.

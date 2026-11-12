@@ -1,78 +1,30 @@
 name: Imágenes v2 (GitHub Container Registry)
 
-# V2.20: prueba el monorepo y compila por servicio, solo lo que cambió, en amd64 y arm64 (la VM de Azure es ARM). Las imágenes van a
-# ghcr.io/<dueño>/ecoairlines-<servicio>:<sha>-<arch> y :latest-<arch>, para que el servidor las descargue en vez de compilarlas
-# (PASOS_FINALES.md §3). Cambiar packages/shared, el Dockerfile o las dependencias recompila todos los servicios.
-#
-# EN PAUSA (02/11): solo se ejecuta a mano. Por ahora el sistema se mantiene en la VM y compila allí (scripts/cloud/desplegar.sh).
+# CD-1 (Informacion_General/Pruebas.md §10, opción B): cuando la CI termina EN VERDE en la rama del Reto 2, se compilan las 18
+# imágenes para ARM64 (la VM de Azure es ARM) y se suben a ghcr.io/<dueño>/ecoairlines-<servicio>, con la etiqueta del commit
+# (`<sha>-arm64`) y `latest-arm64`. La VM ya no compila: el responsable despliega una versión exacta con
+#   bash scripts/cloud/desplegar-imagenes.sh <host> <sha>
+# Nada se despliega solo: subir una imagen no cambia la nube. Las imágenes no llevan secretos (se pasan al arrancar, cloud/.env).
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [feature/v2-microservicios]
   workflow_dispatch:
-    inputs:
-      todas:
-        description: Compilar todos los servicios aunque no hayan cambiado
-        type: boolean
-        default: false
 
 concurrency:
-  group: imagenes-v2-${{ github.ref }}
+  group: imagenes-v2
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  pruebas:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Instalar dependencias
-        run: npm ci
-
-      - name: Tipos, lint y pruebas v2
-        run: |
-          npm run typecheck
-          npm run lint
-          npm run test:v2
-
-  servicios:
-    runs-on: ubuntu-latest
-    outputs:
-      lista: ${{ steps.lista.outputs.lista }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Elegir los servicios que cambiaron
-        id: lista
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          TODAS: ${{ inputs.todas }}
-        run: |
-          todos=$(find services -name package.json -not -path '*/node_modules/*' -printf '%h\n' | sort)
-          cambios=""
-          if [ "$TODAS" != "true" ] && [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            cambios=$(git diff --name-only "$BASE" "$GITHUB_SHA")
-          else
-            cambios="packages/"
-          fi
-          if echo "$cambios" | grep -qE '^(packages/|contract/|infra/docker/|package\.json|package-lock\.json|tsconfig\.base\.json)'; then
-            elegidos="$todos"
-          else
-            elegidos=$(for dir in $todos; do echo "$cambios" | grep -q "^$dir/" && echo "$dir"; done || true)
-          fi
-          echo "lista=$(echo "$elegidos" | grep . | jq -R . | jq -sc 'map({dir: ., nombre: (split("/") | last)})')" >> "$GITHUB_OUTPUT"
-
   compilar:
-    needs: [pruebas, servicios]
-    if: needs.servicios.outputs.lista != '[]'
-    runs-on: ${{ matrix.plataforma.runner }}
+    # Solo si la CI pasó (el «gate»): una imagen nunca sale de un commit con pruebas en rojo.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -80,32 +32,57 @@ jobs:
       fail-fast: false
       max-parallel: 6
       matrix:
-        servicio: ${{ fromJson(needs.servicios.outputs.lista) }}
-        plataforma:
-          - { arch: amd64, runner: ubuntu-24.04 }
-          - { arch: arm64, runner: ubuntu-24.04-arm }
+        servicio:
+          - { nombre: esb, dir: services/esb }
+          - { nombre: gateway, dir: services/gateway }
+          - { nombre: payment-api, dir: services/externos/payment-api }
+          - { nombre: booking-simulado, dir: services/externos/booking-simulado }
+          - { nombre: ms-g-identity, dir: services/gestion/ms-g-identity }
+          - { nombre: ms-g-schedule, dir: services/gestion/ms-g-schedule }
+          - { nombre: ms-g-offers, dir: services/gestion/ms-g-offers }
+          - { nombre: ms-g-bookings, dir: services/gestion/ms-g-bookings }
+          - { nombre: ms-g-check-in, dir: services/gestion/ms-g-check-in }
+          - { nombre: ms-g-post-sale, dir: services/gestion/ms-g-post-sale }
+          - { nombre: ms-g-flight-status, dir: services/gestion/ms-g-flight-status }
+          - { nombre: ms-g-webhooks, dir: services/gestion/ms-g-webhooks }
+          - { nombre: ms-g-customers, dir: services/gestion/ms-g-customers }
+          - { nombre: ms-vuelos, dir: services/respuesta/ms-vuelos }
+          - { nombre: ms-reservas, dir: services/respuesta/ms-reservas }
+          - { nombre: ms-postventa, dir: services/respuesta/ms-postventa }
+          - { nombre: ms-clientes, dir: services/respuesta/ms-clientes }
+          - { nombre: ms-admin, dir: services/respuesta/ms-admin }
+    env:
+      # El commit que probó la CI (en workflow_run, `github.sha` es el de la rama por defecto, no el probado).
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
 
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
-        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compilar ${{ matrix.servicio.nombre }} (${{ matrix.plataforma.arch }})
+      # Siempre se compilan las 18 (con la caché, una sin cambios tarda segundos): así cada commit tiene TODAS sus imágenes y se
+      # despliega una versión exacta y completa (y se puede volver a la anterior).
+      - name: Compilar ${{ matrix.servicio.nombre }} (arm64)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: infra/docker/node-service.Dockerfile
           build-args: SERVICE_DIR=${{ matrix.servicio.dir }}
-          platforms: linux/${{ matrix.plataforma.arch }}
-          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/arm64
+          push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/ecoairlines-${{ matrix.servicio.nombre }}:${{ github.sha }}-${{ matrix.plataforma.arch }}
-            ghcr.io/${{ github.repository_owner }}/ecoairlines-${{ matrix.servicio.nombre }}:latest-${{ matrix.plataforma.arch }}
-          cache-from: type=gha,scope=${{ matrix.servicio.nombre }}-${{ matrix.plataforma.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.servicio.nombre }}-${{ matrix.plataforma.arch }}
+            ghcr.io/${{ github.repository_owner }}/ecoairlines-${{ matrix.servicio.nombre }}:${{ env.SHA }}-arm64
+            ghcr.io/${{ github.repository_owner }}/ecoairlines-${{ matrix.servicio.nombre }}:latest-arm64
+          # Vincula la imagen con el repositorio (su página en GitHub y sus permisos).
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SHA }}
+          cache-from: type=gha,scope=${{ matrix.servicio.nombre }}-arm64
+          cache-to: type=gha,mode=max,scope=${{ matrix.servicio.nombre }}-arm64

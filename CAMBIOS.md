@@ -3349,3 +3349,20 @@ sistema ENTERO levantado con docker compose y la web compilada como en producci�
   los mismos archivos.
 - **Pendiente del responsable:** el *gate* de calidad es una opción de GitHub (*Settings → Branches → Required status checks*,
   S-7 en `Seguridad.md`).
+
+### Despliegue · CD-1 — Imágenes en GitHub y despliegue por `pull` (opción B) — ✅ HECHA (11/11), falta el primer despliegue
+
+La VM ya no compila (compilar las 18 imágenes la dejaba ~15–20 min degradada, incidente del 09–10/11).
+- **`.github/workflows/imagenes-v2.yml` reactivado** (estaba en pausa desde el 02/11): corre con `workflow_run` cuando la CI termina
+  **en verde** en `feature/v2-microservicios` (el gate), compila las 18 imágenes **ARM64** (runner `ubuntu-24.04-arm`, gratis en un
+  repositorio público) y las sube a `ghcr.io/gab5453/ecoairlines-<servicio>:<sha>-arm64` y `:latest-arm64`, con caché por servicio.
+  Se quitó su etapa de pruebas propia (ahora es la CI) y la imagen amd64 (la VM es ARM).
+- **`infra/cloud/docker-compose.imagenes.yml`:** cada servicio usa la imagen de GHCR de una versión exacta (`IMAGE_TAG`, obligatorio).
+- **`scripts/cloud/desplegar-imagenes.sh <host> <commit>`** (lo ejecuta el responsable = aprobación manual): comprueba que existan
+  las 18 imágenes de ese commit antes de tocar la VM, copia solo `infra/` y `cloud/.env`, hace `pull` + `up -d --no-build`, borra
+  imágenes viejas sin uso y corre la prueba de humo. Volver atrás = desplegar el commit anterior.
+- **`scripts/cloud/humo.mjs`:** prueba de humo de SOLO LECTURA (health, búsqueda v2, mapa de asientos, estado de vuelo, GraphQL),
+  con reintentos durante 5 min; nunca compra. Probada contra el sistema local: 5/5.
+- **Seguridad:** las imágenes no llevan secretos (código compilado, dependencias y `contract/`); `.dockerignore` excluye los `.env`.
+- **Pendiente del responsable:** hacer públicos los 18 paquetes en GHCR (se crean privados) o `docker login` en la VM, y el primer
+  despliegue real con el script.

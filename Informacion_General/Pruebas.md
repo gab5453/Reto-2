@@ -404,6 +404,30 @@ la VM además la satura (incidente del 09–10/11).
 **Recomendación:** primero el CI. Después la **B**, con aprobación manual (un *environment* con revisor) y en horarios
 acordados con Booking.
 
+**Cómo quedó (CD-1, 11/11, opción B):**
+
+```
+push → CI (5 etapas) ──en verde──► «Imágenes v2»: 18 imágenes ARM64 → ghcr.io/gab5453/ecoairlines-<servicio>:<sha>-arm64
+                                                                  │
+   el responsable, cuando decide (aprobación manual) ─────────────┘
+   bash scripts/cloud/desplegar-imagenes.sh <host> <commit>
+     1. comprueba que estén las 18 imágenes de ese commit (si no, no toca la VM)
+     2. copia solo infra/ y cloud/.env; en la VM: pull + up -d --no-build (sin compilar)
+     3. prueba de humo de SOLO LECTURA (scripts/cloud/humo.mjs): health, búsqueda, mapa de asientos, estado de vuelo, GraphQL
+```
+
+- **El gate:** `imagenes-v2.yml` corre con `workflow_run` **solo si la CI terminó en verde**; una imagen nunca sale de un commit
+  con pruebas en rojo. Siempre compila las 18 (la caché hace que una sin cambios tarde segundos), así cada commit tiene su versión
+  completa y **volver atrás es desplegar el commit anterior**.
+- **Nada se despliega solo:** subir una imagen no cambia la nube. Sin runner propio ni SSH desde GitHub (la opción C se descartó).
+- **Sin secretos en las imágenes:** solo llevan el código compilado, `node_modules` y `contract/` (ya públicos); los secretos los
+  recibe cada servicio de `cloud/.env` al arrancar. `.dockerignore` excluye cualquier `.env`.
+- **Override:** `infra/cloud/docker-compose.imagenes.yml` cambia la imagen de cada servicio por la de GHCR (`IMAGE_TAG` obligatorio).
+  `desplegar.sh` y `desplegar-parcial.sh` siguen como respaldo (compilan en la VM).
+- **Pendiente del responsable (una vez):** GHCR crea cada paquete **privado**. Para que la VM los descargue sin credenciales, hay
+  que hacerlos públicos (GitHub → *Packages* → cada `ecoairlines-*` → *Package settings* → *Change visibility*), o hacer
+  `docker login ghcr.io` en la VM con un token de solo lectura. Público es lo simple y no expone nada que no esté ya en el repositorio.
+
 ---
 
 ## 11. Decisiones antes de programar
@@ -432,5 +456,5 @@ acordados con Booking.
 | **CT-1** ✅ 11/11 | Pact: consumidores, `pact.json` y verificación de proveedores (5.3) | **11 interacciones en 5 contratos** (se estimaron ~60; es la primera iteración, con las relaciones más críticas): todos → Identity `/oauth2/token` (3), ESB → Bookings (4), MS de respuesta → ESB `/sagas/{id}` (3) y el mensaje `hold.created` de Offers → Webhooks (1). Contratos en `contract/pacts/` (sin Pact Broker); trabajo «4. Contratos (Pact)» en la CI. Dos cambios que rompen (renombrar `pnr` y `seatsHeld`) fueron detectados |
 | **E2E-1** ✅ 11/11 | Playwright en `tests/e2e/` con los 8 flujos y E2E en CI (5.4) | **8 flujos** (E-1 a E-8) con `@playwright/test` 1.64.1 contra el sistema completo (docker compose) y la web compilada; la conformidad v2 corre en la CI con las **54** (antes 49 y 5 omitidas). Trabajo «5. E2E (sistema completo)». Cada prueba deja el sistema como estaba. Una mutación a mano en la web (no quitar el asiento tomado) fue detectada. Tres hallazgos fuera de la fase en `CAMBIOS.md` (el principal: 10 servicios se caen si PostgreSQL corta sus conexiones) |
 | **CI-2** ✅ 11/11 | ESLint con tipos, Prettier, cobertura y gate de calidad | ESLint con tipos junto a oxlint (§7.1): 0 promesas olvidadas, 416 aserciones sobrantes quitadas, **un error real** corregido (motivo `[object Object]` de Booking). Cobertura con mínimos en dominios y motor de sagas (§9). E2E de la CI arreglado: en una base nueva no había vuelos a la venta y ahora `e2e:up` publica el horario. **Prettier: descartado** por el responsable (solo cambia el formato, no encuentra errores; aplicarlo cambiaría 265–315 archivos; se puede activar si el grupo empieza a editar mucho los mismos archivos). Se quitaron `.prettierrc`, `npm run format` y la dependencia. Gate: lo activa el responsable en GitHub (*branch protection*, S-7) |
-| **CD-1** | Imágenes en GitHub y despliegue por `pull` (opción B) + humo | Despliegue sin compilar en la VM |
+| **CD-1** ✅ 11/11 (falta el primer despliegue real) | Imágenes en GitHub y despliegue por `pull` (opción B) + humo | `imagenes-v2.yml` reactivado detrás de la CI (`workflow_run`, solo en verde), 18 imágenes ARM64 por commit en GHCR; `docker-compose.imagenes.yml`; `desplegar-imagenes.sh <host> <commit>` (comprueba las imágenes, `pull` + `up -d` sin compilar, humo). Humo de solo lectura (`humo.mjs`) probado en local. El primer despliegue y hacer públicos los paquetes los hace el responsable |
 | **SEG-1** (recomendada) | Mejoras de seguridad: **actualizar las dependencias de producción con avisos (S-0; `@nestjs/graphql` desde el 18/11)**, Vitest y `vite` (S-1), Dependabot y secret scanning (S-3), cambiar la contraseña del ADMIN de demostración al terminar la evaluación (S-4). Detalle, riesgos conocidos y lo que ya está implementado: [`Seguridad.md`](Seguridad.md) | Avisos de seguridad de las dependencias resueltos |
