@@ -33,8 +33,17 @@
     "infra:up": "docker compose -f infra/docker-compose.yml up -d --build",
     "infra:down": "docker compose -f infra/docker-compose.yml down"
   },
+  "overrides": {
+    "body-parser": "2.4.0",
+    "fast-uri": "3.1.9",
+    "follow-redirects": "1.16.2",
+    "multer": "2.5.0",
+    "qs": "6.17.1",
+    "rolldown": "1.2.15",
+    "vite": "8.3.5"
+  },
   "devDependencies": {
-    "@nestjs/testing": "^12.0.1",
+    "@nestjs/testing": "12.3.2",
     "@pact-foundation/pact": "17.1.4",
     "@playwright/test": "1.64.1",
     "@types/express": "^5.0.0",
@@ -42,7 +51,7 @@
     "@types/node": "^24.0.0",
     "@types/supertest": "^7.0.0",
     "@types/swagger-ui-express": "^4.1.8",
-    "@vitest/coverage-v8": "^4.1.2",
+    "@vitest/coverage-v8": "4.1.12",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "eslint": "10.13.0",
@@ -51,7 +60,7 @@
     "supertest": "^7.0.0",
     "typescript": "^6.0.2",
     "typescript-eslint": "8.72.1",
-    "vitest": "^4.1.2"
+    "vitest": "4.1.12"
   },
   "scarfSettings": {
     "enabled": false

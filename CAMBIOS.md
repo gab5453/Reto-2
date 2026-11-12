@@ -3375,3 +3375,26 @@ La VM ya no compila (compilar las 18 imágenes la dejaba ~15–20 min degradada,
   viejas borradas); 0 errores del ESB. PostgreSQL y RabbitMQ se recrearon porque su etiqueta traía una versión nueva (datos en
   volúmenes). Los paquetes de GHCR salieron públicos solos (la cuenta hereda la visibilidad del repositorio). Lección: en
   PowerShell `bash` abre WSL; el script va en Git Bash.
+
+### Seguridad · SEG-1 — Dependencias, auditoría en la CI y Dependabot — ✅ HECHA (12/11), salvo `@nestjs/graphql` (18/11)
+
+- **S-0, producción** (de 8 avisos, 6 altos, a 1): NestJS 12.1.2 → **12.3.2** (27/10) con versión exacta en los 19 `package.json`
+  (`core`, `common`, `platform-express`, `testing`); trae `multer` 2.5.0 y `express` 5.3.0. `overrides` exactos: `body-parser`
+  2.4.0, `follow-redirects` 1.16.2 (la 1.16.3 es del 08/11), `fast-uri` 3.1.9 y `qs` 6.17.1. Queda `@graphql-tools/utils` (vía
+  `@nestjs/graphql`): su corrección, 14.2.0, se publicó el 04/11 → **desde el 18/11**.
+- **S-1, desarrollo:** Vitest y `@vitest/coverage-v8` 4.1.12 (raíz); `vite` 8.3.5 (raíz y web; corrige el aviso alto de la web) y
+  `rolldown` 1.2.15. La web queda con 0 avisos de producción.
+- **Error mío corregido en el camino:** `npm audit fix`/`npm dedupe` subieron dependencias a versiones del mismo día
+  (`@nestjs/platform-express` 12.5.0, `vite` 8.3.8, `rolldown` 1.2.19) y la 1.2.19 trajo una dependencia beta solo para WebAssembly
+  que el lockfile hecho en Windows no anotó: **las imágenes Docker dejaron de compilar** (`npm ci`: «Missing: @emnapi/core»).
+  También quedó `@nestjs/platform-express` sin poder resolverse desde `@nestjs/core` (573 pruebas omitidas). Se restauró el
+  lockfile y se repitió con **`npm install --before=2026-10-29`** y `npm dedupe --before=…`; los 49 paquetes que cambiaron en el
+  lockfile se comprobaron uno por uno: todos con 14+ días.
+- **S-2:** `scripts/ci/auditoria.mjs` en la CI (calidad y web): falla con un aviso **alto o crítico en producción**; los de
+  desarrollo solo se informan. Excepciones **con fecha de vencimiento** (hoy, `GHSA-c4qx-w738-7hr3` hasta el 18/11): comprobado
+  que con la fecha vencida falla (salida 1) y vigente pasa.
+- **S-3:** `.github/dependabot.yml` (npm de la raíz y de la web, GitHub Actions, imagen base de Docker) con `cooldown` de 14 días
+  y las menores agrupadas. Falta que el responsable active en GitHub las alertas, las actualizaciones de seguridad, secret scanning
+  y push protection.
+- **Verificación:** tipos, lint, 1 527 pruebas con cobertura, Pact 11 + 5 (contratos sin cambios), web (lint, 46 pruebas,
+  compilación); imágenes reconstruidas (dentro: NestJS 12.3.2, `multer` 2.5.0, `body-parser` 2.4.0), conformidad 54/54 y E2E.

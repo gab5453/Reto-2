@@ -1,6 +1,6 @@
 # Seguridad — EcoAirlines Reto 2
 
-Qué protege hoy el sistema, qué riesgos se conocen y qué mejoras se pueden hacer. Revisado el **11/11/2026** sobre la rama
+Qué protege hoy el sistema, qué riesgos se conocen y qué mejoras se pueden hacer. Revisado el **12/11/2026** (SEG-1) sobre la rama
 `feature/v2-microservicios`.
 
 > **Alcance:** es un proyecto académico desplegado en una sola VM con el crédito de estudiante. Las medidas buscan las buenas
@@ -91,8 +91,8 @@ Las **reglas de arquitectura** (por ejemplo, que un MS de respuesta solo hable c
 | Riesgo | Estado | Por qué |
 |---|---|---|
 | **Usuarios de demostración con contraseña conocida**, incluido un ADMIN, publicados en el README | **Aceptado por el responsable** (04/11) | Lo pidió el grupo para poder probar el sistema. Cualquiera que lea el README puede entrar como administrador en la nube |
-| **Dependencias de PRODUCCIÓN con avisos de seguridad** (`npm audit --omit=dev` en la raíz, 11/11): **8 avisos, 6 altos**. `@nestjs/platform-express` y sus dependencias `body-parser` y `multer` (denegación de servicio con cuerpos mal formados), `follow-redirects` (credenciales que siguen una redirección), `@nestjs/graphql`/`@graphql-tools/utils` (contaminación de prototipos), más `fast-uri` y `qs` (moderados) | **Pendiente, prioridad alta** (S-0) | Corren en los servicios publicados. El riesgo práctico es bajo, porque Caddy y los límites del gateway frenan peticiones grandes o raras y el GraphQL tiene límites de profundidad y complejidad. Aun así, conviene aplicar las correcciones |
-| **Dependencias de desarrollo con avisos:** Vitest 4.1.11 en la raíz (2 moderados), `vite` 8.3.2 en la web (1 alto; 7 avisos en total en la web) y, desde CI-2, `minimatch` 10.2.6 dentro de ESLint y typescript-eslint (1 moderado, DoS con patrones glob; `npm audit` lo cuenta 9 veces, una por paquete que lo usa) | Pendiente (S-1) | Son herramientas de desarrollo y pruebas: **no llegan al navegador ni a los contenedores**. El riesgo es para quien desarrolla |
+| **Dependencias de PRODUCCIÓN con avisos:** tras SEG-1 (12/11) queda **1 aviso alto**: `@graphql-tools/utils` (contaminación de prototipos, GHSA-c4qx-w738-7hr3), que viene con `@nestjs/graphql`. Los otros 7 (`multer`, `body-parser`, `follow-redirects`, `fast-uri`, `qs`, `@nestjs/platform-express`) se corrigieron | **Aceptado hasta el 18/11** (S-0) | La corrección es `@nestjs/graphql` 14.2.0, publicada el 04/11 (regla de las 2 semanas). Riesgo práctico bajo: el GraphQL tiene límites de profundidad y complejidad. La CI tiene la excepción **con fecha**: desde el 19/11 falla si no se actualizó |
+| **Dependencias de desarrollo con avisos:** en la raíz, 1 moderado (`minimatch` dentro de ESLint, DoS con patrones glob; `npm audit` lo cuenta 9 veces); en la web, 3 (`deepmerge`, `glob`, `minimatch` dentro del plugin PWA), sin ningún alto. Vitest y `vite` ya se actualizaron (SEG-1) | Aceptado | Son herramientas de desarrollo: **no llegan al navegador ni a los contenedores**. Sus correcciones son versiones mayores que las herramientas aún no piden; Dependabot las propondrá |
 | **Una sola VM:** si se cae, cae todo | Aceptado (presupuesto) | El crédito de estudiante (US$ 90) no alcanza para alta disponibilidad |
 | La web no envía **Content-Security-Policy** ni **HSTS** | Pendiente (sección 4) | La API sí las tiene. La web no maneja tarjetas (eso es la Payment API), pero una CSP limitaría el daño de un script inyectado |
 
@@ -102,15 +102,22 @@ Las **reglas de arquitectura** (por ejemplo, que un MS de respuesta solo hable c
 
 | # | Mejora | Esfuerzo | Detalle |
 |---|---|---|---|
-| S-0 | **Actualizar las dependencias de producción con avisos** | Bajo a medio | `npm audit fix` (sin `--force`) actualiza `body-parser`, `multer`, `follow-redirects`, `fast-uri` y `qs` dentro de sus rangos. **`@nestjs/graphql` 14.0.3 → 14.2.0** corrige `@graphql-tools/utils`, pero se publicó el **04/11**: por la regla de las 2 semanas del proyecto, **desde el 18/11**. Después de actualizar, toda la CI (unitarias, integración, contratos) debe seguir en verde |
-| S-1 | **Actualizar las dependencias de desarrollo con avisos** | Bajo | Vitest 4.1.11 → **4.1.12** en la raíz (la web ya la usa); `vite` 8.3.2 → **8.3.5** en la web (corrige el aviso alto; publicada el 21/10, cumple las 2 semanas). `minimatch` (de ESLint): la corrección es la 11.0.1 (27/10), un cambio de versión mayor que ESLint todavía no pide; esperar a una versión de ESLint que la traiga. Solo afecta patrones que escribimos nosotros. Verificar con la CI |
-| S-2 | **Revisión de dependencias en la CI** | Bajo | Un paso `npm audit --audit-level=high` (o solo un reporte, para no frenar la CI por un aviso de una herramienta de desarrollo) |
-| S-3 | **Dependabot y secret scanning de GitHub** | Bajo | Gratis en un repositorio público. Dependabot propone las actualizaciones de seguridad como pull requests; secret scanning avisa si se sube una clave por error |
+| S-0 | **Actualizar las dependencias de producción con avisos** | ✅ **Hecha** (12/11), salvo `@nestjs/graphql` | NestJS 12.1.2 → **12.3.2** (27/10) en los 19 paquetes, con `multer` 2.5.0 y `express` 5.3.0; `body-parser` 2.4.0, `follow-redirects` 1.16.2, `fast-uri` 3.1.9 y `qs` 6.17.1 fijados con `overrides`. De 8 avisos (6 altos) a 1. **Falta `@nestjs/graphql` 14.0.3 → 14.2.0 desde el 18/11** |
+| S-1 | **Actualizar las dependencias de desarrollo con avisos** | ✅ **Hecha** (12/11) | Vitest y `@vitest/coverage-v8` 4.1.12 en la raíz; `vite` 8.3.5 en la raíz (vía Vitest) y en la web (corrige el aviso alto); `rolldown` 1.2.15. Lo que queda es moderado o bajo, de herramientas |
+| S-2 | **Revisión de dependencias en la CI** | ✅ **Hecha** (12/11) | `scripts/ci/auditoria.mjs` en la etapa de calidad y en la de la web: **falla con un aviso alto o crítico en producción**, salvo excepciones con fecha de vencimiento (hoy, solo la de `@nestjs/graphql`, hasta el 18/11). Los de desarrollo solo se informan. Escribe el resumen en cada ejecución |
+| S-3 | **Dependabot y secret scanning de GitHub** | ✅ Configurado (12/11); falta activarlo | `.github/dependabot.yml`: npm (raíz y web), GitHub Actions y la imagen base de Docker, semanal o mensual, con **`cooldown` de 14 días** (la regla del proyecto) y las menores agrupadas en una sola PR. **El responsable activa** en *Settings → Advanced Security*: *Dependabot alerts*, *Dependabot security updates*, *Secret scanning* y *Push protection* (gratis en un repositorio público) |
 | S-4 | **Cambiar la contraseña del ADMIN de demostración** al terminar la evaluación | Bajo | Una variable en `infra/cloud/.env` (`ADMIN_PASSWORD`) y reiniciar Identity |
 | S-5 | **CSP y HSTS en la web** | Medio | Agregar a `staticwebapp.config.json`: `Content-Security-Policy` con `connect-src` al gateway (https y wss) y a la Payment API, y `Strict-Transport-Security`. Requiere probar la web completa: una CSP mal escrita rompe el pago o el WebSocket |
 | S-6 | **ESLint con reglas de tipos** | Medio | Ya está en el plan de pruebas (CI-2): detecta promesas olvidadas, que en las sagas pueden dejar operaciones a medias |
 | S-7 | **Proteger la rama** en GitHub | Bajo | *Required status checks*: no se puede fusionar con la CI en rojo (el «gate» del PDF de la Semana 9). Útil si se empieza a trabajar con pull requests |
 | S-8 | Revisar las imágenes Docker con **Trivy** | Medio | La opción B ya está (CD-1): un paso de Trivy en `imagenes-v2.yml` revisaría cada imagen antes de subirla. Las imágenes no llevan secretos (los recibe cada servicio de `cloud/.env` al arrancar) |
 
-**Recomendación:** **S-0 primero** (son dependencias que corren en producción), y luego S-1, S-3 y S-4, que son de bajo esfuerzo y cubren lo más visible. S-5 conviene solo si queda tiempo, porque hay que
-probar la web completa después de agregarla.
+**Estado (12/11):** S-0 (salvo `@nestjs/graphql`, desde el 18/11), S-1, S-2 y S-3 hechas. Quedan: activar S-3 en GitHub, S-4 al
+terminar la evaluación, y S-5 a S-8 como mejoras opcionales (S-5 conviene solo si queda tiempo, porque hay que probar la web
+completa después de agregarla).
+
+**Cómo se actualizó (lección de SEG-1):** `npm audit fix` y `npm dedupe` toman la versión **más nueva**, que puede tener días (el
+12/11 subieron `@nestjs/platform-express` 12.5.0 y `rolldown` 1.2.19, publicados ese mismo día o la víspera; el segundo además
+trajo una dependencia beta que rompió la compilación de las imágenes en Linux). Lo correcto es **`npm install --before=<fecha de
+hace 14 días>`** (y lo mismo con `npm dedupe`), que resuelve como si fuera ese día, y después comprobar la fecha de cada paquete
+que cambió en el lockfile.
