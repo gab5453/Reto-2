@@ -1,6 +1,7 @@
 # SEG-1 (S-3, Informacion_General/Seguridad.md): Dependabot propone las actualizaciones como pull requests; la CI completa las
 # prueba antes de fusionar. `cooldown` aplica la regla del proyecto: solo versiones con 14 días o más de publicadas.
 # Una actualización de SEGURIDAD puede llegar antes (no espera el cooldown): revisar su fecha antes de fusionarla.
+# Las versiones mayores de npm y de la imagen de Node se ignoran (se migran a propósito); las de GitHub Actions sí se proponen.
 # Las alertas y las actualizaciones de seguridad se activan en GitHub: Settings → Advanced Security (las activa el responsable).
 version: 2
 updates:
@@ -12,6 +13,10 @@ updates:
     cooldown:
       default-days: 14
     open-pull-requests-limit: 5
+    # Las versiones MAYORES (Vitest 5, TypeScript 7, Node 26…) son migraciones que se planifican, no una PR semanal.
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
     # Una sola PR semanal con todo lo menor (parches y versiones menores), para no llenar el repositorio de PR.
     groups:
       menores:
@@ -25,6 +30,10 @@ updates:
     cooldown:
       default-days: 14
     open-pull-requests-limit: 3
+    # Las versiones MAYORES (Vitest 5, TypeScript 7, Node 26…) son migraciones que se planifican, no una PR semanal.
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
     groups:
       menores:
         update-types: [minor, patch]
@@ -42,3 +51,7 @@ updates:
       interval: monthly
     cooldown:
       default-days: 14
+    # Las versiones MAYORES (Vitest 5, TypeScript 7, Node 26…) son migraciones que se planifican, no una PR semanal.
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']

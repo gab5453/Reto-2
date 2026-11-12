@@ -3398,3 +3398,10 @@ La VM ya no compila (compilar las 18 imágenes la dejaba ~15–20 min degradada,
   y push protection.
 - **Verificación:** tipos, lint, 1 527 pruebas con cobertura, Pact 11 + 5 (contratos sin cambios), web (lint, 46 pruebas,
   compilación); imágenes reconstruidas (dentro: NestJS 12.3.2, `multer` 2.5.0, `body-parser` 2.4.0), conformidad 54/54 y E2E.
+- **Corrección después de subir (12/11):** la CI de `db9a6a9` falló en el `npm ci` de la **web**: su lockfile tenía el mismo
+  `rolldown` 1.2.19 con el binario WebAssembly (no lo había revisado; solo el de la raíz). Arreglado igual: lockfile restaurado,
+  `overrides` `rolldown` 1.2.15 y `npm install --before=2026-10-29` (20 paquetes cambiados, todos con 14+ días). Esta vez se
+  comprobó `npm ci` **en Linux** (contenedor `node:24.22.1-alpine`) para la raíz y para la web antes de subir.
+- **Dependabot abrió 14 PR al activarse** (normal la primera vez). Casi todas fallaron por ese lockfile de la web, y varias eran
+  versiones MAYORES (Vitest 5, TypeScript 7, Node 26, protobufjs 8, `@graphql-tools` 11–13). Ajuste: se ignoran las mayores de npm
+  y de la imagen de Node (se migran a propósito, no en una PR semanal); las de GitHub Actions sí se proponen.
