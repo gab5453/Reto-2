@@ -30,7 +30,7 @@ describe.skipIf(!url)('PostgresBookingsStore (concurrencia real)', () => {
     return {
       bookingId: randomUUID(), sagaId, holdId: randomUUID(), offerId: itinerary.itineraryId, passengersBreakdown: { adults: 1 },
       passengers: [{ passengerId: 'PAX-1', passengerType: 'ADULT', firstName: 'Ana', lastName: 'Ruiz', documentType: 'NATIONAL_ID', documentNumber, nationality: 'EC', birthDate: '1990-01-01', gender: 'F', contact: { email: 'a@x.com', phone: '+593990000000' } }],
-      itineraries: [itinerary], fares: [{ itineraryId: itinerary.itineraryId, cabinClass: 'ECONOMY', fareBrand: 'BROTE', segmentIds: [itinerary.segments[0]!.segmentId], price: money, isRefundable: false, isChangeable: true }],
+      itineraries: [itinerary], fares: [{ itineraryId: itinerary.itineraryId, cabinClass: 'ECONOMY', fareBrand: 'BROTE', segmentIds: [itinerary.segments[0].segmentId], price: money, isRefundable: false, isChangeable: true }],
       grandTotal: money, payment: { paymentReference: reference, provider: 'AIRLINE_DIRECT' }, ...overrides,
     };
   }
@@ -61,7 +61,7 @@ describe.skipIf(!url)('PostgresBookingsStore (concurrencia real)', () => {
     const [a, b] = await Promise.all([command(doc), command(doc)]);
     const results = await Promise.allSettled([service.create(a, 'owner-a'), service.create(b, 'owner-b')]);
     expect(results.map(codeOf).sort()).toEqual(['OK', 'PASSENGER_ALREADY_ON_FLIGHT']);
-    const loser = results[0]!.status === 'rejected' ? a : b;
+    const loser = results[0].status === 'rejected' ? a : b;
     const { rows } = await admin.query(`SELECT booking_id FROM ${schema}.payment_records WHERE payment_reference = $1`, [loser.payment.paymentReference]);
     expect(rows[0].booking_id).toBeNull(); // ROLLBACK: su referencia no quedó unida a nada
     const { rows: bookings } = await admin.query(`SELECT count(*)::int AS n FROM ${schema}.bookings WHERE booking_id = $1`, [loser.bookingId]);

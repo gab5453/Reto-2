@@ -128,10 +128,10 @@ export async function oferta(origen: string, destino: string, fecha: string): Pr
     ),
   ).searchFlights;
   for (const offer of search.offers) {
-    const itinerary = offer.itineraries[0]!;
+    const itinerary = offer.itineraries[0];
     if (itinerary.segments.length !== 1) continue;
     const fare = itinerary.pricingOptions.find((p) => p.fareBrand === 'BOSQUE' && p.availableSeats > 0) ?? itinerary.pricingOptions.find((p) => p.availableSeats > 0);
-    if (fare) return { offerId: offer.offerId, itineraryId: itinerary.itineraryId, segmentId: itinerary.segments[0]!.segmentId, flightNumber: itinerary.segments[0]!.flightNumber, cabinClass: fare.cabinClass, fareBrand: fare.fareBrand };
+    if (fare) return { offerId: offer.offerId, itineraryId: itinerary.itineraryId, segmentId: itinerary.segments[0].segmentId, flightNumber: itinerary.segments[0].flightNumber, cabinClass: fare.cabinClass, fareBrand: fare.fareBrand };
   }
   throw new Error(`No hay vuelos directos con cupos ${origen} → ${destino} el ${fecha}`);
 }

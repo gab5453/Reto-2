@@ -173,7 +173,7 @@ export class PostgresIdentityRepository implements IdentityRepository {
        FROM users`,
     );
     const r = rows[0] as Record<string, number>;
-    return { total: r['total']!, byRole: { CUSTOMER: r['customer']!, ADMIN: r['admin']! }, byStatus: { ACTIVE: r['active']!, BLOCKED: r['blocked']! } };
+    return { total: r['total'], byRole: { CUSTOMER: r['customer'], ADMIN: r['admin'] }, byStatus: { ACTIVE: r['active'], BLOCKED: r['blocked'] } };
   }
   private async transaction<T>(work: (client: pg.PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();

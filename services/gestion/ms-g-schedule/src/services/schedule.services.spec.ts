@@ -30,7 +30,7 @@ const ruta = (over: Record<string, unknown> = {}) => ({ routeId: 'EA100-EA101', 
 function repositorio(state: ScheduleState = ESTADO_VACIO) {
   const decided: { changes?: unknown; history?: unknown } = {};
   let precios: FarePriceRecord[] = [];
-  let pricing: PricingSettings = { fixedCharge: 35, perKm: 0.085, routePrices: {}, updatedAt: null, updatedBy: null } as unknown as PricingSettings;
+  let pricing: PricingSettings = { fixedCharge: 35, perKm: 0.085, routePrices: {}, updatedAt: null, updatedBy: null };
   let aeropuertos: AirportRecord[] = [];
   let tipos: AircraftTypeRecord[] = [];
   const repo = {
@@ -176,7 +176,7 @@ describe('PricingService: tarifa base y precio por ruta (P-1)', () => {
 describe('AirportsService (M-1)', () => {
   const entrada = (over = {}) => ({ city: ' Tena ', name: ' Aeropuerto Jumandy ', country: 'EC', province: 'Napo', lat: -1, lon: -77.8, utcOffsetMinutes: -300, ...over });
   const guardado = (over: Partial<AirportRecord> = {}): AirportRecord =>
-    ({ code: 'TNW', city: 'Tena', name: 'Jumandy', country: 'EC', lat: -1, lon: -77.8, utcOffsetMinutes: -300, active: true, createdAt: 'x', updatedAt: 'x', updatedBy: null, ...over }) as AirportRecord;
+    ({ code: 'TNW', city: 'Tena', name: 'Jumandy', country: 'EC', lat: -1, lon: -77.8, utcOffsetMinutes: -300, active: true, createdAt: 'x', updatedAt: 'x', updatedBy: null, ...over });
   afterEach(() => removeAirport('TNW'));
 
   it('crear: guarda limpio (sin espacios), activo por defecto, y lo agrega al catálogo del proceso', async () => {

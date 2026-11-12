@@ -45,7 +45,7 @@ describe('assertAdminChangeAllowed: casos que no rompen la regla', () => {
 describe('scopes de partner', () => {
   it('los scopes repetidos se guardan una sola vez', () => {
     const [scope] = PARTNER_SCOPES;
-    expect(resolvePartnerScopes([scope!, scope!])).toEqual([scope]);
+    expect(resolvePartnerScopes([scope, scope])).toEqual([scope]);
   });
   it('una lista vacía no da ningún scope', () => expect(resolvePartnerScopes([])).toEqual([]));
   it('se informan todos los scopes no permitidos', () => {

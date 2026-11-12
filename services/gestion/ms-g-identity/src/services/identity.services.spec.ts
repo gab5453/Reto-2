@@ -82,7 +82,7 @@ function socio(over: Partial<PartnerRecord> = {}): PartnerRecord {
 describe('AccountsService: registro y login', () => {
   it('el registro público crea siempre un CUSTOMER activo, con el correo normalizado y la clave derivada', async () => {
     await d.accounts.register({ fullName: '  Ana  ', email: ' Ana@X.com ', password: 'Clave-Segura-1' });
-    const guardado = d.repo.insertUser.mock.calls[0]![0] as UserRecord;
+    const guardado = d.repo.insertUser.mock.calls[0][0] as UserRecord;
     expect(guardado).toMatchObject({ email: 'ana@x.com', fullName: 'Ana', role: 'CUSTOMER', status: 'ACTIVE', createdBy: null });
     expect(guardado.passwordHash).toMatch(/^scrypt\$/);
     expect(guardado.passwordHash).not.toContain('Clave-Segura-1');
@@ -213,7 +213,7 @@ describe('PartnersService.issueToken (OAuth2 client_credentials)', () => {
 describe('PartnersService: alta, bloqueo y rotación del secreto', () => {
   it('crear: devuelve el secreto UNA vez y guarda solo su hash', async () => {
     const creado = await d.partners.create({ clientId: 'NUEVO', name: ' Nuevo ' }, 'admin-1');
-    const guardado = d.repo.insertPartner.mock.calls[0]![0] as PartnerRecord;
+    const guardado = d.repo.insertPartner.mock.calls[0][0] as PartnerRecord;
     expect(creado.clientSecret).toHaveLength(43);
     expect(guardado.secretHash).not.toContain(creado.clientSecret);
     expect(await verifySecret(creado.clientSecret, guardado.secretHash)).toBe(true);
@@ -237,7 +237,7 @@ describe('PartnersService: alta, bloqueo y rotación del secreto', () => {
   it('rotar el secreto: el nuevo verifica y queda la fecha de rotación', async () => {
     d.repo.findPartner.mockResolvedValue(socio());
     const rotado = await d.partners.rotateSecret('BOOKING_PROTOTIPO', 'admin-1');
-    const patch = d.repo.patchPartner.mock.calls[0]![1] as Partial<PartnerRecord>;
+    const patch = d.repo.patchPartner.mock.calls[0][1];
     expect(await verifySecret(rotado.clientSecret, patch.secretHash)).toBe(true);
     expect(patch.secretRotatedAt).toBeTruthy();
   });

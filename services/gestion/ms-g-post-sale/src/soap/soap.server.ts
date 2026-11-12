@@ -41,7 +41,7 @@ type SoapRequest = Request & { postSale?: { correlationId: string; requestId: st
 const escape = (value: string) => value.replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c]!);
 const list = <T>(value: T | T[] | undefined): T[] => (value === undefined || value === null ? [] : Array.isArray(value) ? value : [value]);
 const bool = (value: unknown) => value === true || value === 'true' || value === '1';
-const text = (value: unknown) => (value === undefined || value === null ? undefined : typeof value === 'object' && '$value' in (value as object) ? String((value as { $value: unknown }).$value) : String(value));
+const text = (value: unknown) => (value === undefined || value === null ? undefined : typeof value === 'object' && '$value' in (value) ? String((value).$value) : String(value));
 /** `xs:date` / `xs:dateTime`: la librería los entrega como `Date`; aquí siempre texto ISO (sin depender de la zona del proceso). */
 const isoDate = (value: unknown) => (value instanceof Date ? value.toISOString() : String(value));
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -176,12 +176,14 @@ export async function mountSoap(app: NestExpressApplication, service: PostSaleSe
 
   /** Cada operación corre con el CorrelationId de la cabecera SOAP (o el HTTP, o uno nuevo). */
   const operation =
-    (handler: (args: Args) => Promise<unknown> | unknown) =>
+    (handler: (args: Args) => unknown) =>
     async (args: Args, _callback: unknown, _headers: unknown, req: SoapRequest) => {
       const context = req.postSale ?? { correlationId: newCorrelationId(), requestId: newRequestId() };
       try {
         return await runWithCorrelation(context, () => Promise.resolve(handler(args)));
       } catch (error) {
+        // node-soap exige lanzar el objeto `{ Fault }` tal cual (no un Error) para responder un SOAP Fault.
+        // eslint-disable-next-line @typescript-eslint/only-throw-error
         throw soapFault(error, context.correlationId);
       }
     };
@@ -237,7 +239,7 @@ export async function mountSoap(app: NestExpressApplication, service: PostSaleSe
       services,
       xml: readFileSync(wsdlPath, 'utf8'),
       uri: wsdlPath,
-      callback: (error: unknown) => (error ? reject(error) : resolve(created)),
+      callback: (error: unknown) => (error ? reject(error instanceof Error ? error : new Error(String(error))) : resolve(created)),
     });
   });
 

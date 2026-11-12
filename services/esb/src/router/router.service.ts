@@ -72,9 +72,9 @@ export class RouterService {
   async rest(service: string, request: RouterRequest): Promise<IdempotentResult> {
     const [pathOnly] = request.path.split('?');
     if (!(REST_SERVICES as readonly string[]).includes(service)) throw notFound(`El ESB no enruta al servicio "${service}".`);
-    const matched = matchRoute(service, request.method, pathOnly!);
+    const matched = matchRoute(service, request.method, pathOnly);
     if (!matched) {
-      if (pathExists(service, pathOnly!)) throw new ProblemDetailsException({ status: 405, code: 'METHOD_NOT_ALLOWED', title: `${request.method} ${pathOnly} no pasa por el enrutador (es un paso de saga o de composición).` });
+      if (pathExists(service, pathOnly)) throw new ProblemDetailsException({ status: 405, code: 'METHOD_NOT_ALLOWED', title: `${request.method} ${pathOnly} no pasa por el enrutador (es un paso de saga o de composición).` });
       throw notFound(`El enrutador no tiene la ruta ${request.method} ${pathOnly} de ${service} (o es un paso de saga o de composición).`);
     }
     const client = this.upstreams.rest[service as RestService];

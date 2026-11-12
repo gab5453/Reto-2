@@ -131,7 +131,7 @@ describe('documento: escalares, @constraint, profundidad y complejidad', () => {
     const recursive = buildSchema('type Query { n: N } type N { n: N v: Int }');
     const levels = (depth: number) => `{ ${'n { '.repeat(depth - 1)}v${' }'.repeat(depth - 1)} }`;
     expect(validate(recursive, parse(levels(10)), [depthLimit()])).toHaveLength(0);
-    expect(validate(recursive, parse(levels(11)), [depthLimit()])[0]!.message).toContain('profundidad 11');
+    expect(validate(recursive, parse(levels(11)), [depthLimit()])[0].message).toContain('profundidad 11');
     const viaFragment = `{ n { ...F } } fragment F on N { ${'n { '.repeat(9)}v${' }'.repeat(9)} }`;
     expect(validate(recursive, parse(viaFragment), [depthLimit()])).toHaveLength(1);
   });

@@ -40,13 +40,13 @@ const partnerChange = (c: Context) => ({
 
 const BUILDERS: Record<string, (c: Context) => { name: string; subject: string; data: Any; ownerId?: string } | undefined> = {
   createUser: (c) => ({ name: 'user.created', subject: c.response?.['sub'], data: userChange(c) }),
-  changeUserRole: (c) => ({ name: 'user.role_changed', subject: c.params['sub']!, data: userChange(c) }),
-  changeUserStatus: (c) => ({ name: 'user.blocked', subject: c.params['sub']!, data: userChange(c) }),
+  changeUserRole: (c) => ({ name: 'user.role_changed', subject: c.params['sub'], data: userChange(c) }),
+  changeUserStatus: (c) => ({ name: 'user.blocked', subject: c.params['sub'], data: userChange(c) }),
   createPartner: (c) => ({ name: 'partner.created', subject: c.response?.['clientId'], data: partnerChange(c) }),
-  changePartnerStatus: (c) => ({ name: 'partner.blocked', subject: c.params['clientId']!, data: partnerChange(c) }),
-  rotatePartnerSecret: (c) => ({ name: 'partner.secret_rotated', subject: c.params['clientId']!, data: partnerChange(c) }),
-  saveAssistance: (c) => ({ name: 'booking.assistance_requested', subject: c.params['bookingId']!, data: { bookingId: c.params['bookingId'], passengerId: decodeURIComponent(c.params['passengerId']!), action: 'REQUESTED' }, ...(c.caller.ownerId ? { ownerId: c.caller.ownerId } : {}) }),
-  deleteAssistance: (c) => ({ name: 'booking.assistance_requested', subject: c.params['bookingId']!, data: { bookingId: c.params['bookingId'], passengerId: decodeURIComponent(c.params['passengerId']!), action: 'REMOVED' }, ...(c.caller.ownerId ? { ownerId: c.caller.ownerId } : {}) }),
+  changePartnerStatus: (c) => ({ name: 'partner.blocked', subject: c.params['clientId'], data: partnerChange(c) }),
+  rotatePartnerSecret: (c) => ({ name: 'partner.secret_rotated', subject: c.params['clientId'], data: partnerChange(c) }),
+  saveAssistance: (c) => ({ name: 'booking.assistance_requested', subject: c.params['bookingId'], data: { bookingId: c.params['bookingId'], passengerId: decodeURIComponent(c.params['passengerId']), action: 'REQUESTED' }, ...(c.caller.ownerId ? { ownerId: c.caller.ownerId } : {}) }),
+  deleteAssistance: (c) => ({ name: 'booking.assistance_requested', subject: c.params['bookingId'], data: { bookingId: c.params['bookingId'], passengerId: decodeURIComponent(c.params['passengerId']), action: 'REMOVED' }, ...(c.caller.ownerId ? { ownerId: c.caller.ownerId } : {}) }),
 };
 
 /** El evento de una escritura del enrutador que salió bien (2xx), o `undefined` si esa ruta no produce eventos. */

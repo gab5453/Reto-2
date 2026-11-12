@@ -22,7 +22,7 @@ const uri = (ref: SchemaRef) => `${BASE}${ref.file}#${ref.pointer}`;
 function withoutReadOnlyRequired(node: unknown): unknown {
   if (Array.isArray(node)) return node.map(withoutReadOnlyRequired);
   if (!node || typeof node !== 'object') return node;
-  const copy = Object.fromEntries(Object.entries(node).map(([key, value]) => [key, withoutReadOnlyRequired(value)])) as Json;
+  const copy: Json = Object.fromEntries(Object.entries(node).map(([key, value]) => [key, withoutReadOnlyRequired(value)]));
   const properties = copy['properties'] as Record<string, { readOnly?: boolean }> | undefined;
   if (Array.isArray(copy['required']) && properties) copy['required'] = (copy['required'] as string[]).filter((name) => !properties[name]?.readOnly);
   return copy;
@@ -136,13 +136,13 @@ export class ContractValidator {
       if (!validate(values)) {
         // El nombre visible es el del contrato (`X-Device-Fingerprint`, no `x-device-fingerprint`).
         const pretty = new Map(declared.map((p) => [location === 'header' ? p.name.toLowerCase() : p.name, p.name]));
-        errors.push(...toInvalidParams(validate.errors, location).map((e) => ({ ...e, name: pretty.get(e.name.split(/[.[]/)[0]!) ?? e.name })));
+        errors.push(...toInvalidParams(validate.errors, location).map((e) => ({ ...e, name: pretty.get(e.name.split(/[.[]/)[0]) ?? e.name })));
       }
       return values;
     };
     const params = pick('path', raw.params);
     const query = pick('query', raw.query);
-    const headers = pick('header', raw.headers as Record<string, unknown>);
+    const headers = pick('header', raw.headers);
 
     let body: unknown;
     const requestBody = operation.requestBody;
@@ -189,7 +189,7 @@ export class Projector {
   private walk(value: unknown, schema: Json | undefined, file: string, depth: number, hidden: 'readOnly' | 'writeOnly'): unknown {
     if (!schema || depth > 40 || value === null || value === undefined) return value;
     if (typeof schema['$ref'] === 'string') {
-      const target = this.files.resolve(schema['$ref'] as string, file);
+      const target = this.files.resolve(schema['$ref'], file);
       return this.walk(value, this.files.at(target) as Json, target.file, depth + 1, hidden);
     }
     if (Array.isArray(value)) {
@@ -219,7 +219,7 @@ export class Projector {
   private flag(schema: Json, file: string, name: 'readOnly' | 'writeOnly'): boolean {
     if (schema[name] === true) return true;
     if (typeof schema['$ref'] !== 'string') return false;
-    const target = this.files.resolve(schema['$ref'] as string, file);
+    const target = this.files.resolve(schema['$ref'], file);
     return (this.files.at(target) as Json | undefined)?.[name] === true;
   }
 
@@ -230,7 +230,7 @@ export class Projector {
     const visit = (node: Json | undefined, at: string, level: number) => {
       if (!node || level > 20) return;
       if (typeof node['$ref'] === 'string') {
-        const target = this.files.resolve(node['$ref'] as string, at);
+        const target = this.files.resolve(node['$ref'], at);
         visit(this.files.at(target) as Json, target.file, level + 1);
         return;
       }

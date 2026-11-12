@@ -76,12 +76,12 @@ describe.skipIf(!url)('PostgresEsbStore (concurrencia real)', () => {
     expect([...first, ...second].every((e) => e.status === 'PROCESSING' && e.attempts === 1)).toBe(true);
     expect(await a.claimInbound(now, 50)).toHaveLength(0); // ya tienen su plazo de 30 s
     const [one] = first;
-    await a.finishInbound(one!.id, 'RETRY', { problem: { code: 'PROVIDER_UNAVAILABLE' } }, now, new Date(Date.now() - 1).toISOString());
+    await a.finishInbound(one.id, 'RETRY', { problem: { code: 'PROVIDER_UNAVAILABLE' } }, now, new Date(Date.now() - 1).toISOString());
     const again = await b.claimInbound(new Date().toISOString(), 50);
-    expect(again.map((e) => e.id)).toEqual([one!.id]);
-    expect(again[0]!.attempts).toBe(2);
-    await b.finishInbound(one!.id, 'PROCESSED', { issued: 2 }, new Date().toISOString());
-    expect(await a.inbound(one!.id)).toMatchObject({ status: 'PROCESSED', outcome: { issued: 2 } });
+    expect(again.map((e) => e.id)).toEqual([one.id]);
+    expect(again[0].attempts).toBe(2);
+    await b.finishInbound(one.id, 'PROCESSED', { issued: 2 }, new Date().toISOString());
+    expect(await a.inbound(one.id)).toMatchObject({ status: 'PROCESSED', outcome: { issued: 2 } });
     expect(await a.lastInboundAt()).not.toBeNull();
   });
 
@@ -123,12 +123,12 @@ describe.skipIf(!url)('PostgresEsbStore (concurrencia real)', () => {
   // Con la suite completa en paralelo y Docker encendido puede pasar de 5 s (sola tarda < 1 s).
   it('V2.11 — outbox: el mismo evento guardado dos veces queda una; dos réplicas del relé lo toman una sola vez', async () => {
     const events = Array.from({ length: 5 }, (_, n) => createCloudEvent({ name: 'booking.confirmed', visibility: 'public', subject: `s${n}`, data: { n }, correlationId: 'corr-pg' }));
-    expect(await Promise.all([a.insertOutbox(events[0]!, 'partner:X:u', new Date().toISOString()), b.insertOutbox(events[0]!, 'partner:X:u', new Date().toISOString())])).toEqual(expect.arrayContaining([true, false]));
+    expect(await Promise.all([a.insertOutbox(events[0], 'partner:X:u', new Date().toISOString()), b.insertOutbox(events[0], 'partner:X:u', new Date().toISOString())])).toEqual(expect.arrayContaining([true, false]));
     for (const e of events.slice(1)) await a.insertOutbox(e, undefined, new Date().toISOString());
     const [first, second] = await Promise.all([a.claimOutbox(3, 30_000), b.claimOutbox(3, 30_000)]);
     const ids = [...first, ...second].map((e) => e.id);
     expect(new Set(ids).size).toBe(5);
-    expect(first.concat(second).find((e) => e.id === events[0]!.id)!.ownerId).toBe('partner:X:u');
+    expect(first.concat(second).find((e) => e.id === events[0].id)!.ownerId).toBe('partner:X:u');
     for (const id of ids) await a.markOutboxPublished(id, new Date().toISOString());
     expect(await b.outboxStats()).toMatchObject({ pending: 0 });
   }, 30_000);

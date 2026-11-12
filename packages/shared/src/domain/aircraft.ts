@@ -106,7 +106,7 @@ export function removeAircraftType(name: AircraftType): void {
 /** La ficha de un tipo del catálogo, o `undefined` si no existe. */
 export function aircraftTypeSpec(name: AircraftType): AircraftTypeSpec | undefined {
   if (!AIRCRAFT_LAYOUTS[name]) return undefined;
-  return { name, registrationPrefix: REGISTRATION_PREFIX[name]!, maxRouteKm: AIRCRAFT_MAX_ROUTE_KM[name] ?? null, turnaroundMinutes: TURNAROUND_MINUTES[name]!, cabins: AIRCRAFT_LAYOUTS[name]! };
+  return { name, registrationPrefix: REGISTRATION_PREFIX[name], maxRouteKm: AIRCRAFT_MAX_ROUTE_KM[name] ?? null, turnaroundMinutes: TURNAROUND_MINUTES[name], cabins: AIRCRAFT_LAYOUTS[name] };
 }
 
 registerAircraftTypes(SEED_AIRCRAFT_TYPES);
@@ -129,8 +129,8 @@ export const seatsPerRow = (layout: string): number => layout.replace(/-/g, '').
  * Business desde la fila 1; Economy sigue después. En Economy, la primera fila tiene más espacio y la del medio es de emergencia.
  */
 export function buildCabinLayouts(business: { seats: number; configuration: string }, economy: { seats: number; configuration: string }): CabinLayout[] {
-  const businessLayout = SEAT_CONFIGURATIONS.BUSINESS[business.configuration]!;
-  const economyLayout = SEAT_CONFIGURATIONS.ECONOMY[economy.configuration]!;
+  const businessLayout = SEAT_CONFIGURATIONS.BUSINESS[business.configuration];
+  const economyLayout = SEAT_CONFIGURATIONS.ECONOMY[economy.configuration];
   const businessRows = business.seats / seatsPerRow(businessLayout);
   const economyRows = economy.seats / seatsPerRow(economyLayout);
   const firstEconomy = businessRows + 1;
@@ -156,7 +156,7 @@ export const totalSeats = (aircraftType: AircraftType): number => seatsByCabin(a
 
 /** Avión por distancia de la ruta: el de menor alcance que la cubre. */
 export function aircraftFor(distanceKm: number): AircraftType {
-  return AIRCRAFT_TYPES.find((type) => AIRCRAFT_MAX_ROUTE_KM[type] === null || distanceKm < AIRCRAFT_MAX_ROUTE_KM[type]!)!;
+  return AIRCRAFT_TYPES.find((type) => AIRCRAFT_MAX_ROUTE_KM[type] === null || distanceKm < AIRCRAFT_MAX_ROUTE_KM[type])!;
 }
 
 /** ¿El tipo alcanza esa distancia? */

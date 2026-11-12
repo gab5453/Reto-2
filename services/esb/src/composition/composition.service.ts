@@ -72,7 +72,7 @@ export class CompositionService {
    */
   async flightOperations(query: OperationsQuery, now = new Date()) {
     if (!query.date || !DATE.test(query.date)) throw invalid('date', 'obligatoria, AAAA-MM-DD');
-    for (const name of ['origin', 'destination'] as const) if (query[name] !== undefined && !IATA.test(query[name]!)) throw invalid(name, 'código IATA de 3 letras');
+    for (const name of ['origin', 'destination'] as const) if (query[name] !== undefined && !IATA.test(query[name])) throw invalid(name, 'código IATA de 3 letras');
     if (query.status !== undefined && !(STATUSES as readonly string[]).includes(query.status)) throw invalid('status', `uno de ${STATUSES.join(', ')}`);
     const limit = query.limit === undefined ? 10 : Number(query.limit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw invalid('limit', 'entero entre 1 y 50');
@@ -141,8 +141,8 @@ export class CompositionService {
 
   /** Indicadores del panel (`DashboardIndicators` de ms-admin): reservas, ingresos y ventas por ruta y canal, usuarios por rol, vuelos de hoy. */
   async indicators(caller: Caller, range: { from?: string; to?: string }) {
-    for (const name of ['from', 'to'] as const) if (range[name] !== undefined && !DATE.test(range[name]!)) throw invalid(name, 'AAAA-MM-DD');
-    const search = new URLSearchParams(Object.entries(range).filter(([, v]) => v !== undefined) as [string, string][]).toString();
+    for (const name of ['from', 'to'] as const) if (range[name] !== undefined && !DATE.test(range[name])) throw invalid(name, 'AAAA-MM-DD');
+    const search = new URLSearchParams(Object.entries(range).filter((entry): entry is [string, string] => entry[1] !== undefined)).toString();
     const [bookings, users, flights] = await Promise.all([
       this.upstreams.rest.bookings.json('GET', `/indicators${search ? `?${search}` : ''}`, { caller }),
       this.upstreams.rest.identity.json('GET', '/users/summary', { caller }),
@@ -180,7 +180,7 @@ export class CompositionService {
       const legs = booking.itineraries.map((itinerary) => itinerary.segments);
       const itineraryIndex = legs.findIndex((segments) => segments.some((segment) => segment.segmentId === segmentId));
       if (itineraryIndex < 0) continue;
-      const segments = legs[itineraryIndex]!;
+      const segments = legs[itineraryIndex];
       const position = segments.findIndex((segment) => segment.segmentId === segmentId);
       const connection = segments[position + 1];
       const next = connection ?? legs[itineraryIndex + 1]?.[0];

@@ -27,7 +27,7 @@ export function fromProto<T = unknown>(value: unknown): T {
   if (!value || typeof value !== 'object') return value as T;
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
-    if (key in PREFIXES) result[key] = strip(item, [PREFIXES[key]!]);
+    if (key in PREFIXES) result[key] = strip(item, [PREFIXES[key]]);
     else if (key === 'status') result[key] = strip(item, STATUS_PREFIXES);
     else result[key] = fromProto(item);
     if (result[key] === null && item !== null) delete result[key];

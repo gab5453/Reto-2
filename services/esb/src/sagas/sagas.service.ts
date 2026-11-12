@@ -18,7 +18,7 @@ import {
   IssueTicketsSaga,
   PaymentFailedSaga,
 } from './booking-sagas.js';
-import { SagaEngine, type SagaDefinition, type SagaOutcome } from './engine.js';
+import { SagaEngine, type SagaDefinition } from './engine.js';
 import { FlightStatusSaga, PublishTimetableSaga, SavePricesSaga } from './operations-sagas.js';
 
 const json = (status: number, body: unknown): StoredResponse => ({ status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -49,7 +49,7 @@ export class SagasService {
     @Inject(PublishTimetableSaga) readonly publishTimetable: PublishTimetableSaga,
   ) {
     for (const definition of [createBooking, issueTickets, paymentFailed, changeSeats, checkIn, cancel, changeDate, addBaggage, assistanceReady, flightStatus, savePrices, publishTimetable]) {
-      engine.register(definition as SagaDefinition<never, unknown>);
+      engine.register(definition);
     }
   }
 
@@ -71,7 +71,7 @@ export class SagasService {
       if (outcome === 'deadline' || outcome.status === 'PENDING') {
         return options.onPending ? options.onPending(sagaId) : json(202, { sagaId, status: 'RUNNING', type: definition.type });
       }
-      const completed = outcome as Extract<SagaOutcome<R>, { status: 'COMPLETED' }>;
+      const completed = outcome;
       return options.onCompleted ? options.onCompleted(completed.result, sagaId) : json(options.okStatus ?? 200, completed.result);
     } catch (error) {
       if (error instanceof ProblemDetailsException && error.problem.status < 500) return problemResponse(error, instance);
@@ -100,7 +100,7 @@ export class SagasService {
   }
 
   /** Estado público de una saga: sin su entrada (puede tener datos personales o de salud). */
-  static view(record: SagaRecord) {
+  static view(this: void, record: SagaRecord) {
     return {
       sagaId: record.sagaId,
       type: record.type,

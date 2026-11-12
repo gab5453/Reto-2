@@ -48,8 +48,8 @@ describe.skipIf(!url)('PostgresFlightStatusStore (concurrencia real)', () => {
     ]);
     const history = await service.history('EA100', DAY);
     expect(history).toHaveLength(results.filter((r) => r.status === 'fulfilled').length);
-    expect(history[0]!.previousStatus).toBe('SCHEDULED');
-    for (let i = 1; i < history.length; i++) expect(history[i]!.previousStatus).toBe(history[i - 1]!.newStatus);
+    expect(history[0].previousStatus).toBe('SCHEDULED');
+    for (let i = 1; i < history.length; i++) expect(history[i].previousStatus).toBe(history[i - 1].newStatus);
     // Sin el candado, las dos cancelaciones leerían SCHEDULED a la vez y las dos "ganarían".
     expect(history.filter((c) => c.newStatus === 'CANCELLED')).toHaveLength(1);
     expect(results.map(codeOf).filter((c) => c !== 'OK').every((c) => c === 'INVALID_STATUS_TRANSITION')).toBe(true);

@@ -186,12 +186,12 @@ function combineLegs(optionsPerLeg: Itinerary[][]): Itinerary[][] {
     return optionsPerLeg.reduce<Itinerary[][]>((combinations, options) => combinations.flatMap((combination) => options.map((option) => [...combination, option])), [[]]);
   }
   const size = Math.max(...optionsPerLeg.map((options) => options.length));
-  return Array.from({ length: size }, (_, index) => optionsPerLeg.map((options) => options[index % options.length]!));
+  return Array.from({ length: size }, (_, index) => optionsPerLeg.map((options) => options[index % options.length]));
 }
 
 function isChronological(itineraries: Itinerary[]): boolean {
   return itineraries.every((itinerary, index) => {
     const previous = itineraries[index - 1];
-    return !previous || Date.parse(itinerary.flights[0]!.departureAt) >= Date.parse(previous.flights.at(-1)!.arrivalAt) + MIN_MINUTES_BETWEEN_LEGS * 60_000;
+    return !previous || Date.parse(itinerary.flights[0].departureAt) >= Date.parse(previous.flights.at(-1)!.arrivalAt) + MIN_MINUTES_BETWEEN_LEGS * 60_000;
   });
 }

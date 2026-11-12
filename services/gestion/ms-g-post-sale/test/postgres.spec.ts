@@ -46,9 +46,9 @@ describe.skipIf(!url)('PostgresPostSaleStore (concurrencia real)', () => {
     const context = booking();
     const [offer] = await service.createDateChangeOffers(context, [{ replacedItineraryId: 'EA100-20261028', newItineraryId: 'EA100-20261029', segmentIds: ['EA100-20261029'], price: { currency: 'USD', baseFare: '110.00', taxes: '20.00', total: '130.00' } }]);
     const saga = randomUUID();
-    await service.consumeDateChangeOffer(saga, context.bookingId, offer!.changeOfferId);
-    expect(await service.releaseDateChangeOffer(saga, offer!.changeOfferId)).toBe(true);
-    const results = await Promise.allSettled([1, 2].map(() => service.consumeDateChangeOffer(randomUUID(), context.bookingId, offer!.changeOfferId)));
+    await service.consumeDateChangeOffer(saga, context.bookingId, offer.changeOfferId);
+    expect(await service.releaseDateChangeOffer(saga, offer.changeOfferId)).toBe(true);
+    const results = await Promise.allSettled([1, 2].map(() => service.consumeDateChangeOffer(randomUUID(), context.bookingId, offer.changeOfferId)));
     expect(results.map(codeOf).sort()).toEqual(['NOT_FOUND', 'OK']);
   });
 

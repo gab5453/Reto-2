@@ -26,7 +26,7 @@ export class RouterController {
 
   @Post('offers/:rpc')
   async offers(@Param('rpc') rpc: string, @Req() request: RawRequest, @Res() response: Response): Promise<void> {
-    send(response, await this.router.offers(rpc, { body: request.rawBody ?? Buffer.alloc(0), caller: callerOf(request), idempotencyKey: request.header('idempotency-key'), instance: request.originalUrl.split('?')[0]! }));
+    send(response, await this.router.offers(rpc, { body: request.rawBody ?? Buffer.alloc(0), caller: callerOf(request), idempotencyKey: request.header('idempotency-key'), instance: request.originalUrl.split('?')[0] }));
   }
 
   @All(':service/*path')
@@ -42,7 +42,7 @@ export class RouterController {
         contentType: request.header('content-type'),
         caller: callerOf(request),
         idempotencyKey: request.header('idempotency-key'),
-        instance: request.originalUrl.split('?')[0]!,
+        instance: request.originalUrl.split('?')[0],
       }),
     );
   }

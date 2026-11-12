@@ -82,7 +82,7 @@ describe('precios, rutas y asistencia', () => {
     expect(esb.calls.filter((c) => c.path.startsWith('/sagas/')).map((c) => c.path)).toEqual(['/sagas/fare-prices', '/sagas/pricing', `/sagas/promotion-agreements/${PARTNER_ID}`]);
     // P-1: la tarifa base y los precios por ruta vienen en la vista, y la saga recibe lo que cambia.
     expect(response.body.pricing).toMatchObject({ perKm: 0.09, routePrices: [{ routeId: 'EA324-EA325' }] });
-    expect(JSON.parse(esb.calls.find((c) => c.path === '/sagas/pricing')!.body!)).toEqual({ perKm: 0.09, route: PRICING.routePrices[0] });
+    expect(JSON.parse(esb.calls.find((c) => c.path === '/sagas/pricing')!.body)).toEqual({ perKm: 0.09, route: PRICING.routePrices[0] });
   });
 
   it('createRoute: la saga "Publicar horario" responde solo la ruta (201 ScheduledRoute), sin el resultado de Offers', async () => {
@@ -272,7 +272,7 @@ describe('cancelación de administrador (excepción a D2)', () => {
     expectOwn('post', '/ecoairlines/admin/bookings/{bookingId}/cancel', response);
     expect(response.body).toEqual({ bookingId: BOOKING, status: 'CANCELLED' });
     const call = esb.last()!;
-    expect(JSON.parse(call.body!)).toEqual({ reasonCode: 'SAGA_COMPENSATION', reason: 'Cancelación de administrador: Reserva de prueba de Booking que quedó activa' });
+    expect(JSON.parse(call.body)).toEqual({ reasonCode: 'SAGA_COMPENSATION', reason: 'Cancelación de administrador: Reserva de prueba de Booking que quedó activa' });
     expect(call.headers['x-actor-id']).toBeDefined();
     await admin(http().post(`/api/v2/ecoairlines/admin/bookings/${BOOKING}/cancel`)).send({ reason: 'x' }).expect(400);
     await http().post(`/api/v2/ecoairlines/admin/bookings/${BOOKING}/cancel`).set('Authorization', tokens.customer()).send({ reason: 'Quiero cancelar' }).expect(403);

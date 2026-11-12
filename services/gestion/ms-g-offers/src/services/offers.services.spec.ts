@@ -305,11 +305,11 @@ describe('HoldsService.consume: el hold se convierte en reserva', () => {
   });
   it('si otro asiento libre se toma a la vez, prueba con el siguiente', async () => {
     tx.insertBookingSeat.mockResolvedValueOnce(true).mockResolvedValueOnce(false).mockResolvedValue(true);
-    expect((await consumir()).seats[1]!.seatNumber).toBe('4C');
+    expect((await consumir()).seats[1].seatNumber).toBe('4C');
   });
   it('pasajeros distintos a los del hold → PASSENGER_COUNT_MISMATCH', async () => expect(await codeOf(consumir(pasajeros.slice(0, 2)))).toBe('PASSENGER_COUNT_MISMATCH'));
   it('un infante con asiento → INFANT_SEAT_NOT_ALLOWED', async () =>
-    expect(await codeOf(consumir([pasajeros[0]!, pasajeros[1]!, { ...pasajeros[2]!, requestedSeats: [{ segmentId: SEG, seatNumber: '20A' }] }]))).toBe('INFANT_SEAT_NOT_ALLOWED'));
+    expect(await codeOf(consumir([pasajeros[0], pasajeros[1], { ...pasajeros[2], requestedSeats: [{ segmentId: SEG, seatNumber: '20A' }] }]))).toBe('INFANT_SEAT_NOT_ALLOWED'));
   it('si dos sagas lo consumen a la vez, la segunda → HOLD_ALREADY_CONSUMED', async () => {
     tx.updateHoldIf.mockResolvedValue(false);
     expect(await codeOf(consumir())).toBe('HOLD_ALREADY_CONSUMED');
@@ -543,7 +543,16 @@ describe('StockSyncService: stock a Booking por REST (D53)', () => {
     await sync.flush();
     const esperas = store.markStockFailed.mock.calls.map((call) => Date.parse(call[4] as string) - AHORA);
     expect(esperas).toEqual([1_000, 8_000, 60_000]);
-    expect(store.markStockFailed.mock.calls[0]![3]).toContain('HTTP 503 caído');
+    expect(store.markStockFailed.mock.calls[0][3]).toContain('HTTP 503 caído');
+  });
+  it('CI-2: si Booking responde el detalle como lista (errores de validación), se guarda legible, no «[object Object]»', async () => {
+    store.pendingStock.mockResolvedValueOnce([pendiente()]).mockResolvedValue([]);
+    responde(422, { detail: [{ loc: ['body', 'date'], msg: 'invalid date' }] });
+    await sync.flush();
+    const motivo = store.markStockFailed.mock.calls[0][3] as string;
+    expect(motivo).toContain('HTTP 422');
+    expect(motivo).toContain('invalid date');
+    expect(motivo).not.toContain('[object Object]');
   });
   it('un vuelo que ya salió no se envía y queda cerrado', async () => {
     store.pendingStock.mockResolvedValueOnce([pendiente({ date: '2026-11-30' })]).mockResolvedValue([]);

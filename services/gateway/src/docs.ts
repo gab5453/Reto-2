@@ -1,5 +1,5 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import type { Express, Request, Response } from 'express';
+import type { Request, Response } from 'express';
 import swaggerUi from 'swagger-ui-express';
 import type { ContractFiles } from '@ecoairlines/shared/respuesta/index.js';
 import { DOCS_PATH } from './http.js';
@@ -20,7 +20,7 @@ export function contractDocument(files: ContractFiles): Record<string, unknown> 
 /** Swagger UI en `/api/docs` y el documento en `/api/docs/openapi.json` (PLAN.md §4.4). */
 export function setupDocs(app: NestExpressApplication, files: ContractFiles): void {
   const document = contractDocument(files);
-  (app.getHttpAdapter().getInstance() as Express).get(DOCS_JSON_PATH, (_req: Request, res: Response) => {
+  (app.getHttpAdapter().getInstance()).get(DOCS_JSON_PATH, (_req: Request, res: Response) => {
     res.json(document);
   });
   app.use(

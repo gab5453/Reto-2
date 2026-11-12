@@ -65,7 +65,7 @@ export function bcbp(record: Pick<CheckInRecord, 'firstName' | 'lastName' | 'pnr
   const flight = record.flightNumber.slice(2).padStart(4, '0').padEnd(5, ' ');
   const compartment = record.cabinClass === 'BUSINESS' ? 'J' : record.cabinClass === 'FIRST' ? 'F' : 'Y';
   const seatMatch = record.seat ? /^(\d+)([A-Z])$/.exec(record.seat) : null;
-  const seat = seatMatch ? `${seatMatch[1]!.padStart(3, '0')}${seatMatch[2]}` : 'INF ';
+  const seat = seatMatch ? `${seatMatch[1].padStart(3, '0')}${seatMatch[2]}` : 'INF ';
   const sequence = String(record.boardingPosition).padStart(4, '0').padEnd(5, ' ');
   return `M1${name}E${record.pnr.padEnd(7, ' ')}${record.origin}${record.destination}${carrier}${flight}${julianDay(record.departureAt.slice(0, 10))}${compartment}${seat}${sequence}100`;
 }

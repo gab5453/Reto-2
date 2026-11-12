@@ -50,42 +50,42 @@ describe('copia local para usar sin conexión', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  const load = (now?: number) => offline['loadOfflineData']!(now) as { owner: string; trips: unknown[]; passes: { barcode: string }[] } | null;
+  const load = (now?: number) => offline['loadOfflineData'](now) as { owner: string; trips: unknown[]; passes: { barcode: string }[] } | null;
 
   it('★ guarda solo lo necesario para abordar, aunque le pasen más datos', () => {
     const sensitive = { documentNumber: 'P1234567', contact: { email: 'ana@x.test' }, assistance: { notes: 'silla' }, paymentReference: 'pay_123', accessToken: 'jwt' };
-    offline['savePasses']!('ana@x.test', 'B1', [{ ...pass(), ...sensitive }]);
-    offline['saveTrips']!('ana@x.test', [{ bookingId: 'B1', pnr: 'ABC123', status: 'CONFIRMED', origin: 'UIO', destination: 'GYE', departureDate: day(1), grandTotal: { total: '10' }, ...sensitive }]);
+    offline['savePasses']('ana@x.test', 'B1', [{ ...pass(), ...sensitive }]);
+    offline['saveTrips']('ana@x.test', [{ bookingId: 'B1', pnr: 'ABC123', status: 'CONFIRMED', origin: 'UIO', destination: 'GYE', departureDate: day(1), grandTotal: { total: '10' }, ...sensitive }]);
     const raw = storage.get(KEY)!;
     for (const value of ['P1234567', 'silla', 'pay_123', 'jwt', 'grandTotal']) expect(raw).not.toContain(value);
     expect(load()!.passes).toHaveLength(1);
   });
 
   it('un segundo usuario en el mismo equipo no ve lo del primero', () => {
-    offline['savePasses']!('ana@x.test', 'B1', [pass()]);
-    offline['savePasses']!('luis@x.test', 'B2', [pass({ barcode: 'DE-LUIS' })]);
+    offline['savePasses']('ana@x.test', 'B1', [pass()]);
+    offline['savePasses']('luis@x.test', 'B2', [pass({ barcode: 'DE-LUIS' })]);
     expect(load()!.owner).toBe('luis@x.test');
     expect(load()!.passes.map((item) => item.barcode)).toEqual(['DE-LUIS']);
   });
 
   it('volver a ver una reserva reemplaza sus pases; cancelarla los retira', () => {
-    offline['savePasses']!('ana@x.test', 'B1', [pass()]);
-    offline['savePasses']!('ana@x.test', 'B1', [pass({ barcode: 'NUEVO' })]);
+    offline['savePasses']('ana@x.test', 'B1', [pass()]);
+    offline['savePasses']('ana@x.test', 'B1', [pass({ barcode: 'NUEVO' })]);
     expect(load()!.passes.map((item) => item.barcode)).toEqual(['NUEVO']);
-    offline['saveTrips']!('ana@x.test', [{ bookingId: 'B1', pnr: 'ABC123', status: 'CANCELLED' }]);
+    offline['saveTrips']('ana@x.test', [{ bookingId: 'B1', pnr: 'ABC123', status: 'CANCELLED' }]);
     expect(load()!.passes).toEqual([]);
   });
 
   it('★ los vuelos que ya pasaron se purgan también del dispositivo', () => {
-    offline['savePasses']!('ana@x.test', 'B1', [pass({ departureAt: day(-2), barcode: 'VIEJO' })]);
-    offline['savePasses']!('ana@x.test', 'B2', [pass({ bookingId: 'B2', departureAt: day(1) })]);
+    offline['savePasses']('ana@x.test', 'B1', [pass({ departureAt: day(-2), barcode: 'VIEJO' })]);
+    offline['savePasses']('ana@x.test', 'B2', [pass({ bookingId: 'B2', departureAt: day(1) })]);
     expect(load()!.passes).toHaveLength(1);
     expect(storage.get(KEY)).not.toContain('VIEJO');
   });
 
   it('★ «Salir» borra todo y un dato corrupto no rompe la página', () => {
-    offline['savePasses']!('ana@x.test', 'B1', [pass()]);
-    offline['clearOfflineData']!();
+    offline['savePasses']('ana@x.test', 'B1', [pass()]);
+    offline['clearOfflineData']();
     expect(storage.has(KEY)).toBe(false);
     expect(load()).toBeNull();
     storage.set(KEY, '{no es json');

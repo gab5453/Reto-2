@@ -56,8 +56,8 @@ export class FakeMsg {
       req.on('end', () => {
         const [, service, ...rest] = (req.url ?? '/').split('/');
         const path = `/${rest.join('/')}`;
-        if (this.down.has(service!)) return req.socket.destroy();
-        const received: Received = { service: service!, method: req.method!, path, headers: req.headers, body: Buffer.concat(chunks).toString('utf8') };
+        if (this.down.has(service)) return req.socket.destroy();
+        const received: Received = { service: service, method: req.method!, path, headers: req.headers, body: Buffer.concat(chunks).toString('utf8') };
         if (!path.startsWith('/health')) this.received.push(received);
         const match = this.handlers.find((h) => h.service === service && h.method === req.method && h.path.test(path));
         const result = match?.handler(received) ??
@@ -105,7 +105,7 @@ export class FakeOffers {
     const problemType = protobuf.loadSync(file).lookupType('ecoairlines.offers.v1.ProblemDetails');
     this.server = new grpc.Server();
     for (const service of ['CatalogService', 'HoldService', 'InventoryService', 'PublishingService']) {
-      const def = pkg[service]!.service;
+      const def = pkg[service].service;
       const impl: grpc.UntypedServiceImplementation = {};
       for (const rpc of Object.keys(def)) {
         impl[rpc] = (call: grpc.ServerUnaryCall<Record<string, unknown>, unknown>, callback: grpc.sendUnaryData<unknown>) => {

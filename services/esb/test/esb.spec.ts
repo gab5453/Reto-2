@@ -96,11 +96,11 @@ describe('enrutador REST', () => {
     expect(response.headers['cache-control']).toBe('no-store');
     expect(response.headers['x-correlation-id']).toBe(CORR);
     const [call] = msg.calls('bookings');
-    expect(call!.headers['authorization']).toBe('Bearer token-de-servicio-del-esb');
-    expect(call!.headers['x-owner-id']).toBe(OWNER);
-    expect(call!.headers['x-correlation-id']).toBe(CORR);
-    expect(call!.headers['x-request-id']).toMatch(/^req-/);
-    expect(call!.headers['x-request-id']).not.toBe('req-del-ms-respuesta');
+    expect(call.headers['authorization']).toBe('Bearer token-de-servicio-del-esb');
+    expect(call.headers['x-owner-id']).toBe(OWNER);
+    expect(call.headers['x-correlation-id']).toBe(CORR);
+    expect(call.headers['x-request-id']).toMatch(/^req-/);
+    expect(call.headers['x-request-id']).not.toBe('req-del-ms-respuesta');
   });
 
   it('conserva la query, el status y el ProblemDetails del MS.G (no lo traduce)', async () => {
@@ -132,9 +132,9 @@ describe('enrutador REST', () => {
     const response = await svc(http().post('/router/identity/oauth2/token')).type('form').send('grant_type=client_credentials&client_id=BOOKING_PROTOTIPO&client_secret=s3cr3t');
     expect(response.status).toBe(200);
     const [call] = msg.calls('identity', 'POST', '/oauth2/token');
-    expect(call!.headers['authorization']).toBeUndefined();
-    expect(call!.headers['content-type']).toContain('application/x-www-form-urlencoded');
-    expect(call!.body).toBe('grant_type=client_credentials&client_id=BOOKING_PROTOTIPO&client_secret=s3cr3t');
+    expect(call.headers['authorization']).toBeUndefined();
+    expect(call.headers['content-type']).toContain('application/x-www-form-urlencoded');
+    expect(call.body).toBe('grant_type=client_credentials&client_id=BOOKING_PROTOTIPO&client_secret=s3cr3t');
   });
 
   it('MS.G caído → 503 PROVIDER_UNAVAILABLE con Retry-After; tras 5 fallas el circuito se abre y falla al instante', async () => {
@@ -167,7 +167,7 @@ describe('idempotencia (D6)', () => {
     expect(again.headers['idempotent-replayed']).toBe('true');
     expect(first.headers['idempotent-replayed']).toBeUndefined();
     expect(msg.calls('customers')).toHaveLength(1);
-    expect(msg.calls('customers')[0]!.headers['idempotency-key']).toBeUndefined(); // la resuelve el ESB
+    expect(msg.calls('customers')[0].headers['idempotency-key']).toBeUndefined(); // la resuelve el ESB
   });
 
   it('misma clave con otro cuerpo → 409 IDEMPOTENCY_KEY_REUSED; otro dueño con la misma clave no ve la respuesta ajena', async () => {
@@ -223,8 +223,8 @@ describe('enrutador gRPC (MS.G.Offers)', () => {
     expect(first.status).toBe(200);
     expect(again.body.hold.holdId).toBe(first.body.hold.holdId);
     expect(offers.calls).toHaveLength(1);
-    expect(offers.calls[0]!.request['offerId']).toBe('OFF-1');
-    expect(offers.calls[0]!.metadata).toMatchObject({ authorization: 'Bearer token-de-servicio-del-esb', 'x-owner-id': OWNER, 'x-correlation-id': CORR });
+    expect(offers.calls[0].request['offerId']).toBe('OFF-1');
+    expect(offers.calls[0].metadata).toMatchObject({ authorization: 'Bearer token-de-servicio-del-esb', 'x-owner-id': OWNER, 'x-correlation-id': CORR });
   });
 
   it('un error de Offers vuelve con el status y el code de su trailer (HOLD_EXPIRED 410, no un genérico)', async () => {
@@ -290,8 +290,8 @@ describe('composición', () => {
     msg.on('flight-status', 'GET', /^\/flights\?/, () => ({ status: 200, body: { date: today, total: 2, items: [flightStatus('EA100', 'DELAYED', soon), flightStatus('EA102', 'CANCELLED', later)] } }));
     const page = await svc(http().get(`/composition/flight-operations?date=${today}&origin=UIO&limit=1`));
     expectContract('GET', '/composition/flight-operations', page);
-    expect(offers.calls[0]!.request).toMatchObject({ date: today, origin: 'UIO' });
-    expect(msg.calls('flight-status')[0]!.path).toBe(`/flights?date=${today}&origin=UIO`);
+    expect(offers.calls[0].request).toMatchObject({ date: today, origin: 'UIO' });
+    expect(msg.calls('flight-status')[0].path).toBe(`/flights?date=${today}&origin=UIO`);
     expect(page.body.totalFlights).toBe(2);
     const [first] = page.body.items;
     expect(first).toMatchObject({ flightNumber: 'EA100', status: 'DELAYED', checkInOpen: true, loadFactor: 97, activeHolds: 2 });
@@ -314,8 +314,8 @@ describe('composición', () => {
     const response = await svc(http().get('/composition/indicators?from=2026-10-01')).set('X-Actor-Id', ADMIN);
     expectContract('GET', '/composition/indicators', response);
     expect(response.body).toMatchObject({ flightsToday: 4, bookings: { totalBookings: 3 } });
-    expect(msg.calls('bookings')[0]!.path).toBe('/indicators?from=2026-10-01');
-    expect(msg.calls('bookings')[0]!.headers['x-actor-id']).toBe(ADMIN);
+    expect(msg.calls('bookings')[0].path).toBe('/indicators?from=2026-10-01');
+    expect(msg.calls('bookings')[0].headers['x-actor-id']).toBe(ADMIN);
   });
 
   it('asistencia por vuelo: exige X-Actor-Id; un vuelo inexistente → 404 de FlightStatus', async () => {
@@ -434,15 +434,15 @@ describe('entrada de eventos de Booking (D34)', () => {
     await settle();
     expect(msg.calls('bookings', 'POST', `/bookings/${booking.bookingId}/tickets`)).toHaveLength(1);
     expect(offers.calls.filter((c) => c.rpc === 'TransitionBookingSeats')).toHaveLength(1);
-    expect(offers.calls[0]!.request).toMatchObject({ bookingId: booking.bookingId, fromStatus: 'SEAT_STATUS_BOOKED', toStatus: 'SEAT_STATUS_TICKETED' });
+    expect(offers.calls[0].request).toMatchObject({ bookingId: booking.bookingId, fromStatus: 'SEAT_STATUS_BOOKED', toStatus: 'SEAT_STATUS_TICKETED' });
     expect(booking.tickets.every((t) => t.status === 'ISSUED')).toBe(true);
     const issued = publisher.published.filter((p) => p.event.type === 'ec.edu.epn.booking.vuelos.booking.ticket_issued');
     expect(issued).toHaveLength(1);
     // Mismo proceso de negocio: el evento publicado y cada llamada llevan el correlationid de Booking.
-    expect(issued[0]!.event.correlationid).toBe('corr-combo-booking-77');
-    expect(msg.calls('bookings')[0]!.headers['x-correlation-id']).toBe('corr-combo-booking-77');
-    expect(issued[0]!.ownerId).toBe(OWNER);
-    expect(issued[0]!.event.data).toMatchObject({ bookingId: booking.bookingId, ownerId: 'usr-v29', paymentReference: REFERENCE, partnerOrderId: 'ORD-BKP-1' });
+    expect(issued[0].event.correlationid).toBe('corr-combo-booking-77');
+    expect(msg.calls('bookings')[0].headers['x-correlation-id']).toBe('corr-combo-booking-77');
+    expect(issued[0].ownerId).toBe(OWNER);
+    expect(issued[0].event.data).toMatchObject({ bookingId: booking.bookingId, ownerId: 'usr-v29', paymentReference: REFERENCE, partnerOrderId: 'ORD-BKP-1' });
     expect((await store.inbound(event.id))!).toMatchObject({ status: 'PROCESSED', attempts: 1, outcome: { issued: 2 } });
   });
 
@@ -503,7 +503,7 @@ describe('entrada de eventos de Booking (D34)', () => {
     await deliver(cloudEvent('payment.failed', { bookingId: booking.bookingId, paymentReference: REFERENCE, failureReason: 'Fondos insuficientes' }));
     await settle();
     expect(booking.status).toBe('FAILED');
-    expect(JSON.parse(msg.calls('bookings', 'POST')[0]!.body)).toEqual({ errorCode: 'PAYMENT_NOT_AUTHORIZED', reason: 'Fondos insuficientes' });
+    expect(JSON.parse(msg.calls('bookings', 'POST')[0].body)).toEqual({ errorCode: 'PAYMENT_NOT_AUTHORIZED', reason: 'Fondos insuficientes' });
     expect(publisher.published.map((p) => p.event.type)).toEqual(['ec.edu.epn.booking.vuelos.booking.failed']);
     const again = cloudEvent('payment.failed', { bookingId: booking.bookingId });
     await deliver(again);
@@ -571,7 +571,7 @@ describe('telemetría del panel (V2.16, D50)', () => {
     const response = await admin(http().get('/composition/telemetry/latency').query({ from: '2026-10-26T10:00:00Z', to: '2026-10-26T11:00:00Z' })).expect(200);
     expectContract('GET', '/composition/telemetry/latency', response);
     expect(response.body).toEqual([{ service: 'gateway', p50_ms: 12, p95_ms: 80, p99_ms: 140, requests: 100, errorRate: 0.02 }]);
-    expect(msg.calls('prometheus')[0]!.path).toContain('%5B3600s%5D');
+    expect(msg.calls('prometheus')[0].path).toContain('%5B3600s%5D');
   });
 
   it('★ traza por X-Correlation-Id: pasos (Loki), sagas (saga_log) y eventos (Webhooks); 404 sin rastro', async () => {
@@ -590,7 +590,7 @@ describe('telemetría del panel (V2.16, D50)', () => {
     expect(response.body.steps.map((s: { service: string }) => s.service)).toEqual(['esb', 'gateway']);
     expect(response.body.sagas).toEqual([expect.objectContaining({ type: 'CREATE_BOOKING', status: 'COMPLETED' })]);
     expect(JSON.stringify(response.body)).not.toContain('secreto'); // la entrada de la saga nunca sale
-    expect(msg.calls('webhooks', 'GET')[0]!.headers['x-actor-id']).toBe(ADMIN);
+    expect(msg.calls('webhooks', 'GET')[0].headers['x-actor-id']).toBe(ADMIN);
     await admin(http().get('/composition/telemetry/traces/corr-sin-rastro')).expect(404);
 
     // O-2: con rango, Loki busca solo en esa ventana (7 días tardan ~24 s en la VM); un rango inválido → 400.
@@ -676,7 +676,7 @@ describe('telemetría del panel (V2.16, D50)', () => {
     const queues = await admin(http().get('/composition/telemetry/queues')).expect(200);
     expectContract('GET', '/composition/telemetry/queues', queues);
     expect(queues.body).toEqual([{ queue: 'webhooks.events', messages: 3, consumers: 1, deadLetters: 2 }]);
-    expect(msg.calls('rabbitmq')[0]!.headers['authorization']).toBe(`Basic ${Buffer.from('eco:clave-rabbit').toString('base64')}`);
+    expect(msg.calls('rabbitmq')[0].headers['authorization']).toBe(`Basic ${Buffer.from('eco:clave-rabbit').toString('base64')}`);
     msg.on('alertmanager', 'GET', /^\/api\/v2\/alerts\?/, () => ({ status: 200, body: [{ fingerprint: 'f1', labels: { alertname: 'StockSinEnviar', severity: 'warning' }, annotations: { summary: '736 cambios de stock sin enviar' }, startsAt: '2026-10-26T10:00:00Z' }] }));
     const alerts = await admin(http().get('/composition/telemetry/alerts')).expect(200);
     expectContract('GET', '/composition/telemetry/alerts', alerts);
@@ -703,10 +703,10 @@ describe('catálogo de aeropuertos (PLAN_Telemetria_Asientos M-1)', () => {
     msg.on('schedule', 'DELETE', '/airports/JPJ', () => ({ status: 204 }));
     const created = await svc(http().post('/router/schedule/airports')).set('X-Actor-Id', ADMIN).send({ code: 'JPJ', city: 'Jipijapa', name: 'Aeródromo de Jipijapa', country: 'EC', lat: -1.3486, lon: -80.5786, utcOffsetMinutes: -300 });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
-    expect(msg.calls('schedule', 'POST', '/airports')[0]!.headers['x-actor-id']).toBe(ADMIN);
+    expect(msg.calls('schedule', 'POST', '/airports')[0].headers['x-actor-id']).toBe(ADMIN);
     expect(AIRPORTS['JPJ']).toMatchObject({ city: 'Jipijapa', country: 'EC', active: true });
     expect((await svc(http().put('/router/schedule/airports/JPJ')).set('X-Actor-Id', ADMIN).send({ ...airport })).status).toBe(200);
-    expect(AIRPORTS['JPJ']!.country).toBe('CO'); // ahora sería internacional desde Quito
+    expect(AIRPORTS['JPJ'].country).toBe('CO'); // ahora sería internacional desde Quito
     expect((await svc(http().delete('/router/schedule/airports/JPJ')).set('X-Actor-Id', ADMIN)).status).toBe(204);
     expect(AIRPORTS['JPJ']).toBeUndefined();
   });
@@ -744,7 +744,7 @@ describe('vista «Recorrido» y mapa en vivo (PLAN_Telemetria_Asientos T-4)', ()
     const response = await admin(http().get(`/composition/telemetry/journeys/${corr}`)).expect(200);
     expectContract('GET', '/composition/telemetry/journeys/{correlationId}', response);
     expect(response.body).toMatchObject({ correlationId: corr, traces: 1, hops: [{ sequence: 1, from: 'cliente', to: 'gateway', operation: 'POST /api/graphql', durationMs: 500 }], window: { source: 'RECORDS' } });
-    const search = new URL(msg.calls('tempo', 'GET', /^\/api\/search/)[0]!.path, 'http://x').searchParams;
+    const search = new URL(msg.calls('tempo', 'GET', /^\/api\/search/)[0].path, 'http://x').searchParams;
     expect(search.get('q')).toBe(`{ span.correlation_id = "${corr}" }`);
     expect([search.get('start'), search.get('end')]).toEqual([String(Date.parse('2026-11-05T13:50:00Z') / 1000), String(Date.parse('2026-11-05T14:10:00Z') / 1000)]);
     // Sin trazas: 404; sin X-Actor-Id: 403.

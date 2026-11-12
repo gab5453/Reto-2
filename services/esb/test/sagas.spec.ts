@@ -164,7 +164,7 @@ function happy() {
   });
   rest('bookings', 'POST', /^\/bookings\/[0-9a-f-]{36}\/tickets$/, 'bookings POST tickets', (r) => {
     // Bookings deja la reserva CONFIRMED con sus boletos (la respuesta final de "Crear reserva" la relee).
-    const id = r.path.split('/')[2]!;
+    const id = r.path.split('/')[2];
     const tickets = [{ ticketId: 'T1', bookingId: id, passengerId: 'PAX-1', status: 'ISSUED', eTicketNumber: '9990000000001' }];
     if (booking.bookingId === id) booking = { ...booking, status: 'CONFIRMED', tickets };
     return { bookingId: id, pnr: 'XK7P2Q', status: 'CONFIRMED', issued: 1, tickets };
@@ -178,7 +178,7 @@ function happy() {
   msg.on('bookings', 'POST', new RegExp('^/bookings/[0-9a-f-]{36}/cancellation$'), (r) => {
     const f = hit('bookings POST cancellation');
     if (f) return { status: f.status, body: problemBody(f) };
-    const id = r.path.split('/')[2]!;
+    const id = r.path.split('/')[2];
     if (cancellations.has(id)) return { status: 409, body: { ...problemBody({ status: 409, code: 'ALREADY_CANCELLED' }), detail: JSON.stringify(cancellations.get(id)) } };
     const result = { bookingId: id, pnr: 'XK7P2Q', status: 'CANCELLED', refund: JSON.parse(r.body).refund, ticketsVoided: ['T1'] };
     cancellations.set(id, result);
@@ -295,7 +295,7 @@ const as = (call: request.Test, headers: { owner?: string; actor?: string } = { 
   return call;
 };
 const types = () => publisher.published.map((p) => p.event.type.split('.').slice(-2).join('.'));
-const sagaOf = async (type: string): Promise<SagaRecord> => (await store.listSagas({ type, limit: 1 }))[0]!;
+const sagaOf = async (type: string): Promise<SagaRecord> => (await store.listSagas({ type, limit: 1 }))[0];
 
 interface Step {
   key: string;
@@ -352,16 +352,16 @@ describe('Crear reserva', () => {
     expect(response.headers['location']).toMatch(/^\/bookings\//);
     expectContract('POST', '/sagas/bookings', response);
     expect(log).toEqual([...steps.map((s) => s.key), 'bookings GET booking']);
-    const sent = JSON.parse(msg.calls('bookings', 'POST', '/bookings')[0]!.body);
+    const sent = JSON.parse(msg.calls('bookings', 'POST', '/bookings')[0].body);
     expect(sent.salesChannel.partnerId).toBe('BOOKING_PROTOTIPO'); // nunca del cuerpo (D29)
     expect(sent.itineraries[0].segments[0].status).toBe('SCHEDULED');
     expect(sent.itineraries[0].pricingOptions[0].cabinClass).toBe('ECONOMY');
     expect(sent.passengers[0].assignedSeats).toEqual([{ segmentId: SEG, seatNumber: '12A' }]);
     expect(sent.payment).toEqual({ paymentReference: REF, provider: 'BOOKING_PROTOTIPO' });
-    expect(JSON.parse(msg.calls('bookings', 'POST', '/payment-references/claim')[0]!.body)).toMatchObject({ provider: 'BOOKING_PROTOTIPO', operation: 'BOOKING', expectedAmount: fare.price });
+    expect(JSON.parse(msg.calls('bookings', 'POST', '/payment-references/claim')[0].body)).toMatchObject({ provider: 'BOOKING_PROTOTIPO', operation: 'BOOKING', expectedAmount: fare.price });
     expect(types()).toEqual(['booking.confirmed', 'booking.ticket_issued']);
-    expect(publisher.published[0]!.ownerId).toBe(OWNER);
-    expect(publisher.published[0]!.event.correlationid).toBe('corr-sagas-v210');
+    expect(publisher.published[0].ownerId).toBe(OWNER);
+    expect(publisher.published[0].event.correlationid).toBe('corr-sagas-v210');
     const saga = await sagaOf('CREATE_BOOKING');
     expect(saga.status).toBe('COMPLETED');
     expect(saga.steps.every((s) => s.status === 'DONE')).toBe(true);
@@ -407,8 +407,8 @@ describe('Crear reserva', () => {
       // compensaciones (LIFO): asientos, referencia, cobro (consulta + reembolso) y autorización
       'offers ReleaseBookingInventory', 'bookings DELETE claim', 'payment GET payment', 'payment POST refunds', 'payment POST void',
     ]);
-    expect(msg.calls('payment', 'POST', /capture$/)[0]!.headers['authorization']).toBe('Bearer sk_test_clave_de_prueba');
-    expect(JSON.parse(msg.calls('bookings', 'POST', '/payment-references/claim')[0]!.body).provider).toBe('AIRLINE_DIRECT');
+    expect(msg.calls('payment', 'POST', /capture$/)[0].headers['authorization']).toBe('Bearer sk_test_clave_de_prueba');
+    expect(JSON.parse(msg.calls('bookings', 'POST', '/payment-references/claim')[0].body).provider).toBe('AIRLINE_DIRECT');
   });
 
   it('★ T-1: el asiento pedido se revisa ANTES del pago: tomado → SEAT_TAKEN sin capturar (web) ni reclamar la referencia (Booking)', async () => {
@@ -481,7 +481,7 @@ describe('Crear reserva', () => {
     expect(response.headers['x-saga-id']).toBeDefined();
     expect(types()).toContain('booking.ticket_issuing'); // compatibilidad con v1: la emisión quedó en curso
     await new Promise((resolve) => setTimeout(resolve, 1500));
-    expect((await store.saga(response.headers['x-saga-id'] as string))!.status).toBe('COMPLETED');
+    expect((await store.saga(response.headers['x-saga-id']))!.status).toBe('COMPLETED');
   });
 
   it('con la misma Idempotency-Key no se inicia otra saga', async () => {
@@ -561,9 +561,9 @@ describe('Check-in', () => {
     expect(response.status).toBe(200);
     expectContract('POST', '/sagas/bookings/{bookingId}/check-in', response);
     expect(log).toEqual(steps.map((s) => s.key));
-    const registered = JSON.parse(msg.calls('check-in', 'POST')[0]!.body);
+    const registered = JSON.parse(msg.calls('check-in', 'POST')[0].body);
     expect(registered.passengers[0].segments[0]).toMatchObject({ seat: '7C', gate: 'B2', needsAssistance: true, cabinClass: 'ECONOMY' });
-    expect(JSON.parse(msg.calls('bookings', 'PUT')[0]!.body)).toEqual({ reason: 'CHECK_IN_AUTO', seats: [{ passengerId: 'PAX-1', segmentId: SEG, seatNumber: '7C' }] });
+    expect(JSON.parse(msg.calls('bookings', 'PUT')[0].body)).toEqual({ reason: 'CHECK_IN_AUTO', seats: [{ passengerId: 'PAX-1', segmentId: SEG, seatNumber: '7C' }] });
     expect(types()).toEqual(['booking.checked_in']);
   });
 
@@ -587,7 +587,7 @@ describe('Check-in', () => {
     msg.on('flight-status', 'GET', /^\/flights\/EA100\/status\?date=/, () => delayed(new Date(Date.now() + 60 * 60_000)));
     const open = await checkIn();
     expect(open.status, JSON.stringify(open.body)).toBe(200);
-    expect(JSON.parse(msg.calls('check-in', 'POST')[0]!.body).passengers[0].segments[0].gate).toBe('B4');
+    expect(JSON.parse(msg.calls('check-in', 'POST')[0].body).passengers[0].segments[0].gate).toBe('B4');
 
     // Ya pasó también la salida estimada → cerrado.
     msg.on('flight-status', 'GET', /^\/flights\/EA100\/status\?date=/, () => delayed(new Date(Date.now() - 5 * 60_000)));
@@ -606,7 +606,7 @@ describe('Cancelar (no se deshace: después de PostSale se reintenta)', () => {
     expect(response.status).toBe(200);
     expectContract('POST', '/sagas/bookings/{bookingId}/cancel', response);
     expect(log).toEqual(['bookings GET booking', 'check-in GET current', 'bookings GET fares', 'post-sale ConsumeCancellationQuote', 'offers ReleaseBookingInventory', 'bookings POST cancellation']);
-    expect(JSON.parse(msg.calls('bookings', 'POST', /cancellation$/)[0]!.body).refund).toMatchObject({ amount: '19.50', penaltyAmount: '100.00', status: 'CALCULATED', originalPaymentReference: REF });
+    expect(JSON.parse(msg.calls('bookings', 'POST', /cancellation$/)[0].body).refund).toMatchObject({ amount: '19.50', penaltyAmount: '100.00', status: 'CALCULATED', originalPaymentReference: REF });
     expect(types()).toEqual(['booking.cancelled']);
   });
 
@@ -640,7 +640,7 @@ describe('Cancelar (no se deshace: después de PostSale se reintenta)', () => {
     const response = await cancel({ reasonCode: 'SAGA_COMPENSATION' });
     expect(response.status).toBe(200);
     expect(postSale.calls.find((c) => c.operation === 'CalculateCompensationRefund')!.args).toMatchObject({ reasonCode: 'SAGA_COMPENSATION' });
-    expect(JSON.parse(msg.calls('bookings', 'POST', /cancellation$/)[0]!.body).refund).toMatchObject({ amount: '119.50', penaltyAmount: '0.00', penaltyWaived: true });
+    expect(JSON.parse(msg.calls('bookings', 'POST', /cancellation$/)[0].body).refund).toMatchObject({ amount: '119.50', penaltyAmount: '0.00', penaltyWaived: true });
   });
 
   it('un error de NEGOCIO después del punto sin retorno no se reintenta para siempre: la saga queda FAILED (revisión)', async () => {
@@ -736,7 +736,7 @@ describe('Agregar maletas', () => {
     const response = await add();
     expect(response.status).toBe(200);
     expectContract('POST', '/sagas/bookings/{bookingId}/baggage', response);
-    expect(postSale.calls[0]!.args).toMatchObject({ line: { passengerId: 'PAX-1', itineraryId: ITI, unitPrice: { total: '35.00' } } });
+    expect(postSale.calls[0].args).toMatchObject({ line: { passengerId: 'PAX-1', itineraryId: ITI, unitPrice: { total: '35.00' } } });
     expect(types()).toEqual(['booking.baggage_added']);
     await failEachStep(steps, add);
   });
@@ -816,7 +816,7 @@ describe('Guardar precios y descuento máximo', () => {
   it('camino feliz: Schedule guarda, Offers recibe la copia con las reglas de promoción y pricing.changed (interno)', async () => {
     expect((await save()).status).toBe(200);
     expect(offers.calls.find((c) => c.rpc === 'PublishFarePrices')!.request).toMatchObject({ prices: [{ cabinClass: 'CABIN_CLASS_ECONOMY', fareBrand: 'BROTE', multiplier: 1 }], promotions: [{ partnerId: 'BOOKING_PROTOTIPO', allowsPromotions: false }] });
-    expect(publisher.published[0]!.event).toMatchObject({ type: 'ec.ecoairlines.internal.pricing.changed', data: { changedPrices: [{ oldMultiplier: 1, newMultiplier: 1.2 }] } });
+    expect(publisher.published[0].event).toMatchObject({ type: 'ec.ecoairlines.internal.pricing.changed', data: { changedPrices: [{ oldMultiplier: 1, newMultiplier: 1.2 }] } });
   });
 
   it('★ fallo en cada paso: Schedule vuelve a los valores anteriores', async () => {
@@ -849,7 +849,7 @@ describe('Guardar precios y descuento máximo', () => {
     const loja = { routeId: 'EA324-EA325', prices: four(70) };
     const saved = await pricing({ perKm: 0.09, route: loja });
     expect(saved.status, JSON.stringify(saved.body)).toBe(200);
-    expect(JSON.parse(msg.calls('schedule', 'PUT', '/pricing')[0]!.body)).toEqual({ fixedCharge: 35, perKm: 0.09, routePrices: [existing, loja] });
+    expect(JSON.parse(msg.calls('schedule', 'PUT', '/pricing')[0].body)).toEqual({ fixedCharge: 35, perKm: 0.09, routePrices: [existing, loja] });
     const published = offers.calls.filter((c) => c.rpc === 'PublishFarePrices').at(-1)!.request;
     expect(published['pricing']).toEqual({ fixedCharge: 35, perKm: 0.09 });
     expect(published['routePrices']).toHaveLength(8);
@@ -877,7 +877,7 @@ describe('Publicar horario', () => {
     expect(response.status).toBe(201);
     expectContract('POST', '/sagas/routes', response);
     expect(offers.calls.find((c) => c.rpc === 'PublishTimetable')!.request).toMatchObject({ routeId: 'EA300-EA301', flights: [{ flightNumber: 'EA300' }] });
-    expect(publisher.published[0]!.event).toMatchObject({ type: 'ec.ecoairlines.internal.schedule.published', subject: 'EA300-EA301', data: { routeId: 'EA300-EA301' } });
+    expect(publisher.published[0].event).toMatchObject({ type: 'ec.ecoairlines.internal.schedule.published', subject: 'EA300-EA301', data: { routeId: 'EA300-EA301' } });
   });
 
   it('★ fallo en cada paso: se restaura la ruta (crear → borrar; modificar → la definición anterior; borrar → restaurar)', async () => {
@@ -956,7 +956,7 @@ describe('motor de sagas: reanudar tras un reinicio', () => {
 
   it('GET /sagas/{id}: sin la entrada (datos personales) y solo para su dueño o un administrador', async () => {
     const response = await createBooking();
-    const sagaId = response.headers['x-saga-id'] as string;
+    const sagaId = response.headers['x-saga-id'];
     const own = await as(http().get(`/sagas/${sagaId}`));
     expect(own.status).toBe(200);
     expectContract('GET', '/sagas/{sagaId}', own);

@@ -117,8 +117,8 @@ describe('navegador: tarjetas de prueba, tokenizar y autorizar', () => {
     const lines: string[] = [];
     const out = process.stdout.write.bind(process.stdout);
     const err = process.stderr.write.bind(process.stderr);
-    process.stdout.write = ((chunk: string) => lines.push(String(chunk)) > 0) as typeof process.stdout.write;
-    process.stderr.write = ((chunk: string) => lines.push(String(chunk)) > 0) as typeof process.stderr.write;
+    process.stdout.write = ((chunk: string) => lines.push(String(chunk)) > 0);
+    process.stderr.write = ((chunk: string) => lines.push(String(chunk)) > 0);
     try {
       const tokenized = await request(logged.instance.getHttpServer()).post('/payment-methods').set('X-Api-Key', PK).send(card('5555555555554444', { cvv: '987' })).expect(201);
       const payment = await request(logged.instance.getHttpServer()).post('/payments').set('X-Api-Key', PK).set('Idempotency-Key', crypto.randomUUID()).send({ paymentMethodToken: tokenized.body.token, amount: USD('10.00') }).expect(201);

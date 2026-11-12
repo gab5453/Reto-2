@@ -50,7 +50,7 @@ export class HoldsService {
     return this.store.transaction(async (tx) => {
       const reader = new TxReader(tx);
       const itineraries = await reader.offer(input.offerId);
-      if (!itineraries || itineraries.some((itinerary) => !itinerary.flights.every((flight) => flight.onSale) || Date.parse(itinerary.flights[0]!.departureAt) < this.now() + 60 * 60_000)) {
+      if (!itineraries || itineraries.some((itinerary) => !itinerary.flights.every((flight) => flight.onSale) || Date.parse(itinerary.flights[0].departureAt) < this.now() + 60 * 60_000)) {
         throw offerGone();
       }
       const ids = itineraries.map((itinerary) => itinerary.itineraryId);
@@ -143,7 +143,7 @@ export class HoldsService {
           hold.selections.some(
             (selection) =>
               (rule.cabins.length > 0 && !rule.cabins.includes(selection.cabinClass)) ||
-              (rule.routes.length > 0 && !rule.routes.includes(`${selection.itinerary.segments[0]!.departure.iataCode}-${selection.itinerary.segments.at(-1)!.arrival.iataCode}`)),
+              (rule.routes.length > 0 && !rule.routes.includes(`${selection.itinerary.segments[0].departure.iataCode}-${selection.itinerary.segments.at(-1)!.arrival.iataCode}`)),
           );
         if (outOfAgreement) {
           throw problem(422, 'PROMOTION_DISCOUNT_OUT_OF_RANGE', 'El descuento supera el acuerdo de promociones o no aplica a este hold.', {

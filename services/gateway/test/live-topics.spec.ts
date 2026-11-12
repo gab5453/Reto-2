@@ -41,7 +41,7 @@ describe('LiveTopics (sondeo compartido)', () => {
     await wait(100);
     const [stats] = live.stats();
     expect(stats).toMatchObject({ key: 'journey:corr-vivo', subscribers: 2 });
-    expect(calls).toBe(stats!.polls); // una consulta por vuelta, no una por suscriptor
+    expect(calls).toBe(stats.polls); // una consulta por vuelta, no una por suscriptor
     await a.return!();
     await b.return!();
     expect(live.stats()).toEqual([]);
@@ -141,7 +141,7 @@ describe('por WebSocket (graphql-ws)', () => {
     url = `ws://127.0.0.1:${(app.getHttpServer().address() as AddressInfo).port}/api/graphql`;
   });
   afterAll(async () => {
-    await Promise.all(clients.map((client) => client.dispose()));
+    await Promise.all(clients.map(async (client) => client.dispose()));
     await app.close();
     await stopFakeServices(fakes);
   });
@@ -158,7 +158,7 @@ describe('por WebSocket (graphql-ws)', () => {
     expect(fakes['MS.Admin'].last()!.headers['authorization']).toBe(admin);
     fakes['MS.Admin'].on('GET', '/api/v2/ecoairlines/admin/telemetry/system-map', { body: map(7) });
     const live = await receive(connect(tokens.admin()), 'subscription { liveSystemMap { edges { from to requestsPerMinute } } }', 1);
-    expect(live.events[0]!['data']['liveSystemMap']['edges']).toEqual([{ from: 'gateway', to: 'ms-reservas', requestsPerMinute: 7 }]);
+    expect(live.events[0]['data']['liveSystemMap']['edges']).toEqual([{ from: 'gateway', to: 'ms-reservas', requestsPerMinute: 7 }]);
     // Al cerrar las suscripciones, el gateway deja de consultar.
     await wait(100);
     expect(runtime.live.stats()).toEqual([]);

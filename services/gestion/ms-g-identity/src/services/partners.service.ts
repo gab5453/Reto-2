@@ -76,7 +76,7 @@ export class PartnersService {
     if (wait !== undefined) {
       throw new ProblemDetailsException({ status: 429, code: 'RATE_LIMIT_EXCEEDED', title: 'Demasiados intentos. Espere un minuto.', retryAfterSeconds: wait });
     }
-    const requested = body['scope'] as string | undefined;
+    const requested = body['scope'];
     const invalidClient = () => new OAuthError('invalid_client', 'Credenciales del cliente inválidas.', 401, credentials.method === 'basic');
 
     // Cliente interno del ESB (D41): solo de semilla y fuera de la tabla de partners.

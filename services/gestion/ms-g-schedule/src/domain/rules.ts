@@ -47,7 +47,7 @@ export function assertAircraftType(name: string, field: string): void {
 /** Una ruta nueva (o que cambia de aeropuerto) solo usa aeropuertos activos (M-1). */
 export function assertActiveAirport(code: string, field: string): void {
   assertAirport(code, field);
-  if (AIRPORTS[code]!.active === false) {
+  if (AIRPORTS[code].active === false) {
     throw problem(422, 'AIRPORT_INACTIVE', `El aeropuerto ${code} está desactivado.`, {
       detail: 'Un aeropuerto desactivado no se ofrece para rutas nuevas; actívalo en «Aeropuertos» si quieres volver a usarlo.',
       invalidParams: [{ name: field, reason: `${code} está desactivado` }],
@@ -74,7 +74,7 @@ export function toRouteDefinition(request: RouteRequest, outbound: string, inbou
   if (request.origin === request.destination) {
     throw problem(422, 'VALIDATION_FAILED', 'El origen y el destino deben ser distintos.', { invalidParams: [{ name: 'destination', reason: 'debe ser distinto del origen' }] });
   }
-  const distance = distanceKm(AIRPORTS[request.origin]!, AIRPORTS[request.destination]!);
+  const distance = distanceKm(AIRPORTS[request.origin], AIRPORTS[request.destination]);
   const required = aircraftFor(distance);
   const aircraftType = chosenType ?? required;
   assertAircraftType(aircraftType, 'aircraftType');
@@ -122,7 +122,7 @@ export function nextFlightNumbers(routes: RouteLike[]): [string, string] {
     if (!used.has(`EA${number}`)) free.push(`EA${number}`);
   }
   if (free.length < 2) throw problem(422, 'VALIDATION_FAILED', 'No quedan números de vuelo disponibles (EA300–EA999).');
-  return [free[0]!, free[1]!];
+  return [free[0], free[1]];
 }
 
 /** `restoreRouteId` (compensación de la saga): sus números de vuelo deben estar libres. */
@@ -154,7 +154,7 @@ const ISSUE_TITLES: Record<TimetableIssueCode, [string, string]> = {
 
 /** Convierte un horario imposible en un 422 con el código del primer problema y la lista completa en `invalidParams`. */
 export function timetableProblem(error: TimetableError): ProblemDetailsException {
-  const first = error.issues[0]!;
+  const first = error.issues[0];
   const [code, title] = ISSUE_TITLES[first.code];
   return problem(422, code, title, {
     detail: first.code === 'NOT_ENOUGH_AIRCRAFT' ? `Faltan ${first.missing} avión(es). ${first.message}` : first.message,
@@ -166,7 +166,7 @@ export function timetableProblem(error: TimetableError): ProblemDetailsException
 export function routeLeg(flightNumber: string, origin: string, destination: string, departureLocal: string) {
   const durationMinutes = flightDurationMinutes(origin, destination);
   const [hours, minutes] = departureLocal.split(':').map(Number) as [number, number];
-  const arrival = hours * 60 + minutes + durationMinutes + AIRPORTS[destination]!.utcOffsetMinutes - AIRPORTS[origin]!.utcOffsetMinutes;
+  const arrival = hours * 60 + minutes + durationMinutes + AIRPORTS[destination].utcOffsetMinutes - AIRPORTS[origin].utcOffsetMinutes;
   const inDay = ((arrival % 1440) + 1440) % 1440;
   return {
     flightNumber,

@@ -1,5 +1,5 @@
 import { createCloudEvent, type ProblemDetailsException } from '@ecoairlines/shared';
-import { INITIAL_STATE, type FlightState, type ScheduledFlightRecord, type StatusChangeRecord } from '../domain/status.js';
+import { INITIAL_STATE, type ScheduledFlightRecord, type StatusChangeRecord } from '../domain/status.js';
 import type { FlightStatusStore, FlightStatusTx } from '../repositories/flight-status.store.js';
 import { FlightStatusService, type SchedulePublishedData } from './flight-status.service.js';
 
@@ -126,7 +126,7 @@ describe('revertir un cambio (compensación)', () => {
     flightNumber: 'EA100',
     date: '2026-12-10',
     previous: INITIAL_STATE,
-    next: { ...INITIAL_STATE, status: 'CANCELLED' } as FlightState,
+    next: { ...INITIAL_STATE, status: 'CANCELLED' },
     reason: 'Clima',
     changedBy: 'admin-1',
     changedAt: '2026-12-10T11:00:00.000Z',

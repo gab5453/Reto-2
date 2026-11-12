@@ -36,7 +36,7 @@ let app: NestExpressApplication;
 let esbToken: string;
 const http = () => request(app.getHttpServer());
 const basic = (id: string, secret: string) => `Basic ${Buffer.from(`${id}:${secret}`).toString('base64')}`;
-const claimsOf = (token: string) => JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString('utf8'));
+const claimsOf = (token: string) => JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
 const tokenRequest = (form: Record<string, string>, authorization?: string) => {
   const call = http().post('/oauth2/token').type('form').send(form);
   return authorization ? call.set('Authorization', authorization) : call;
@@ -63,8 +63,8 @@ describe('JWKS y firma RS256', () => {
   it('un token emitido se verifica con la JWKS publicada', async () => {
     const jwks = (await http().get('/.well-known/jwks.json')).body as { keys: Jwk[] };
     const login = await http().post('/auth/login').send({ email: 'demo@ecoairlines.test', password: 'EcoDemo2026' });
-    const key = createPublicKey({ key: { ...jwks.keys[0] } as import('node:crypto').JsonWebKey, format: 'jwk' });
-    const claims = verifyJwt(login.body.access_token, (kid) => (kid === jwks.keys[0]!.kid ? key : undefined), {
+    const key = createPublicKey({ key: { ...jwks.keys[0] }, format: 'jwk' });
+    const claims = verifyJwt(login.body.access_token, (kid) => (kid === jwks.keys[0].kid ? key : undefined), {
       issuer: 'ecoairlines-identity',
       audience: 'ecoairlines',
     });
@@ -212,7 +212,7 @@ describe('OAuth2 client_credentials (partner Booking)', () => {
     ['parámetro no permitido', { grant_type: 'client_credentials', username: 'x' }, true, 'invalid_request'],
     ['grant_type password', { grant_type: 'password' }, true, 'unsupported_grant_type'],
   ])('%s → 400 %s', async (_, form, withBasic, error) => {
-    const response = await tokenRequest(form as Record<string, string>, withBasic ? basic('BOOKING_PROTOTIPO', BOOKING_SECRET) : undefined);
+    const response = await tokenRequest(form, withBasic ? basic('BOOKING_PROTOTIPO', BOOKING_SECRET) : undefined);
     expect(response.status).toBe(400);
     expect(response.body.error).toBe(error);
     expectContract('post', '/oauth2/token', response);

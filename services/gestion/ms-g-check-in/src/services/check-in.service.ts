@@ -38,7 +38,7 @@ export class CheckInService {
       const requested = input.passengers.flatMap((p) => p.segments.map((s) => ({ passengerId: p.passengerId, segmentId: s.segmentId })));
       const already = existing.filter((row) => requested.some((r) => r.passengerId === row.passengerId && r.segmentId === row.segmentId));
       if (already.length === requested.length && already.every((row) => row.sagaId === input.sagaId)) return this.response(bookingId, already);
-      if (already.length) throw problem(409, 'CHECK_IN_NOT_AVAILABLE', 'El check-in ya fue realizado.', `Pasajero ${already[0]!.passengerId} en ${already[0]!.segmentId}.`);
+      if (already.length) throw problem(409, 'CHECK_IN_NOT_AVAILABLE', 'El check-in ya fue realizado.', `Pasajero ${already[0].passengerId} en ${already[0].segmentId}.`);
       const now = new Date(this.now()).toISOString();
       const created: CheckInRecord[] = [];
       for (const segmentId of [...new Set(requested.map((r) => r.segmentId))].sort()) {

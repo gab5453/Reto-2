@@ -201,7 +201,7 @@ describe('boletos: pendingTickets, issueTickets y reissueCoupons', () => {
     const tickets = pendingTickets(reserva());
     expect(tickets).toHaveLength(2);
     expect(tickets[0]).toMatchObject({ ticketId: 'TKT-ABCDEF12-1', passengerName: 'Ana Pérez', status: 'PENDING', eTicketNumber: null, issuedAt: null });
-    expect(tickets[0]!.segments.map((s) => [s.segmentId, s.status, s.couponNumber])).toEqual([
+    expect(tickets[0].segments.map((s) => [s.segmentId, s.status, s.couponNumber])).toEqual([
       ['S1', 'PENDING', null],
       ['S2', 'PENDING', null],
       ['S3', 'PENDING', null],
@@ -210,7 +210,7 @@ describe('boletos: pendingTickets, issueTickets y reissueCoupons', () => {
 
   it('el cupón lleva el asiento asignado de ese segmento y null en los demás', () => {
     const [ana] = pendingTickets(reserva());
-    expect(ana!.segments.map((s) => s.seatNumber)).toEqual(['3C', null, null]);
+    expect(ana.segments.map((s) => s.seatNumber)).toEqual(['3C', null, null]);
   });
 
   it('emitir: número de e-ticket con prefijo 999 y 13 dígitos, cupones numerados', () => {
@@ -227,8 +227,8 @@ describe('boletos: pendingTickets, issueTickets y reissueCoupons', () => {
   it('emitir no toca los boletos ya emitidos ni los anulados', () => {
     const booking = reserva();
     const [a, b] = pendingTickets(booking);
-    const yaEmitido: Ticket = { ...a!, status: 'ISSUED', eTicketNumber: '9990000000001', issuedAt: 'antes' };
-    const anulado: Ticket = { ...b!, status: 'VOIDED' };
+    const yaEmitido: Ticket = { ...a, status: 'ISSUED', eTicketNumber: '9990000000001', issuedAt: 'antes' };
+    const anulado: Ticket = { ...b, status: 'VOIDED' };
     const { tickets, issued } = issueTickets({ ...booking, tickets: [yaEmitido, anulado] }, 'ahora');
     expect(issued).toBe(0);
     expect(tickets).toEqual([yaEmitido, anulado]);
@@ -237,7 +237,7 @@ describe('boletos: pendingTickets, issueTickets y reissueCoupons', () => {
   it('un boleto en ISSUING (emisión interrumpida) se emite', () => {
     const booking = reserva();
     const [a] = pendingTickets(booking);
-    const { issued } = issueTickets({ ...booking, tickets: [{ ...a!, status: 'ISSUING' }] }, 'ahora');
+    const { issued } = issueTickets({ ...booking, tickets: [{ ...a, status: 'ISSUING' }] }, 'ahora');
     expect(issued).toBe(1);
   });
 
@@ -249,9 +249,9 @@ describe('boletos: pendingTickets, issueTickets y reissueCoupons', () => {
       passengers: [adulto({ assignedSeats: [{ segmentId: 'S1', seatNumber: '7F' }] }), adulto({ passengerId: 'P2', firstName: 'Luis' })],
     });
     const reemitidos = reissueCoupons(cambiada, 'después');
-    expect(reemitidos[0]!.eTicketNumber).toBe(emitidos[0]!.eTicketNumber);
-    expect(reemitidos[0]!.issuedAt).toBe('después');
-    expect(reemitidos[0]!.segments[0]!.seatNumber).toBe('7F');
+    expect(reemitidos[0].eTicketNumber).toBe(emitidos[0].eTicketNumber);
+    expect(reemitidos[0].issuedAt).toBe('después');
+    expect(reemitidos[0].segments[0].seatNumber).toBe('7F');
   });
 
   it('reemitir no toca los boletos que no están emitidos', () => {

@@ -106,7 +106,7 @@ export interface MatchedRoute {
 
 const compiled = REST_ROUTES.map((route) => ({
   route,
-  names: [...route.path.matchAll(/\{(\w+)\}/g)].map((m) => m[1]!),
+  names: [...route.path.matchAll(/\{(\w+)\}/g)].map((m) => m[1]),
   // `/users/summary` va antes que `/users/{sub}` en la tabla: gana la primera que coincide.
   regex: new RegExp(`^${route.path.replace(/[.*+?^$()|[\]\\]/g, '\\$&').replace(/\{\w+\}/g, '([^/]+)')}$`),
 }));
@@ -120,7 +120,7 @@ export function matchRoute(service: string, method: string, path: string): Match
   for (const candidate of compiled) {
     if (candidate.route.service !== service || candidate.route.method !== method) continue;
     const match = candidate.regex.exec(path);
-    if (match) return { route: candidate.route, params: Object.fromEntries(candidate.names.map((name, i) => [name, match[i + 1]!])) };
+    if (match) return { route: candidate.route, params: Object.fromEntries(candidate.names.map((name, i) => [name, match[i + 1]])) };
   }
   return undefined;
 }

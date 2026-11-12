@@ -70,7 +70,7 @@ export function assertPassengers(passengers: PassengerItem[], breakdown: Passeng
       `se esperan adults=${breakdown.adults}, youths=${breakdown.youths}, children=${breakdown.children}, infants=${breakdown.infants}`);
   }
   const dates = segments.map((segment) => segment.departureAt.slice(0, 10)).sort();
-  const first = dates[0]!;
+  const first = dates[0];
   const last = dates.at(-1)!;
   const international = segments.some((segment) => segment.international);
   const adults = new Set(passengers.filter((p) => p.passengerType === 'ADULT').map((p) => p.passengerId));
@@ -192,7 +192,7 @@ export function reissueCoupons(booking: BookingRecord, now: string): Ticket[] {
 
 /** Itinerarios que todavía no salieron (los que se pueden cambiar, cancelar o con maletas nuevas). */
 export const unflown = (booking: Pick<BookingRecord, 'itineraries'>, now: number): ItineraryOption[] =>
-  booking.itineraries.filter((itinerary) => Date.parse(itinerary.segments[0]!.departure.at) > now);
+  booking.itineraries.filter((itinerary) => Date.parse(itinerary.segments[0].departure.at) > now);
 
 export function fareOfSegment(booking: Pick<BookingRecord, 'fares'>, segmentId: string): PurchasedFare | undefined {
   return booking.fares.find((fare) => fare.segmentIds.includes(segmentId));

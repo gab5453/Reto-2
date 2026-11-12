@@ -213,7 +213,7 @@ export class PostgresScheduleRepository implements ScheduleRepository {
   constructor(connectionString: string) {
     // `date` (OID 1082) como texto YYYY-MM-DD: sin convertirlo a la zona horaria del proceso.
     const types = { getTypeParser: (oid: number, format?: 'text' | 'binary') => (oid === 1082 ? (value: string) => value : pg.types.getTypeParser(oid, format)) };
-    this.pool = new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000, types: types as pg.CustomTypesConfig });
+    this.pool = new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000, types: types });
   }
 
   async init(): Promise<void> {
@@ -370,7 +370,7 @@ export class PostgresScheduleRepository implements ScheduleRepository {
     await this.transaction(async (client) => {
       await client.query('INSERT INTO pricing_settings (id, fixed_charge, per_km) VALUES (1, $1, $2) ON CONFLICT (id) DO NOTHING', [DEFAULT_PRICING.fixedCharge, DEFAULT_PRICING.perKm]);
       const { rows } = await client.query('SELECT * FROM pricing_settings WHERE id = 1 FOR UPDATE');
-      const { next, history } = work(toPricing(rows[0]!));
+      const { next, history } = work(toPricing(rows[0]));
       await client.query('UPDATE pricing_settings SET fixed_charge = $1, per_km = $2, route_prices = $3, updated_at = $4, updated_by = $5 WHERE id = 1', [
         next.fixedCharge,
         next.perKm,

@@ -67,7 +67,7 @@ export class PostSaleClient {
       client.addSoapHeader(
         `<corr:CorrelationId xmlns:corr="${TYPES_NS}">${xmlEscape(correlationId)}</corr:CorrelationId><corr:RequestId xmlns:corr="${TYPES_NS}">${xmlEscape(requestId)}</corr:RequestId>`,
       );
-      const method = (client as unknown as Record<string, (args: Args, options: object, headers: object) => Promise<[T]>>)[`${operation}Async`]!;
+      const method = (client as unknown as Record<string, (args: Args, options: object, headers: object) => Promise<[T]>>)[`${operation}Async`];
       try {
         const [result] = await method.call(client, args, { timeout: this.timeoutMs }, { Authorization: `Bearer ${await this.tokens.token()}`, [CORRELATION_HEADER]: correlationId, [REQUEST_ID_HEADER]: requestId });
         return result;

@@ -2,8 +2,8 @@ name: CI
 
 # CI-1 (Informacion_General/Pruebas.md §8, §11): protege en cada push y pull request lo que ya existe. Orden «fail fast» (Semana 9,
 # §9.5): primero lo más rápido y barato; si una etapa falla, las siguientes no corren.
-#   1. calidad ........ tipos (tsc) + lint (oxlint)
-#   2. pruebas ........ unitarias + integración (npm test: PostgreSQL y RabbitMQ en memoria o simulados)
+#   1. calidad ........ tipos (tsc) + lint (oxlint y luego ESLint con reglas de tipos, CI-2)
+#   2. pruebas ........ unitarias + integración con cobertura (mínimos en dominios y motor de sagas, CI-2)
 #   3. infraestructura  las pruebas con PostgreSQL y RabbitMQ REALES (contenedores de servicio), que sin ellos se omiten
 #   4. contratos ...... Pact (CT-1): los consumidores generan contract/pacts y los proveedores reales los verifican
 #   web (en paralelo) . lint + pruebas (Vitest + jsdom) + compilación de ecoairlines-web
@@ -36,7 +36,8 @@ jobs:
       - run: npm ci
       - name: Tipos
         run: npm run typecheck
-      - name: Lint
+      # Después de los tipos: ESLint necesita la solución compilada (`@ecoairlines/shared` se resuelve a su dist).
+      - name: Lint (oxlint + ESLint con tipos)
         run: npm run lint
 
   pruebas:
@@ -51,8 +52,18 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: npm test
-        run: npm test
+      - name: Pruebas con cobertura
+        run: npm run test:coverage
+      - name: Resumen de cobertura
+        if: always()
+        run: node scripts/ci/resumen-cobertura.mjs >> "$GITHUB_STEP_SUMMARY"
+      - name: Reporte de cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cobertura
+          path: coverage/
+          retention-days: 7
 
   infraestructura:
     name: 3. Integración con PostgreSQL y RabbitMQ reales

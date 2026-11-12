@@ -76,7 +76,7 @@ function sagaDePrueba(opciones: { falla?: { en: 'A' | 'B' | 'C'; error: () => Er
       return 'listo';
     },
   };
-  engine.register(definition as SagaDefinition<never, unknown>);
+  engine.register(definition);
   return { definition, orden, pasos, compensaciones };
 }
 
@@ -93,7 +93,7 @@ describe('camino feliz', () => {
       ['B', 'DONE'],
       ['C', 'DONE'],
     ]);
-    expect(record.steps[0]!.result).toEqual({ hecho: 'A', cuando: '2026-12-01T00:00:00.000Z' }); // la fecha queda como texto
+    expect(record.steps[0].result).toEqual({ hecho: 'A', cuando: '2026-12-01T00:00:00.000Z' }); // la fecha queda como texto
   });
   it('cada paso se marca STARTED antes de ejecutarse (si la réplica se cae a la mitad, se sabe dónde iba)', async () => {
     const { definition } = sagaDePrueba();
@@ -123,7 +123,7 @@ describe('falla antes del punto sin retorno: se compensa en orden inverso (LIFO)
     const { definition, orden } = sagaDePrueba({ falla: { en: 'C', error: negocio } });
     await expect(engine.run(definition, { bookingId: 'b-1' })).rejects.toMatchObject({ problem: { code: 'SEAT_TAKEN' } });
     expect(orden).toEqual(['A', 'B', 'C', 'deshacer C (sin resultado)', 'deshacer B', 'deshacer A']);
-    const record = [...store.sagas.values()][0]!;
+    const record = [...store.sagas.values()][0];
     expect(record.status).toBe('COMPENSATED');
     expect(record.error).toMatchObject({ code: 'SEAT_TAKEN' });
     expect(record.steps.map((s) => s.status)).toEqual(['COMPENSATED', 'COMPENSATED', 'COMPENSATED']);
@@ -138,13 +138,13 @@ describe('falla antes del punto sin retorno: se compensa en orden inverso (LIFO)
   it('un error que no es ProblemDetails se guarda como INTERNAL_ERROR', async () => {
     const { definition } = sagaDePrueba({ falla: { en: 'A', error: () => new Error('se rompió') } });
     await expect(engine.run(definition, { bookingId: 'b-1' })).rejects.toThrow('se rompió');
-    expect([...store.sagas.values()][0]!.error).toMatchObject({ status: 500, code: 'INTERNAL_ERROR', title: 'se rompió' });
+    expect([...store.sagas.values()][0].error).toMatchObject({ status: 500, code: 'INTERNAL_ERROR', title: 'se rompió' });
   });
   it('si una compensación no puede hacerse (MS.G caído), queda COMPENSATING y se programa el reintento', async () => {
     const { definition, compensaciones } = sagaDePrueba({ falla: { en: 'C', error: negocio } });
     compensaciones.A.mockRejectedValueOnce(caido());
     await expect(engine.run(definition, { bookingId: 'b-1' })).rejects.toMatchObject({ problem: { code: 'SEAT_TAKEN' } });
-    const record = [...store.sagas.values()][0]!;
+    const record = [...store.sagas.values()][0];
     expect(record.status).toBe('COMPENSATING');
     expect(record.steps.map((s) => s.status)).toEqual(['DONE', 'COMPENSATED', 'COMPENSATED']);
     expect(retries).toEqual([{ sagaId: record.sagaId, delay: RETRY_DELAYS_MS[0] }]);
@@ -153,7 +153,7 @@ describe('falla antes del punto sin retorno: se compensa en orden inverso (LIFO)
     const { definition, compensaciones } = sagaDePrueba({ falla: { en: 'C', error: negocio } });
     compensaciones.B.mockRejectedValueOnce(new ProblemDetailsException({ status: 409, code: 'BOOKING_NOT_CANCELLABLE', title: 'no' }));
     await expect(engine.run(definition, { bookingId: 'b-1' })).rejects.toThrow();
-    const record = [...store.sagas.values()][0]!;
+    const record = [...store.sagas.values()][0];
     expect(record.status).toBe('FAILED');
     expect(record.error).toMatchObject({ code: 'SEAT_TAKEN', compensationFailed: { step: 'B', problem: { code: 'BOOKING_NOT_CANCELLABLE' } } });
   });
@@ -172,7 +172,7 @@ describe('después del punto sin retorno: no se deshace', () => {
     const { definition, orden } = sagaDePrueba({ falla: { en: 'C', error: negocio }, puntoSinRetornoTras: 'B' });
     await expect(engine.run(definition, { bookingId: 'b-1' })).rejects.toMatchObject({ problem: { code: 'SEAT_TAKEN' } });
     expect(orden).not.toContain('deshacer A');
-    expect([...store.sagas.values()][0]!.status).toBe('FAILED');
+    expect([...store.sagas.values()][0].status).toBe('FAILED');
     expect(retries).toEqual([]);
   });
   it('al retomarla, los pasos hechos NO se repiten: solo sigue desde el que falló', async () => {
@@ -202,7 +202,7 @@ describe('reanudar una compensación (réplica caída a la mitad)', () => {
     const { definition, compensaciones } = sagaDePrueba({ falla: { en: 'C', error: negocio } });
     compensaciones.A.mockRejectedValueOnce(caido()); // A quedó sin compensar
     await expect(engine.run(definition, { bookingId: 'b-1' })).rejects.toThrow();
-    const sagaId = [...store.sagas.keys()][0]!;
+    const sagaId = [...store.sagas.keys()][0];
     vencer(sagaId);
     await engine.resume(sagaId);
     expect(compensaciones.B).toHaveBeenCalledTimes(1); // no se deshace dos veces

@@ -40,7 +40,7 @@ export function buildGatewaySchema(runtime: GatewayRuntime): GraphQLSchema {
   const resolvers = createResolvers({
     scopes: enumValues(plain, 'Scope'),
     events: enumValues(plain, 'WebhookEventType'),
-    bookingEvents: bookingEventsSubscriber(enumValues(plain, 'WebhookEventType'), runtime.config.subscriptionPollMs) as never,
+    bookingEvents: bookingEventsSubscriber(enumValues(plain, 'WebhookEventType'), runtime.config.subscriptionPollMs),
     // T-5: un sondeo compartido por tema, solo mientras hay suscriptores.
     traceProgress: ((_: unknown, args: { correlationId: string }, context: GqlContext) => runtime.live.subscribe(context, 'traceProgress', journeyTopic(args.correlationId, runtime.config.liveTracePollMs))) as never,
     liveSystemMap: ((_: unknown, __: unknown, context: GqlContext) => runtime.live.subscribe(context, 'liveSystemMap', systemMapTopic(runtime.config.liveMapPollMs))) as never,
@@ -82,7 +82,7 @@ export function contextFactory(runtime: GatewayRuntime) {
   return async (arg: { req?: Request } & WsContext): Promise<GqlContext> => {
     if (arg && 'connectionParams' in arg) {
       const params = arg.connectionParams ?? {};
-      const text = (name: string) => (typeof params[name] === 'string' ? (params[name] as string) : undefined);
+      const text = (name: string) => (typeof params[name] === 'string' ? (params[name]) : undefined);
       const authorization = text('authorization') ?? text('Authorization');
       const fingerprint = text('x-device-fingerprint');
       const incoming = text('x-correlation-id');
@@ -126,6 +126,6 @@ export function graphqlOptions(runtime: GatewayRuntime, schema: GraphQLSchema): 
         },
       },
     },
-  } as ApolloDriverConfig;
+  };
 }
 

@@ -129,11 +129,11 @@ describe('dateChangeOptions: ofertas de cambio de fecha', () => {
 
   it('más cara: paga la diferencia de tarifa e impuestos + el cargo por cada pasajero con asiento', () => {
     const [oferta] = dateChangeOptions(reserva([cambiable]), [alternativa('NUEVA', '130.00', '31.50')]);
-    expect(oferta!.priceDifference).toEqual({ fareDifference: '30.00', taxDifference: '4.50', changeFee: '50.00', totalToPay: '84.50', currency: 'USD' });
+    expect(oferta.priceDifference).toEqual({ fareDifference: '30.00', taxDifference: '4.50', changeFee: '50.00', totalToPay: '84.50', currency: 'USD' });
   });
   it('más barata: el saldo a favor no se devuelve, solo se paga el cargo', () => {
     const [oferta] = dateChangeOptions(reserva([cambiable]), [alternativa('NUEVA', '70.00', '22.00')]);
-    expect(oferta!.priceDifference).toMatchObject({ fareDifference: '-30.00', taxDifference: '-5.00', totalToPay: '50.00' });
+    expect(oferta.priceDifference).toMatchObject({ fareDifference: '-30.00', taxDifference: '-5.00', totalToPay: '50.00' });
   });
   it('una oferta por alternativa', () =>
     expect(dateChangeOptions(reserva([cambiable]), [alternativa('A', '100.00', '27.00'), alternativa('B', '110.00', '27.00')])).toHaveLength(2));
@@ -148,7 +148,7 @@ describe('dateChangeOptions: ofertas de cambio de fecha', () => {
       ['I1', 'V1'],
       ['I2', 'V1'],
     ]);
-    expect(ofertas[0]!.priceDifference.changeFee).toBe('70.00'); // (25 + 10) × 2 pasajeros
+    expect(ofertas[0].priceDifference.changeFee).toBe('70.00'); // (25 + 10) × 2 pasajeros
   });
   it(`como máximo ${MAX_DATE_CHANGE_OFFERS} ofertas`, () => {
     const muchas = Array.from({ length: 15 }, (_, i) => alternativa(`N${i}`, '100.00', '27.00'));

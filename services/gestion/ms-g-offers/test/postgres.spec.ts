@@ -58,12 +58,12 @@ describe.skipIf(!url)('PostgresOffersStore (concurrencia real)', () => {
     const counts = await businessCounts();
     expect(counts.counts.HELD).toBe(12);
     const search = await catalog.search([{ origin: 'UIO', destination: 'BOG', departureDate: DAY }], { adults: 1 });
-    expect(search.offers[0]!.itineraries[0]!.pricingOptions.find((p) => p.cabinClass === 'BUSINESS')!.availableSeats).toBe(0);
+    expect(search.offers[0].itineraries[0].pricingOptions.find((p) => p.cabinClass === 'BUSINESS')!.availableSeats).toBe(0);
   });
 
   it('liberar el mismo hold dos veces a la vez devuelve sus cupos una sola vez', async () => {
     const all = await store.transaction((tx) => tx.activeHoldsOn(SEGMENT));
-    const target = all[0]!;
+    const target = all[0];
     await Promise.all([holds.release(target.holdId), holds.release(target.holdId), holds.release(target.holdId)]);
     expect((await businessCounts()).counts.HELD).toBe(10);
   });
@@ -75,7 +75,7 @@ describe.skipIf(!url)('PostgresOffersStore (concurrencia real)', () => {
     const results = await Promise.allSettled([take(a.holdId, 'b-a'), take(b.holdId, 'b-b')]);
     expect(results.map(codeOf).sort()).toEqual(['OK', 'SEAT_TAKEN']);
     // El perdedor no quedó a medias: su hold sigue HELD y sus cupos siguen retenidos (ROLLBACK).
-    const loser = results[0]!.status === 'rejected' ? a : b;
+    const loser = results[0].status === 'rejected' ? a : b;
     expect((await holds.get(loser.holdId)).status).toBe('HELD');
   });
 
@@ -90,9 +90,9 @@ describe.skipIf(!url)('PostgresOffersStore (concurrencia real)', () => {
 
   it('el stock pendiente guarda el último valor y solo se marca enviado si no cambió mientras viajaba', async () => {
     const [row] = (await store.pendingStock(new Date().toISOString(), 100)).filter((r) => r.segmentId === SEGMENT && r.cabinClass === 'BUSINESS');
-    expect(row!.units).toBe(2);
+    expect(row.units).toBe(2);
     await hold(1);
-    await store.markStockPushed(SEGMENT, 'BUSINESS', row!.version, new Date().toISOString());
+    await store.markStockPushed(SEGMENT, 'BUSINESS', row.version, new Date().toISOString());
     const [after] = (await store.pendingStock(new Date().toISOString(), 100)).filter((r) => r.segmentId === SEGMENT && r.cabinClass === 'BUSINESS');
     expect(after).toMatchObject({ pending: true, units: 1 });
   });

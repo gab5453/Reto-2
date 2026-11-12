@@ -67,7 +67,7 @@ beforeEach(() => {
 describe('suscripciones', () => {
   it('guarda el secreto cifrado, sin eventos repetidos, y muestra solo sus últimos 4 caracteres', async () => {
     const view = await service.subscribe('partner:BOOKING_PROTOTIPO', { url: 'http://booking-simulado:3000/hooks', events: ['booking.confirmed', 'booking.confirmed'], secret: 'whsec_secreto_1234' });
-    const guardada = store.insertSubscription.mock.calls[0]![0] as SubscriptionRecord;
+    const guardada = store.insertSubscription.mock.calls[0][0] as SubscriptionRecord;
     expect(guardada.events).toEqual(['booking.confirmed']);
     expect(guardada.secretEncrypted).not.toContain('whsec');
     expect(view.secretHint).toBe('1234');
@@ -88,13 +88,13 @@ describe('ingest: a quién se le entrega cada evento (D40)', () => {
   it('crea una entrega solo para los suscriptores que pueden recibirlo', async () => {
     store.activeSubscriptionsFor.mockResolvedValue([suscripcion(), suscripcion({ id: 'sub-otro', ownerId: 'partner:OTRO' }), suscripcion({ id: 'sub-admin', ownerId: 'admin-1' })]);
     await service.ingest(evento().event, 'partner:BOOKING_PROTOTIPO:u-1');
-    expect(store.ingest.mock.calls[0]![1]).toEqual(['sub-1', 'sub-admin']);
+    expect(store.ingest.mock.calls[0][1]).toEqual(['sub-1', 'sub-admin']);
   });
   it('un evento interno se guarda pero no se entrega a nadie', async () => {
     const interno = createCloudEvent({ name: 'schedule.published', visibility: 'internal', subject: 'x', data: {}, correlationId: 'c' });
     await service.ingest(interno, undefined);
     expect(store.activeSubscriptionsFor).not.toHaveBeenCalled();
-    expect(store.ingest.mock.calls[0]![1]).toEqual([]);
+    expect(store.ingest.mock.calls[0][1]).toEqual([]);
   });
 });
 
@@ -103,7 +103,7 @@ describe('entrega con firma y reintentos', () => {
 
   it('envía el CloudEvent firmado con HMAC del secreto y el correlation ID', async () => {
     expect(await service.deliverDue()).toBe(1);
-    const [url, init] = fetcher.mock.calls[0]! as [string, RequestInit];
+    const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
     const headers = init.headers as Record<string, string>;
     expect(url).toBe('http://booking-simulado:3000/hooks');
     expect(headers[WEBHOOK_SIGNATURE_HEADER]).toBe(signWebhook('whsec_secreto_1234', String(init.body)));
@@ -113,7 +113,7 @@ describe('entrega con firma y reintentos', () => {
   });
   it('el cuerpo es el CloudEvent tal cual: nunca incluye el dueño', async () => {
     await service.deliverDue();
-    const body = String((fetcher.mock.calls[0]![1] as RequestInit).body);
+    const body = String((fetcher.mock.calls[0][1] as RequestInit).body);
     expect(body).not.toContain('partner:BOOKING_PROTOTIPO:u-1');
   });
   it('un 500 deja la entrega RETRYING para dentro de 1 minuto', async () => {

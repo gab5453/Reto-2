@@ -87,8 +87,8 @@ describe('SecretBox: el secreto se guarda cifrado (AES-256-GCM)', () => {
   it('con otra clave no se descifra', () => expect(() => new SecretBox('otra-clave').open(caja.seal('whsec_123'))).toThrow());
   it('si alguien altera el texto cifrado, falla (integridad)', () => {
     const [iv, tag, data] = caja.seal('whsec_123').split('.');
-    const alterado = Buffer.from(data!, 'base64url');
-    alterado[0] = alterado[0]! ^ 0xff;
+    const alterado = Buffer.from(data, 'base64url');
+    alterado[0] = alterado[0] ^ 0xff;
     expect(() => caja.open([iv, tag, alterado.toString('base64url')].join('.'))).toThrow();
   });
 });

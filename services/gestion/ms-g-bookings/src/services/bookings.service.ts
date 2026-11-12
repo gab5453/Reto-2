@@ -88,7 +88,7 @@ export class BookingsService {
   async validatePassengers(input: { passengers: PassengerItem[]; passengersBreakdown: CreateBookingCommand['passengersBreakdown']; segments: SegmentInfo[] }) {
     assertPassengers(input.passengers, resolvePassengerCounts(input.passengersBreakdown), input.segments);
     const holders = await this.store.transaction((tx) => tx.documentHolders(this.claimsFor(input.passengers, input.segments.map((s) => s.segmentId), '')));
-    if (holders.length) throw this.alreadyOnFlight(holders[0]!.segmentId);
+    if (holders.length) throw this.alreadyOnFlight(holders[0].segmentId);
     return { valid: true as const };
   }
 
@@ -194,7 +194,7 @@ export class BookingsService {
       }
       if (!booking) throw problem(500, 'INTERNAL_ERROR', 'No se pudo generar un PNR único.');
       const conflicts = await tx.claimDocuments(this.claimsFor(booking.passengers, segmentsOf(booking).map((s) => s.segmentId), bookingId));
-      if (conflicts.length) throw this.alreadyOnFlight(conflicts[0]!.segmentId, 422);
+      if (conflicts.length) throw this.alreadyOnFlight(conflicts[0].segmentId, 422);
       await tx.savePayment({ ...payment, bookingId });
       for (const request of command.assistance ?? []) {
         if (!booking.passengers.some((passenger) => passenger.passengerId === request.passengerId)) {
@@ -225,14 +225,14 @@ export class BookingsService {
     );
     return {
       items: page.items.map((booking) => {
-        const first = booking.itineraries[0]!;
+        const first = booking.itineraries[0];
         return {
           bookingId: booking.bookingId,
           pnr: booking.pnr,
           status: booking.status,
-          origin: first.segments[0]!.departure.iataCode,
+          origin: first.segments[0].departure.iataCode,
           destination: first.segments.at(-1)!.arrival.iataCode,
-          departureDate: first.segments[0]!.departure.at.slice(0, 10),
+          departureDate: first.segments[0].departure.at.slice(0, 10),
           grandTotal: booking.grandTotal,
           // Panel de administración (O-1): de dónde vino la venta y cuánto se devolvió, sin abrir el detalle.
           ...(caller.actorId ? adminSummary(booking) : {}),
@@ -415,7 +415,7 @@ export class BookingsService {
       const oldSegments = replaced.flatMap((itinerary) => itinerary.segments.map((segment) => segment.segmentId));
       const now = new Date(this.now()).toISOString();
       const itineraries = [...booking.itineraries.filter((itinerary) => !input.replacedItineraryIds.includes(itinerary.itineraryId)), ...input.newItineraries]
-        .sort((a, b) => a.segments[0]!.departure.at.localeCompare(b.segments[0]!.departure.at));
+        .sort((a, b) => a.segments[0].departure.at.localeCompare(b.segments[0].departure.at));
       const fares = [...booking.fares.filter((fare) => !input.replacedItineraryIds.includes(fare.itineraryId)), ...input.newFares];
       const passengers = booking.passengers.map((passenger) => ({
         ...passenger,
@@ -437,7 +437,7 @@ export class BookingsService {
       updated.tickets = reissueCoupons(updated, now);
       await tx.releaseDocuments(booking.bookingId, oldSegments);
       const conflicts = await tx.claimDocuments(this.claimsFor(passengers, input.newItineraries.flatMap((i) => i.segments.map((s) => s.segmentId)), booking.bookingId));
-      if (conflicts.length) throw this.alreadyOnFlight(conflicts[0]!.segmentId, 409);
+      if (conflicts.length) throw this.alreadyOnFlight(conflicts[0].segmentId, 409);
       await tx.saveBooking(updated);
       return this.view(tx, updated, caller);
     });
@@ -539,8 +539,8 @@ export class BookingsService {
     for (const booking of bookings) byStatus[booking.status] = (byStatus[booking.status] ?? 0) + 1;
     const byRoute = new Map<string, { origin: string; destination: string; bookings: number; cents: number }>();
     for (const row of rows) {
-      const first = row.booking.itineraries[0]!;
-      const key = `${first.segments[0]!.departure.iataCode}-${first.segments.at(-1)!.arrival.iataCode}`;
+      const first = row.booking.itineraries[0];
+      const key = `${first.segments[0].departure.iataCode}-${first.segments.at(-1)!.arrival.iataCode}`;
       const entry = byRoute.get(key) ?? { origin: key.slice(0, 3), destination: key.slice(4), bookings: 0, cents: 0 };
       entry.bookings++;
       entry.cents += row.charged - row.refunded;
@@ -603,8 +603,8 @@ export class BookingsService {
     const money = formatCents;
     const sum = (list: typeof rows, pick: (row: (typeof rows)[number]) => number) => list.reduce((total, row) => total + pick(row), 0);
     const routeOf = (booking: BookingRecord) => {
-      const first = booking.itineraries[0]!;
-      return { origin: first.segments[0]!.departure.iataCode, destination: first.segments.at(-1)!.arrival.iataCode };
+      const first = booking.itineraries[0];
+      return { origin: first.segments[0].departure.iataCode, destination: first.segments.at(-1)!.arrival.iataCode };
     };
 
     const byDay = new Map<string, { date: string; channel: SalesChannelCode; bookings: number; charged: number }>();
@@ -812,7 +812,7 @@ function adminSummary(booking: BookingRecord) {
     channel: booking.channel,
     partnerId: booking.partnerId,
     partnerOrderId: booking.salesChannel?.partnerOrderId ?? null,
-    departureAt: booking.itineraries[0]!.segments[0]!.departure.at,
+    departureAt: booking.itineraries[0].segments[0].departure.at,
     passengerCount: booking.passengers.length,
     refundTotal: booking.refunds.length ? formatCents(refunded) : null,
     createdAt: booking.createdAt,

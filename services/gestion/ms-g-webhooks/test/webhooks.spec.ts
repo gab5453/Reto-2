@@ -120,7 +120,7 @@ describe('entrega firmada y filtro D40', () => {
     const toBooking = received.filter((r) => r.path === '/booking');
     expect(toBooking).toHaveLength(1);
     expect(toBooking[0]).toMatchObject({ signatureOk: true, correlationId: confirmed.correlationid, body: { id: confirmed.id, type: 'ec.edu.epn.booking.vuelos.booking.confirmed' } });
-    expect(toBooking[0]!.raw).not.toMatch(/usr-4f9a2c|partner:/);
+    expect(toBooking[0].raw).not.toMatch(/usr-4f9a2c|partner:/);
     expect(received.filter((r) => r.path === '/admin')).toHaveLength(1); // el administrador recibe todo
   });
 

@@ -218,7 +218,7 @@ export class InMemoryOffersStore implements OffersStore {
         this.setIn(
           this.stock,
           key,
-          { ...current, ...record, version: (current?.version ?? 0) + 1, pending: true, attempts: 0, nextAttemptAt: new Date(0).toISOString() } as StockSyncRecord,
+          { ...current, ...record, version: (current?.version ?? 0) + 1, pending: true, attempts: 0, nextAttemptAt: new Date(0).toISOString() },
           undo,
         );
       },

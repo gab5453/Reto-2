@@ -156,6 +156,6 @@ export interface DocumentClaim {
 
 export const ACTIVE_STATUSES: BookingStatus[] = ['PENDING', 'PENDING_PAYMENT', 'TICKET_ISSUING', 'CONFIRMED', 'CHANGE_PENDING', 'CANCELLATION_PENDING'];
 export const channelOf = (ownerId: string): SalesChannelCode => (ownerId.startsWith('partner:') ? 'BOOKING' : 'WEB');
-export const partnerOf = (ownerId: string): string | null => (ownerId.startsWith('partner:') ? ownerId.split(':')[1]! : null);
+export const partnerOf = (ownerId: string): string | null => (ownerId.startsWith('partner:') ? ownerId.split(':')[1] : null);
 
 export type { MoneyAmount, PassengerCounts, PassengerType };

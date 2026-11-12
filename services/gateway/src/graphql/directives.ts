@@ -5,7 +5,7 @@ import {
   type GraphQLArgument,
   type GraphQLFieldConfig,
   type GraphQLInputField,
-  GraphQLInputObjectType,
+  
   type GraphQLInputType,
   GraphQLList,
   GraphQLNonNull,
@@ -63,7 +63,7 @@ function checkerFor(schema: GraphQLSchema, type: GraphQLInputType, constraint: C
       for (const [name, check] of fields) check((value as Record<string, unknown>)[name], `${path}.${name}`, problems);
     };
     cache.set(inner.name, checker);
-    for (const field of Object.values((inner as GraphQLInputObjectType).getFields())) fields.push([field.name, checkerFor(schema, field.type, constraintOf(schema, field), cache)]);
+    for (const field of Object.values((inner).getFields())) fields.push([field.name, checkerFor(schema, field.type, constraintOf(schema, field), cache)]);
     return checker;
   }
   if (!constraint) return () => undefined;

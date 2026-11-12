@@ -216,7 +216,7 @@ describe('forma del contrato: toFlightSegment y toItineraryOption', () => {
       ['BOSQUE', 40],
       ['DOSEL', 3],
     ]);
-    expect(opcion.pricingOptions[0]!.pricePerPassengerType.map((p) => [p.passengerType, p.price.total])).toEqual([
+    expect(opcion.pricingOptions[0].pricePerPassengerType.map((p) => [p.passengerType, p.price.total])).toEqual([
       ['ADULT', '79.85'],
       ['CHILD', '64.85'],
     ]);
@@ -232,7 +232,7 @@ describe('seatsOf: mapa de asientos', () => {
   it('A220-300: 12 en Business (2-2, filas 1–3) y 110 en Economy (2-3, filas 4–25)', () => {
     expect(a220.filter((s) => s.cabinClass === 'BUSINESS')).toHaveLength(12);
     expect(a220.filter((s) => s.cabinClass === 'ECONOMY')).toHaveLength(110);
-    expect(a220[0]!.seatNumber).toBe('1A');
+    expect(a220[0].seatNumber).toBe('1A');
   });
   it('ventana en A y F; pasillo en C y D', () => {
     const fila5 = a220.filter((s) => s.rowNumber === 5);

@@ -54,9 +54,9 @@ export async function findOffer(accept: (pricing: Pricing) => boolean = () => tr
     });
     expectConforms(response, { status: 200 });
     for (const offer of (response.body as { offers: Offer[] }).offers) {
-      const itinerary = offer.itineraries[0]!;
+      const itinerary = offer.itineraries[0];
       const pricing = itinerary.pricingOptions.find((p) => p.availableSeats >= 2 && accept(p));
-      if (pricing) return { offer, itinerary, pricing, segment: itinerary.segments[0]!, departureDate };
+      if (pricing) return { offer, itinerary, pricing, segment: itinerary.segments[0], departureDate };
     }
   }
   throw new Error(`No hay ofertas ${origin}-${destination} con cupos entre ${config.daysAhead} y ${config.daysAhead + 6} días`);

@@ -82,11 +82,11 @@ describe('validación del CloudEvent', () => {
   });
   it('sin correlationid válido se genera uno nuevo', async () => {
     await service.receive(evento({ correlationid: 'con espacios no vale' }), 'AMQP');
-    expect((store.insertInbound.mock.calls[0]![0] as InboundEventRecord).correlationId).not.toBe('con espacios no vale');
+    expect((store.insertInbound.mock.calls[0][0] as InboundEventRecord).correlationId).not.toBe('con espacios no vale');
   });
   it('el bookingId se guarda en minúsculas', async () => {
     await service.receive(evento({ data: { bookingId: BOOKING_ID.toUpperCase() } }), 'AMQP');
-    expect((store.insertInbound.mock.calls[0]![0] as InboundEventRecord).bookingId).toBe(BOOKING_ID);
+    expect((store.insertInbound.mock.calls[0][0] as InboundEventRecord).bookingId).toBe(BOOKING_ID);
   });
 });
 
@@ -119,14 +119,14 @@ describe('procesamiento: PROCESSED, REJECTED o RETRY', () => {
     handlers.paymentConfirmed.mockRejectedValue(new ProblemDetailsException({ status: 503, code: 'PROVIDER_UNAVAILABLE', title: 'caído' }));
     const antes = Date.now();
     await procesar(registro('ec.edu.epn.booking.pagos.payment.confirmed', 3));
-    const [, status, , , next] = store.finishInbound.mock.calls[0]!;
+    const [, status, , , next] = store.finishInbound.mock.calls[0];
     expect(status).toBe('RETRY');
-    expect(Date.parse(next as string) - antes).toBeGreaterThanOrEqual(RETRY_DELAYS_MS[2]!);
+    expect(Date.parse(next as string) - antes).toBeGreaterThanOrEqual(RETRY_DELAYS_MS[2]);
   });
   it('un error inesperado (no ProblemDetails) también se reintenta', async () => {
     handlers.paymentConfirmed.mockRejectedValue(new Error('timeout'));
     await procesar(registro('ec.edu.epn.booking.pagos.payment.confirmed'));
-    expect(store.finishInbound.mock.calls[0]![1]).toBe('RETRY');
+    expect(store.finishInbound.mock.calls[0][1]).toBe('RETRY');
   });
   it('las esperas crecen y se quedan en 1 hora', () => expect(RETRY_DELAYS_MS).toEqual([5_000, 30_000, 120_000, 600_000, 1_800_000, 3_600_000]));
 });

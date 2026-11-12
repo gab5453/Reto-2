@@ -73,7 +73,7 @@ export class EventBus {
         await bus.open();
         return bus;
       } catch (error) {
-        const delay = delays[Math.min(attempt, delays.length - 1)]!;
+        const delay = delays[Math.min(attempt, delays.length - 1)];
         if (Date.now() + delay > until) throw error;
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
@@ -109,7 +109,7 @@ export class EventBus {
   }
 
   private scheduleReconnect(): void {
-    const delay = RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt++, RECONNECT_DELAYS_MS.length - 1)]!;
+    const delay = RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt++, RECONNECT_DELAYS_MS.length - 1)];
     this.reconnectTimer = setTimeout(() => {
       this.open().then(
         () => this.onReconnect?.(),
@@ -176,7 +176,7 @@ export class EventBus {
       // Una cola de espera por demora (un TTL fijo por cola: sin bloqueo "cabeza de fila"); al vencer, vuelve SOLO a `queue`.
       const retryQueues = delays.map((ms) => `${queue}.retry.${delayLabel(ms)}`);
       for (const [index, ms] of delays.entries()) {
-        await channel.assertQueue(retryQueues[index]!, { durable: true, arguments: { 'x-message-ttl': ms, 'x-dead-letter-exchange': '', 'x-dead-letter-routing-key': queue } });
+        await channel.assertQueue(retryQueues[index], { durable: true, arguments: { 'x-message-ttl': ms, 'x-dead-letter-exchange': '', 'x-dead-letter-routing-key': queue } });
       }
       await channel.prefetch(10);
 
@@ -213,7 +213,7 @@ export class EventBus {
               if (attempt >= maxAttempts) await deadLetter(raw, attempt, reason, message.event.type);
               else {
                 // Al volver de la espera llega con la cola como routing key: se guarda la del evento para la cola de fallidos.
-                await this.send('', retryQueues[attempt - 1]!, raw.content, { ...raw.properties, persistent: true, headers: { ...raw.properties.headers, [ATTEMPTS_HEADER]: attempt + 1, 'x-last-error': reason.slice(0, 500), [ORIGINAL_KEY_HEADER]: originalKey(raw) } });
+                await this.send('', retryQueues[attempt - 1], raw.content, { ...raw.properties, persistent: true, headers: { ...raw.properties.headers, [ATTEMPTS_HEADER]: attempt + 1, 'x-last-error': reason.slice(0, 500), [ORIGINAL_KEY_HEADER]: originalKey(raw) } });
               }
               channel.ack(raw);
             } catch {

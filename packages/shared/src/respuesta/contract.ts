@@ -75,9 +75,9 @@ export class ContractFiles {
     while (pending.length) {
       const file = pending.pop()!;
       for (const [, other] of JSON.stringify(this.doc(file)).matchAll(/"\$ref":"\.\/([^"#]+)#/g)) {
-        if (!this.docs.has(other!)) {
-          this.doc(other!);
-          pending.push(other!);
+        if (!this.docs.has(other)) {
+          this.doc(other);
+          pending.push(other);
         }
       }
     }
@@ -102,7 +102,7 @@ export class ContractFiles {
     let node = this.at(current) as Json;
     for (let hops = 0; node && typeof node['$ref'] === 'string'; hops++) {
       if (hops > 10) throw new Error(`$ref circular en ${current.file}#${current.pointer}`);
-      current = this.resolve(node['$ref'] as string, current.file);
+      current = this.resolve(node['$ref'], current.file);
       node = this.at(current) as Json;
     }
     if (!node) throw new Error(`$ref sin destino: ${location.file}#${location.pointer}`);
@@ -114,7 +114,7 @@ const child = (location: SchemaRef, ...parts: string[]): SchemaRef => ({ file: l
 
 function jsonSchemaOf(files: ContractFiles, content: unknown, at: SchemaRef, mediaType?: string): SchemaRef | undefined {
   if (!content || typeof content !== 'object') return undefined;
-  const types = Object.keys(content as Json);
+  const types = Object.keys(content);
   const chosen = mediaType ?? types.find((type) => type === 'application/json' || type === 'application/problem+json');
   if (!chosen || !(content as Json)[chosen]) return undefined;
   const media = (content as Json)[chosen] as Json;
@@ -188,7 +188,7 @@ export class OperationTable {
       .sort((a, b) => literal(b.path) - literal(a.path))
       .map((operation) => ({
         operation,
-        names: [...operation.path.matchAll(/\{(\w+)\}/g)].map((m) => m[1]!),
+        names: [...operation.path.matchAll(/\{(\w+)\}/g)].map((m) => m[1]),
         regex: new RegExp(`^${operation.path.replace(/[.*+?^$()|[\]\\]/g, '\\$&').replace(/\{\w+\}/g, '([^/]+)')}$`),
       }));
   }
@@ -206,7 +206,7 @@ export class OperationTable {
         continue;
       }
       try {
-        return { operation: candidate.operation, params: Object.fromEntries(candidate.names.map((name, i) => [name, decodeURIComponent(match[i + 1]!)])) };
+        return { operation: candidate.operation, params: Object.fromEntries(candidate.names.map((name, i) => [name, decodeURIComponent(match[i + 1])])) };
       } catch {
         return undefined; // %-codificación inválida
       }

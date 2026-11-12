@@ -115,7 +115,7 @@ describe('ofertas de cambio de fecha', () => {
     const offers = await service.createDateChangeOffers(reserva(), [alternativa, { ...alternativa, newItineraryId: 'M' }]);
     expect(offers).toHaveLength(2);
     expect(tx.saveOffer).toHaveBeenCalledTimes(2);
-    expect(offers[0]!.priceDifference.totalToPay).toBe('48.00');
+    expect(offers[0].priceDifference.totalToPay).toBe('48.00');
   });
   it('una oferta vencida → CHANGE_OFFER_EXPIRED', async () => {
     tx.offer.mockResolvedValue(oferta({ data: { ...oferta().data, expiresAt: new Date(AHORA - 1).toISOString() } }));

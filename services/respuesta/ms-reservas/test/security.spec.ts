@@ -143,7 +143,7 @@ describe('saneamiento de la entrada', () => {
 
   it('rechaza caracteres de control en los textos', async () => {
     const booking = validBooking();
-    booking.passengers[0]!.firstName = 'Ja\u0000ne';
+    booking.passengers[0].firstName = 'Ja\u0000ne';
     const response = await http().post('/api/v2/vuelos/bookings').set('Authorization', tokens.partner()).set('Idempotency-Key', newKey()).send(booking).expect(400);
     expect(response.body.invalidParams).toEqual([{ name: 'passengers[0].firstName', reason: 'contiene caracteres de control' }]);
   });
@@ -151,7 +151,7 @@ describe('saneamiento de la entrada', () => {
   it('recorta espacios al inicio y al final antes de llamar al ESB', async () => {
     esb.on('POST', '/sagas/bookings', { status: 201, body: { bookingId: '7bc123b6-ec50-4676-8b88-8f82a8c00ac7', pnr: 'BKG001', status: 'CONFIRMED', grandTotal: { currency: 'USD', total: '1.00' }, createdAt: '2026-10-25T00:00:00Z' } });
     const booking = validBooking();
-    booking.passengers[0]!.firstName = '  Jane  ';
+    booking.passengers[0].firstName = '  Jane  ';
     await http().post('/api/v2/vuelos/bookings').set('Authorization', tokens.partner()).set('X-User-Id', 'usr-1').set('Idempotency-Key', newKey()).send(booking).expect(201);
     expect(esb.last('POST', '/sagas/bookings')!.json.passengers[0].firstName).toBe('Jane');
   });

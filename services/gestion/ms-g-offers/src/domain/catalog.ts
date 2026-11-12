@@ -39,7 +39,7 @@ const SEGMENT_ID = /^(EA\d{3,4})-(\d{4})(\d{2})(\d{2})$/;
 export const buildSegmentId = (flightNumber: string, date: string): string => `${flightNumber}-${date.replaceAll('-', '')}`;
 export function parseSegmentId(segmentId: string): { flightNumber: string; date: string } | undefined {
   const match = SEGMENT_ID.exec(segmentId);
-  return match ? { flightNumber: match[1]!, date: `${match[2]}-${match[3]}-${match[4]}` } : undefined;
+  return match ? { flightNumber: match[1], date: `${match[2]}-${match[3]}-${match[4]}` } : undefined;
 }
 /** Itinerario = segmentos unidos por `.`; oferta = itinerarios unidos por `~`. */
 export const buildItineraryId = (segmentIds: string[]): string => segmentIds.join('.');
@@ -99,14 +99,14 @@ export interface Itinerary {
 }
 
 const utc = (iso: string) => Date.parse(iso);
-const flightDistance = (flight: Pick<FlightRecord, 'origin' | 'destination'>) => distanceKm(AIRPORTS[flight.origin]!, AIRPORTS[flight.destination]!);
+const flightDistance = (flight: Pick<FlightRecord, 'origin' | 'destination'>) => distanceKm(AIRPORTS[flight.origin], AIRPORTS[flight.destination]);
 export const durationMinutes = (flight: Pick<FlightRecord, 'departureAt' | 'arrivalAt'>) => (utc(flight.arrivalAt) - utc(flight.departureAt)) / 60_000;
 
 export function toItinerary(flights: FlightRecord[]): Itinerary {
   return {
     itineraryId: buildItineraryId(flights.map((flight) => flight.segmentId)),
     flights,
-    totalDurationMinutes: (utc(flights.at(-1)!.arrivalAt) - utc(flights[0]!.departureAt)) / 60_000,
+    totalDurationMinutes: (utc(flights.at(-1)!.arrivalAt) - utc(flights[0].departureAt)) / 60_000,
     distanceKm: flights.reduce((total, flight) => total + flightDistance(flight), 0),
   };
 }
@@ -114,7 +114,7 @@ export function toItinerary(flights: FlightRecord[]): Itinerary {
 /** Conexión válida: mismo aeropuerto, escala de 1–10 h y sin rodeos absurdos (≤ 1,6 × la distancia directa). */
 export function isValidConnection(first: FlightRecord, second: FlightRecord): boolean {
   const layover = (utc(second.departureAt) - utc(first.arrivalAt)) / 60_000;
-  const direct = distanceKm(AIRPORTS[first.origin]!, AIRPORTS[second.destination]!);
+  const direct = distanceKm(AIRPORTS[first.origin], AIRPORTS[second.destination]);
   return (
     first.destination === second.origin &&
     first.origin !== second.destination &&
@@ -126,7 +126,7 @@ export function isValidConnection(first: FlightRecord, second: FlightRecord): bo
 
 /** Se vende si todos sus vuelos están a la venta y el primero sale en más de 60 minutos. */
 export const isSellable = (itinerary: Itinerary, now: number): boolean =>
-  itinerary.flights.every((flight) => flight.onSale) && utc(itinerary.flights[0]!.departureAt) >= now + MIN_SALE_LEAD_MINUTES * 60_000;
+  itinerary.flights.every((flight) => flight.onSale) && utc(itinerary.flights[0].departureAt) >= now + MIN_SALE_LEAD_MINUTES * 60_000;
 
 /** Directos y con una escala, ordenados por paradas y duración. `departing(origin, date)` = vuelos a la venta de ese día. */
 export function findItineraries(
@@ -255,7 +255,7 @@ export function seatsOf(aircraftType: AircraftType): SeatDefinition[] {
   if (cached) return cached;
   const seats = layouts.flatMap((cabin) => {
     const groups = cabin.layout.split('-');
-    const windowLetters = new Set([groups[0]![0], groups.at(-1)!.at(-1)]);
+    const windowLetters = new Set([groups[0][0], groups.at(-1)!.at(-1)]);
     const aisleLetters = new Set(groups.flatMap((group, index) => [...(index > 0 ? [group[0]] : []), ...(index < groups.length - 1 ? [group.at(-1)] : [])]));
     const letters = groups.join('').split('');
     const rows: SeatDefinition[] = [];

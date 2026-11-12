@@ -56,7 +56,7 @@ describe('register', () => {
     await service.register('b-1', pedido());
     const [adulto, infante] = tx.insert.mock.calls.map((c) => c[0] as CheckInRecord);
     expect(adulto).toMatchObject({ seat: '22C', boardingGroup: 'B' });
-    expect(infante!.seat).toBeNull();
+    expect(infante.seat).toBeNull();
   });
   it('el reintento de la misma saga devuelve lo ya registrado sin insertar', async () => {
     tx.checkIns.mockResolvedValue([registrado(), registrado({ passengerId: 'I1', seat: null })]);
@@ -89,7 +89,7 @@ describe('pases y compensación', () => {
       ['22C', '007', 'PDF417'],
       ['INF', '008', 'PDF417'],
     ]);
-    expect(boardingPasses[0]!.barcode).toHaveLength(60);
+    expect(boardingPasses[0].barcode).toHaveLength(60);
   });
   it('compensar borra solo lo de esa saga', async () => {
     await service.undo('b-1', 's-1');
@@ -99,7 +99,7 @@ describe('pases y compensación', () => {
   it('la asistencia lista se refleja en el estado del pasajero', async () => {
     tx.checkIns.mockResolvedValue([registrado()]);
     tx.assistanceReady.mockResolvedValue([{ passengerId: 'P1', segmentId: 'EA100-20261210', ready: true }]);
-    expect((await service.markAssistanceReady('b-1', { passengerId: 'P1', segmentId: 'EA100-20261210', ready: true }, 'admin-1')).items[0]!.assistanceReady).toBe(true);
+    expect((await service.markAssistanceReady('b-1', { passengerId: 'P1', segmentId: 'EA100-20261210', ready: true }, 'admin-1')).items[0].assistanceReady).toBe(true);
     expect(tx.saveAssistanceReady).toHaveBeenCalledWith(expect.objectContaining({ updatedBy: 'admin-1', ready: true }));
   });
 });

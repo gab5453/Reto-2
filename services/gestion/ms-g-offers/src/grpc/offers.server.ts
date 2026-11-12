@@ -80,10 +80,10 @@ export class OffersGrpcServer implements OnModuleDestroy {
     const server = new grpc.Server();
     const handlers = this.handlers();
     for (const service of ['CatalogService', 'HoldService', 'InventoryService', 'PublishingService']) {
-      const definitionOf = pkg[service]!.service;
+      const definitionOf = pkg[service].service;
       server.addService(
         definitionOf,
-        Object.fromEntries(Object.keys(definitionOf).map((rpc) => [rpc, this.unary(`${service}/${rpc}`, handlers[rpc]!)])) as grpc.UntypedServiceImplementation,
+        Object.fromEntries(Object.keys(definitionOf).map((rpc) => [rpc, this.unary(`${service}/${rpc}`, handlers[rpc])])),
       );
     }
     this.health.addToServer(server);

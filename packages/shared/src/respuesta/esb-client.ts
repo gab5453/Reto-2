@@ -1,7 +1,7 @@
 import { CircuitBreaker } from '../clients/circuit-breaker.js';
 import type { TokenSource } from '../clients/service-token.js';
 import { correlationHeaders } from '../correlation/correlation.js';
-import { type InvalidParam, type ProblemDetails, ProblemDetailsException } from '../problem-details/problem-details.js';
+import { type ProblemDetails, ProblemDetailsException } from '../problem-details/problem-details.js';
 
 /**
  * Cliente del ESB para los MS de respuesta (D43, `contract/esb.openapi.yaml`). Es su ÚNICA salida: nunca llaman a un MS.G.
@@ -45,7 +45,7 @@ export class EsbProblem extends ProblemDetailsException {
       title: typeof problem.title === 'string' ? problem.title : '',
       ...(typeof problem.detail === 'string' ? { detail: problem.detail } : {}),
       ...(typeof problem.type === 'string' && problem.type !== 'about:blank' ? { type: problem.type } : {}),
-      ...(Array.isArray(problem.invalidParams) ? { invalidParams: problem.invalidParams as InvalidParam[] } : {}),
+      ...(Array.isArray(problem.invalidParams) ? { invalidParams: problem.invalidParams } : {}),
       ...(Number.isFinite(retryAfter) && retryAfter > 0 ? { retryAfterSeconds: retryAfter } : {}),
     });
   }
@@ -75,7 +75,7 @@ export class EsbClient {
   /** Como `call`, pero un status ≥ 400 se lanza como `EsbProblem`. */
   async expect<T = unknown>(call: EsbCall): Promise<EsbResponse<T>> {
     const response = await this.call<T>(call);
-    if (response.status >= 400) throw new EsbProblem(response as EsbResponse, (response.body ?? {}) as Partial<ProblemDetails>);
+    if (response.status >= 400) throw new EsbProblem(response, (response.body ?? {}));
     return response;
   }
 

@@ -63,7 +63,7 @@ beforeAll(async () => {
   url = `ws://127.0.0.1:${(app.getHttpServer().address() as AddressInfo).port}/api/graphql`;
 });
 afterAll(async () => {
-  await Promise.all(clients.map((client) => client.dispose()));
+  await Promise.all(clients.map(async (client) => client.dispose()));
   await app.close();
   await stopFakeServices(fakes);
 });
@@ -102,8 +102,8 @@ it('sin token de usuario (o con uno de partner) la conexión se rechaza', async 
 
 it('un token sin flights:read → FORBIDDEN; si el MS responde 401 (token vencido) la suscripción termina con UNAUTHENTICATED', async () => {
   const forbidden = await receive(connect({ authorization: tokens.customer('ecoairlines:profile') }), 'subscription { bookingEvents { eventId } }', 1);
-  expect((forbidden.error as { extensions?: { code?: string } }[])[0]!.extensions!.code).toBe('FORBIDDEN');
+  expect((forbidden.error as { extensions?: { code?: string } }[])[0].extensions!.code).toBe('FORBIDDEN');
   fakes['MS.Vuelos'].on('GET', /^\/api\/v2\/vuelos\/eventos/, { status: 401, body: problem(401, 'UNAUTHORIZED', 'El token no es válido o venció.') });
   const expired = await receive(connect({ authorization: tokens.customer() }), 'subscription { bookingEvents { eventId } }', 1);
-  expect((expired.error as { extensions?: { code?: string } }[])[0]!.extensions!.code).toBe('UNAUTHENTICATED');
+  expect((expired.error as { extensions?: { code?: string } }[])[0].extensions!.code).toBe('UNAUTHENTICATED');
 });

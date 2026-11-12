@@ -69,7 +69,7 @@ describe('Horario semanal de vuelos y aviones', () => {
         const registration = plan.registrationFor(date, flight.flightNumber);
         expect(registration, `${flight.flightNumber} ${date} sin avión`).toBeDefined();
         expect(types.get(registration!)).toBe(flight.aircraft);
-        const departure = localToUtcMs(date, flight.departureLocal, AIRPORTS[flight.origin]!.utcOffsetMinutes);
+        const departure = localToUtcMs(date, flight.departureLocal, AIRPORTS[flight.origin].utcOffsetMinutes);
         const ready = departure + (flightDurationMinutes(flight.origin, flight.destination) + TURNAROUND_MINUTES[flight.aircraft]) * 60_000;
         if (!byAircraft.has(registration!)) byAircraft.set(registration!, []);
         byAircraft.get(registration!)!.push({ ...flight, departure, ready });
@@ -78,8 +78,8 @@ describe('Horario semanal de vuelos y aviones', () => {
     for (const [registration, flights] of byAircraft) {
       flights.sort((a, b) => a.departure - b.departure);
       for (let index = 1; index < flights.length; index++) {
-        const previous = flights[index - 1]!;
-        const current = flights[index]!;
+        const previous = flights[index - 1];
+        const current = flights[index];
         expect(current.origin, `${registration}: ${previous.flightNumber} llega a ${previous.destination} y ${current.flightNumber} sale de ${current.origin}`).toBe(previous.destination);
         expect(current.departure, `${registration}: ${current.flightNumber} sale antes de terminar ${previous.flightNumber}`).toBeGreaterThanOrEqual(previous.ready);
       }
@@ -117,7 +117,7 @@ describe('Horario semanal de vuelos y aviones', () => {
         route({ routeId: 'EA902-EA903', destination: 'MAD', outbound: { flightNumber: 'EA902', departureLocal: '20:00' }, inbound: { flightNumber: 'EA903', departureLocal: '15:00' }, weekdays: [0, 1, 2, 3, 4, 5, 6], aircraftType: 'Boeing 787-9' }),
       ]);
       expect(validateRotations(timetable)).toEqual([]);
-      expect(timetable.aircraftByRoute!['EA902-EA903']!.length).toBeGreaterThan(1);
+      expect(timetable.aircraftByRoute!['EA902-EA903'].length).toBeGreaterThan(1);
     });
 
     it('rechaza números de vuelo repetidos, rutas sin días y aeropuertos inválidos', () => {
@@ -164,7 +164,7 @@ describe('Horario semanal de vuelos y aviones', () => {
       const longRoute = route({ destination: 'MAD', aircraftType: 'Boeing 787-9', outbound: { flightNumber: 'EA900', departureLocal: '20:00' }, inbound: { flightNumber: 'EA901', departureLocal: '15:00' } });
       const wide = { registration: 'HC-Y01', aircraftType: 'Boeing 787-9' as const, base: 'UIO' };
       expect(() => buildTimetable([{ ...longRoute, aircraft: ['HC-Y01'] }], [wide])).toThrow(/necesita \d avión\(es\)/);
-      expect(buildTimetable([{ ...longRoute, aircraft: ['HC-Y01'], autoAddAircraft: true }], [wide]).aircraftByRoute!['EA900-EA901']![0]).toBe('HC-Y01');
+      expect(buildTimetable([{ ...longRoute, aircraft: ['HC-Y01'], autoAddAircraft: true }], [wide]).aircraftByRoute!['EA900-EA901'][0]).toBe('HC-Y01');
       expect(() => buildTimetable([route({ aircraft: ['HC-X01'] })], [plane('HC-X01', 'GYE')])).toThrow(/tiene base en GYE/);
       expect(() => buildTimetable([route({ aircraft: ['HC-Y01'] })], [wide])).toThrow(/es un Boeing 787-9/);
       expect(() => buildTimetable([route({ aircraft: ['HC-Z99'] })], [])).toThrow(/no está en la flota/);

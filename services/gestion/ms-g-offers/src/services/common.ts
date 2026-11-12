@@ -84,7 +84,7 @@ export class TxReader {
     const flights = await Promise.all(segmentIds.map((segmentId) => this.flight(segmentId)));
     if (flights.some((flight) => !flight)) return undefined;
     const resolved = flights as FlightRecord[];
-    if (resolved.length === 2 && !isValidConnection(resolved[0]!, resolved[1]!)) return undefined;
+    if (resolved.length === 2 && !isValidConnection(resolved[0], resolved[1])) return undefined;
     return toItinerary(resolved);
   }
 

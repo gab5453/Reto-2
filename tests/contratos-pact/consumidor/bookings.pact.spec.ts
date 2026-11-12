@@ -52,7 +52,7 @@ describe('ESB → MS.G.Bookings', () => {
           { caller: { ownerId: DUENO } },
         );
         expect(reserva.pnr).toHaveLength(6);
-        expect(reserva.itineraries[0]!.segments[0]!.departure.iataCode).toBe('UIO');
+        expect(reserva.itineraries[0].segments[0].departure.iataCode).toBe('UIO');
         expect(reserva.tickets.length).toBeGreaterThan(0);
       }));
 
@@ -98,7 +98,7 @@ describe('ESB → MS.G.Bookings', () => {
       )
       .executeTest(async (mockServer) => {
         const tarifas = await bookings(mockServer.url).json<{ fares: { isRefundable: boolean }[]; unflownItineraryIds: string[] }>('GET', `/bookings/${RESERVA_ID}/fares`, { caller: { ownerId: DUENO } });
-        expect(typeof tarifas.fares[0]!.isRefundable).toBe('boolean');
+        expect(typeof tarifas.fares[0].isRefundable).toBe('boolean');
         expect(tarifas.unflownItineraryIds.length).toBeGreaterThan(0);
       }));
 

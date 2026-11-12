@@ -24,7 +24,7 @@ const uuid = (value: string, name: string) => {
 };
 const object = (body: unknown, name = 'body'): Any => {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw invalid(name, 'debe ser un objeto JSON');
-  return body as Any;
+  return body;
 };
 const requireOwner = (caller: Caller) => {
   if (!caller.ownerId) throw invalid('X-Owner-Id', 'obligatorio: dueño de la reserva');
@@ -52,7 +52,7 @@ export class SagasController {
 
   /** Idempotencia por dueño + clave; el hash incluye método, ruta y cuerpo exacto. */
   private async write(request: RawRequest, response: Response, execute: (caller: Caller, instance: string) => Promise<StoredResponse>): Promise<void> {
-    const instance = request.originalUrl.split('?')[0]!;
+    const instance = request.originalUrl.split('?')[0];
     let result;
     try {
       const caller = callerOf(request);
@@ -111,7 +111,7 @@ export class SagasController {
     return this.write(req, res, (caller, instance) => {
       const id = uuid(bookingId, 'bookingId');
       const request = body === undefined || body === null || (typeof body === 'object' && !Object.keys(body).length) ? {} : object(body);
-      return this.sagas.execute(this.sagas.cancel, { bookingId: id, request: request as never }, caller, instance, {
+      return this.sagas.execute(this.sagas.cancel, { bookingId: id, request: request }, caller, instance, {
         onPending: async (sagaId) => json(202, { bookingId: id, status: 'CANCELLATION_PENDING', sagaId }),
       });
     });

@@ -3,7 +3,7 @@ import { newRequestId, ProblemDetailsException, runWithCorrelation, verifyWebhoo
 import { isUnavailable } from '../clients/circuit-breaker.js';
 import { ESB_CONFIG, type EsbConfig } from '../config/config.js';
 import { ESB_STORE, type EsbStore, type InboundChannel, type InboundEventRecord, type InboundStatus } from '../repositories/esb.store.js';
-import { INBOUND_TYPES, type InboundName, type PackageCancelledData, type PaymentEventData, toInboundRecord } from './inbound-event.js';
+import { INBOUND_TYPES, type PackageCancelledData, type PaymentEventData, toInboundRecord } from './inbound-event.js';
 import { InboundHandlers } from './inbound-handlers.js';
 
 /** Esperas entre reintentos de un evento cuyo paso falló por disponibilidad (un MS.G caído): nunca se descarta. */
@@ -93,7 +93,7 @@ export class InboundService implements OnModuleDestroy {
   }
 
   private async process(record: InboundEventRecord): Promise<void> {
-    const name = INBOUND_TYPES[record.type as keyof typeof INBOUND_TYPES] as InboundName;
+    const name = INBOUND_TYPES[record.type as keyof typeof INBOUND_TYPES];
     const data = record.event['data'] as PaymentEventData;
     const finish = (status: Exclude<InboundStatus, 'PENDING' | 'PROCESSING'>, outcome: Record<string, unknown>, next?: string) =>
       this.store.finishInbound(record.id, status, outcome, new Date().toISOString(), next);
@@ -112,7 +112,7 @@ export class InboundService implements OnModuleDestroy {
         this.logger.warn(`${name} ${record.id} rechazado: ${error.problem.code} — ${error.problem.title} [${record.correlationId}]`);
         return;
       }
-      const delay = RETRY_DELAYS_MS[Math.min(record.attempts - 1, RETRY_DELAYS_MS.length - 1)]!;
+      const delay = RETRY_DELAYS_MS[Math.min(record.attempts - 1, RETRY_DELAYS_MS.length - 1)];
       const problem = error instanceof ProblemDetailsException ? error.problem : { code: 'INTERNAL_ERROR', title: error instanceof Error ? error.message : String(error) };
       await finish('RETRY', { problem, attempts: record.attempts }, new Date(Date.now() + delay).toISOString());
       this.logger.warn(`${name} ${record.id}: ${problem.code}; reintento ${record.attempts} en ${delay / 1000} s [${record.correlationId}]`);

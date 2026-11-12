@@ -72,7 +72,7 @@ export interface PaymentInput {
 export type PaymentOperation = 'BOOKING' | 'SEATS' | 'BAGGAGE' | 'DATE_CHANGE';
 
 export const isPartner = (ownerId: string | undefined | null) => !!ownerId?.startsWith('partner:');
-export const partnerIdOf = (ownerId: string | undefined | null) => (isPartner(ownerId) ? ownerId!.split(':')[1]! : null);
+export const partnerIdOf = (ownerId: string | undefined | null) => (isPartner(ownerId) ? ownerId!.split(':')[1] : null);
 export const problem = (status: number, code: string, title: string, detail?: string) => new ProblemDetailsException({ status, code, title, ...(detail ? { detail } : {}) });
 export const segmentsOf = (booking: Pick<BookingView, 'itineraries'>) => booking.itineraries.flatMap((itinerary) => itinerary.segments);
 export const seated = (booking: Pick<BookingView, 'passengers'>) => booking.passengers.filter((passenger) => passenger.passengerType !== 'INFANT');

@@ -148,7 +148,7 @@ export class PostgresFlightStatusStore implements FlightStatusStore {
 
   constructor(connectionString: string) {
     const types = { getTypeParser: (oid: number, format?: 'text' | 'binary') => (oid === 1082 ? (value: string) => value : pg.types.getTypeParser(oid, format)) };
-    this.pool = new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000, types: types as pg.CustomTypesConfig });
+    this.pool = new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 5_000, types: types });
   }
   async init(): Promise<void> {
     await this.pool.query(SCHEMA);

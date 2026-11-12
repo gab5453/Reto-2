@@ -103,8 +103,8 @@ function reserva(over: Partial<BookingRecord> = {}): BookingRecord {
     updatedAt: '2026-11-11T15:00:00.000Z',
     ...over,
   } as Omit<BookingRecord, 'tickets'> & Partial<Pick<BookingRecord, 'tickets'>>;
-  const tickets = over.tickets ?? issueTickets({ ...base, tickets: pendingTickets(base) } as BookingRecord, 'antes').tickets;
-  return { ...base, tickets } as BookingRecord;
+  const tickets = over.tickets ?? issueTickets({ ...base, tickets: pendingTickets(base) }, 'antes').tickets;
+  return { ...base, tickets };
 }
 const pago = (over: Partial<PaymentRecord> = {}): PaymentRecord => ({
   paymentReference: 'pay_123456',
@@ -226,7 +226,7 @@ describe('create: crear la reserva', () => {
   it('une la referencia de pago a la reserva y reserva los documentos en cada vuelo', async () => {
     await service.create(comando(), OWNER);
     expect(tx.savePayment).toHaveBeenCalledWith(expect.objectContaining({ paymentReference: 'pay_123456', bookingId: 'b-1' }));
-    expect(tx.claimDocuments.mock.calls[0]![0]).toHaveLength(3 * 2); // 3 pasajeros × 2 vuelos
+    expect(tx.claimDocuments.mock.calls[0][0]).toHaveLength(3 * 2); // 3 pasajeros × 2 vuelos
   });
   it('guarda la asistencia pedida', async () => {
     await service.create(comando({ assistance: [{ passengerId: 'P2', type: 'WCHR' }] }), OWNER);
@@ -321,7 +321,7 @@ describe('fail: pago fallido o compensación', () => {
     tx.booking.mockResolvedValue(reserva({ status: 'TICKET_ISSUING' }));
     tx.payment.mockResolvedValue(pago({ bookingId: 'b-1' }));
     await service.fail('b-1', 'PAYMENT_DECLINED', 'tarjeta rechazada');
-    const saved = tx.saveBooking.mock.calls[0]![0] as BookingRecord;
+    const saved = tx.saveBooking.mock.calls[0][0] as BookingRecord;
     expect(saved).toMatchObject({ status: 'FAILED', failure: { errorCode: 'PAYMENT_DECLINED', reason: 'tarjeta rechazada' } });
     expect(saved.tickets.every((t) => t.status === 'FAILED')).toBe(true);
     expect(tx.releaseDocuments).toHaveBeenCalledWith('b-1');
@@ -391,10 +391,10 @@ describe('asientos', () => {
   });
   it('el check-in automático guarda el asiento, marca el check-in y reemite el cupón', async () => {
     const result = await service.applySeats('b-1', { reason: 'CHECK_IN_AUTO', seats: [cambio()] }, {});
-    expect(result.seats[0]!.status).toBe('CHECKED_IN');
-    const saved = tx.saveBooking.mock.calls[0]![0] as BookingRecord;
+    expect(result.seats[0].status).toBe('CHECKED_IN');
+    const saved = tx.saveBooking.mock.calls[0][0] as BookingRecord;
     expect(saved.checkedIn).toEqual([{ segmentId: 'EA100-20261210', passengerId: 'P1' }]);
-    expect(saved.tickets[0]!.segments[0]!.seatNumber).toBe('7F');
+    expect(saved.tickets[0].segments[0].seatNumber).toBe('7F');
   });
   it('con pago, la referencia debe estar registrada para asientos', async () => {
     tx.payment.mockResolvedValue(pago({ operation: 'BAGGAGE' }));
@@ -412,7 +412,7 @@ describe('applyBaggage', () => {
   it('suma las maletas, une el pago y deja constancia en el historial', async () => {
     expect(await service.applyBaggage('b-1', maletas(), {})).toEqual({ passengerId: 'P1', itineraryId: 'IDA', totalBaggage: 2 });
     expect(tx.savePayment).toHaveBeenCalledWith(expect.objectContaining({ bookingId: 'b-1' }));
-    expect((tx.saveBooking.mock.calls[0]![0] as BookingRecord).changes.at(-1)!.description).toContain('2 maleta(s) extra (70.00 USD)');
+    expect((tx.saveBooking.mock.calls[0][0] as BookingRecord).changes.at(-1)!.description).toContain('2 maleta(s) extra (70.00 USD)');
   });
   it('más de 3 en total → VALIDATION_FAILED, sin guardar', async () => {
     tx.booking.mockResolvedValue(reserva({ passengers: [pasajero({ extraBaggage: [{ itineraryId: 'IDA', quantity: 2 }] })] }));
@@ -442,7 +442,7 @@ describe('applyCancellation', () => {
   it('anula los boletos, guarda el reembolso con la referencia original y libera los documentos', async () => {
     const result = await cancelar('CUSTOMER_REQUEST', 'cambio de planes');
     expect(result).toMatchObject({ status: 'CANCELLED', ticketsVoided: expect.any(Array), refund: { originalPaymentReference: 'pay_123456' }, message: 'Reembolso de 27.00 USD acreditado.' });
-    const saved = tx.saveBooking.mock.calls[0]![0] as BookingRecord;
+    const saved = tx.saveBooking.mock.calls[0][0] as BookingRecord;
     expect(saved.tickets.every((t) => t.status === 'VOIDED')).toBe(true);
     expect(saved.changes.at(-1)!.description).toBe('Reserva cancelada a pedido del cliente: «cambio de planes».');
     expect(tx.releaseDocuments).toHaveBeenCalledWith('b-1');

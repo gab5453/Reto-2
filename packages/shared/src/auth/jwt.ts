@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, type JsonWebKey, type KeyObject, randomUUID, sign, verify } from 'node:crypto';
+import { createHash, createPublicKey, type KeyObject, randomUUID, sign, verify } from 'node:crypto';
 
 /**
  * JWT RS256 y JWKS (D22) sin dependencias externas: firma y verificación con `node:crypto`.
@@ -128,7 +128,7 @@ export class RemoteJwks {
     const response = await fetch(this.url);
     if (!response.ok) throw new Error(`JWKS ${this.url} respondió ${response.status}`);
     const { keys } = (await response.json()) as { keys: Jwk[] };
-    this.keys = new Map(keys.filter((k) => k.alg === 'RS256').map((k) => [k.kid, createPublicKey({ key: { ...k } as JsonWebKey, format: 'jwk' })]));
+    this.keys = new Map(keys.filter((k) => k.alg === 'RS256').map((k) => [k.kid, createPublicKey({ key: { ...k }, format: 'jwk' })]));
     this.fetchedAt = Date.now();
   }
 }

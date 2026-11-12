@@ -27,7 +27,7 @@ describe('buildJourney', () => {
     const journey = buildJourney('corr-1', spans);
     expect(journey.hops.map((hop) => `${hop.from}→${hop.to}`)).toEqual(['cliente→gateway', 'gateway→ms-reservas', 'ms-reservas→esb', 'esb→ms-g-offers', 'esb→bancoexterno.test']);
     expect(journey.hops[1]).toMatchObject({ sequence: 2, operation: 'POST /api/v2/vuelos/bookings', startMs: 10, durationMs: 870, status: 'OK', httpStatus: 201 });
-    expect(journey.hops[3]!.operation).toBe('InventoryService/ValidateHold');
+    expect(journey.hops[3].operation).toBe('InventoryService/ValidateHold');
     expect(journey.hops[4]).toMatchObject({ operation: 'POST /cobros', status: 'ERROR' });
     expect(journey.nodes).toEqual([
       { id: 'cliente', layer: 'CLIENT' },

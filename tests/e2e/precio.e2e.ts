@@ -16,7 +16,7 @@ async function elegirRuta(page: Page): Promise<void> {
   const select = panel(page).getByLabel('Ruta para ver cuánto cuesta cada paquete');
   const opcion = select.locator('option', { hasText: '(UIO–BOG)' });
   await opcion.waitFor({ state: 'attached' });
-  await select.selectOption((await opcion.getAttribute('value'))!);
+  await select.selectOption((await opcion.getAttribute('value')));
 }
 
 /** Tarifa base (sin impuestos) de cada paquete en la búsqueda, por la API. */
@@ -25,7 +25,7 @@ async function tarifasBase(): Promise<Record<string, number>> {
     'query($i: SearchFlightsInput!){ searchFlights(input:$i){ offers { itineraries { pricingOptions { fareBrand pricePerPassengerType { price { baseFare } } } } } } }',
     { i: { itineraries: [{ origin: 'UIO', destination: 'BOG', departureDate: FECHA }], passengers: { adults: 1 } } },
   ));
-  return Object.fromEntries(r.searchFlights.offers[0]!.itineraries[0]!.pricingOptions.map((p) => [p.fareBrand, Number(p.pricePerPassengerType[0]!.price.baseFare)]));
+  return Object.fromEntries(r.searchFlights.offers[0].itineraries[0].pricingOptions.map((p) => [p.fareBrand, Number(p.pricePerPassengerType[0].price.baseFare)]));
 }
 
 async function precioEnBusqueda(page: Page): Promise<string> {

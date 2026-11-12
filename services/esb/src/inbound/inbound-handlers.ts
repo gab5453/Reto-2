@@ -51,7 +51,7 @@ export class InboundHandlers {
   }
 
   private async saga(definition: SagaDefinition<never, unknown>, input: unknown, sagaId: string): Promise<Record<string, unknown>> {
-    const outcome = await this.engine.run(definition as SagaDefinition<unknown, unknown>, input, { sagaId });
+    const outcome = await this.engine.run(definition, input, { sagaId });
     if (outcome.status === 'PENDING') throw rejected(503, 'PROVIDER_UNAVAILABLE', 'La saga sigue pendiente; el evento se reintenta.');
     return { ...(outcome.result as Record<string, unknown>), sagaId };
   }
@@ -63,7 +63,7 @@ export class InboundHandlers {
     if (booking.status === 'CONFIRMED' && booking.tickets.length > 0 && booking.tickets.every((ticket) => ticket.status === 'ISSUED')) {
       return { action: 'issue-tickets', bookingId: booking.bookingId, pnr: booking.pnr, issued: 0, alreadyIssued: true };
     }
-    const result = await this.saga(this.issueTickets as never, { bookingId: booking.bookingId, paymentReference: data.paymentReference }, stableUuid(`issue-tickets:${eventId}`));
+    const result = await this.saga(this.issueTickets, { bookingId: booking.bookingId, paymentReference: data.paymentReference }, stableUuid(`issue-tickets:${eventId}`));
     return { action: 'issue-tickets', bookingId: booking.bookingId, pnr: booking.pnr, issued: result['issued'], sagaId: result['sagaId'] };
   }
 
@@ -71,7 +71,7 @@ export class InboundHandlers {
     const booking = await this.bookingOfPartner(data.bookingId);
     this.assertPayment(data, booking, false);
     if (booking.status === 'FAILED') return { action: 'payment-failed', bookingId: booking.bookingId, pnr: booking.pnr, alreadyFailed: true };
-    const result = await this.saga(this.paymentFailedSaga as never, { bookingId: booking.bookingId, failureReason: data.failureReason ?? null }, stableUuid(`payment-failed:${eventId}`));
+    const result = await this.saga(this.paymentFailedSaga, { bookingId: booking.bookingId, failureReason: data.failureReason ?? null }, stableUuid(`payment-failed:${eventId}`));
     return { action: 'payment-failed', ...result };
   }
 
@@ -83,7 +83,7 @@ export class InboundHandlers {
     }
     if (booking.status === 'CANCELLED') return { action: 'cancel', bookingId: booking.bookingId, pnr: booking.pnr, alreadyCancelled: true };
     try {
-      const result = await this.saga(this.cancel as never, { bookingId: booking.bookingId, request: { reasonCode: 'SAGA_COMPENSATION', ...(data.reason ? { reason: data.reason } : {}) } }, stableUuid(`package-cancelled:${eventId}`));
+      const result = await this.saga(this.cancel, { bookingId: booking.bookingId, request: { reasonCode: 'SAGA_COMPENSATION', ...(data.reason ? { reason: data.reason } : {}) } }, stableUuid(`package-cancelled:${eventId}`));
       return { action: 'cancel', bookingId: booking.bookingId, pnr: booking.pnr, refund: result['refund'] ?? null, sagaId: result['sagaId'] };
     } catch (error) {
       if (error instanceof ProblemDetailsException && error.problem.code === 'ALREADY_CANCELLED') return { action: 'cancel', bookingId: booking.bookingId, pnr: booking.pnr, alreadyCancelled: true };

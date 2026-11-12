@@ -3314,3 +3314,38 @@ sistema ENTERO levantado con docker compose y la web compilada como en producci�
      pasos que llegaron después hay que recargar la página.
   3. Con el sistema incompleto, resolver un nombre que no existe (`prometheus`) tarda ~3,5 s dentro de Docker y retrasaba la
      consulta a Loki (plazo de 3 s); en la nube no pasa porque Prometheus existe.
+
+### Pruebas · CI-2 — ESLint con tipos, cobertura con mínimos y arreglo del E2E en la CI — ✅ HECHA (11/11)
+
+- **Arreglo de E2E-1 (la CI falló en «5. E2E»):** en una base NUEVA no hay ningún vuelo a la venta. La semilla de MS.G.Schedule
+  solo crea las rutas en su base; los vuelos llegan a Offers con la saga «Publicar horario» del ESB, que en la nube y en local ya se
+  había ejecutado alguna vez. Reproducido con un proyecto de compose aparte y volúmenes nuevos. `npm run e2e:up` ahora publica el
+  horario al terminar (el mismo script de la nube, dentro del contenedor del ESB). Sobre la base nueva: conformidad 54/54 y E2E 8/8.
+- **ESLint con reglas de tipos** junto a oxlint (decisión P-5): `eslint` 10.13.0, `typescript-eslint` 8.72.1
+  (`recommendedTypeChecked`), `eslint-plugin-oxlint` 1.87.0 (la del oxlint 1.87 en uso). `eslint.config.mjs` + `tsconfig.eslint.json`.
+  `npm run lint` = oxlint (1 s) y ESLint (10 s); `npm run lint:rapido` solo oxlint. Primera medición: 2 706 avisos, decididos regla
+  por regla (tabla en `Pruebas.md` §7.1):
+  - **`no-floating-promises`: 0** (el riesgo principal para las sagas). `eslint-plugin-oxlint` la apagaba porque `oxlint.json` la
+    declara, y oxlint sin tipos no la aplica: se volvió a encender y se comprobó con una promesa olvidada a propósito.
+  - `no-unsafe-*` (1 957) y `require-await` (271) apagadas, con el motivo en la configuración (`any` permitido por el proyecto;
+    interfaces de Nest). `no-base-to-string` apagada tras revisar sus 22 casos.
+  - `no-unnecessary-type-assertion`: 416 corregidas con `--fix` (solo quita `!` y `as`; `tsc`, las 1 527 pruebas y Pact siguen en
+    verde, y una comparación del diff confirma que no cambió lógica). Dos `as Any` eran falsos positivos y se restauraron; 9
+    imports de tipos quedaron sin uso y se quitaron.
+  - **Error real encontrado:** si Booking rechazaba un stock con `detail` en forma de lista (errores de validación), el motivo
+    guardado y el log decían `[object Object]`. Corregido en `stock-sync.service.ts` (+1 prueba, que falla con el código anterior).
+  - Otras correcciones menores: `await Promise.all` sobre `dispose()`, `reject` con un Error, `view(this: void)`, tipos con
+    predicados en lugar de `as`. El Fault de SOAP se sigue lanzando como objeto (node-soap lo exige), con un comentario.
+- **Cobertura** (`npm run test:coverage`, `@vitest/coverage-v8`): línea base 86,5 % de líneas y 74,7 % de ramas; dominios 99–100 %,
+  motor de sagas 96 %. Mínimos solo donde una falla cuesta dinero: dominios ≥ 95 %/85 % (líneas/ramas), motor ≥ 90 %/80 %
+  (comprobado: con un mínimo de 99 % la corrida falla). En la CI, la etapa 2 mide la cobertura, escribe el resumen en la ejecución
+  (`scripts/ci/resumen-cobertura.mjs`) y sube el reporte HTML.
+- **Dependencias:** ESLint trae `minimatch` 10.2.6 con un aviso moderado (DoS con patrones glob; `npm audit` lo cuenta 9 veces).
+  Solo de desarrollo; producción sigue en 8. La corrección (11.0.1) es una versión mayor que ESLint aún no pide: anotado en
+  `Seguridad.md` (S-1).
+- **Prettier: descartado** (decisión del responsable). Solo cambia el formato (no encuentra errores ni cambia la ejecución) y el
+  código nunca se formateó con él: aplicarlo cambiaría 265–315 archivos sin mejorar nada que se evalúe. Se quitaron `.prettierrc`,
+  `npm run format` y la dependencia, para que nadie reformatee todo por error. Se puede activar si el grupo empieza a editar mucho
+  los mismos archivos.
+- **Pendiente del responsable:** el *gate* de calidad es una opción de GitHub (*Settings → Branches → Required status checks*,
+  S-7 en `Seguridad.md`).

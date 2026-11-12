@@ -158,8 +158,8 @@ export class ObservabilityClient {
     const edges = requests
       .filter((row) => row.metric['client'] && row.metric['server'] && Number(row.value[1]) > 0)
       .map((row) => ({
-        from: row.metric['client']!,
-        to: row.metric['server']!,
+        from: row.metric['client'],
+        to: row.metric['server'],
         requestsPerMinute: round(Number(row.value[1])) ?? 0,
         errorsPerMinute: round(failedBy.get(key(row))) ?? 0,
         p95Ms: round(p95By.get(key(row))),

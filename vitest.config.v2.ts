@@ -32,5 +32,20 @@ export default defineConfig({
     // Con un worker por núcleo la CPU se satura y fallan al azar las pruebas que miden tiempos (health < 1 s, plazos de
     // sagas, límites por minuto). Con la mitad la suite tarda casi lo mismo y es estable.
     maxWorkers: '50%',
+    // CI-2 (Pruebas.md §9): cobertura como ALERTA, no como meta. `npm run test:coverage` la mide sobre el código de producción
+    // (sin pruebas, dobles ni el simulador de Booking). Mínimos solo donde una falla cuesta dinero: dominios y motor de sagas.
+    coverage: {
+      provider: 'v8',
+      include: ['packages/*/src/**/*.ts', 'services/**/src/**/*.ts'],
+      exclude: ['**/*.spec.ts', '**/main.ts', '**/index.ts', 'services/externos/booking-simulado/**'],
+      reporter: ['text-summary', 'json-summary', 'html'],
+      reportsDirectory: './coverage',
+      // Línea base (CI-2, 11/11): dominios 99–100 % de líneas y 90–100 % de ramas; motor de sagas 96 % y 85 %. Los mínimos dejan
+      // margen: avisan de un descenso real, no de una línea nueva sin prueba.
+      thresholds: {
+        '{packages,services}/**/src/domain/**/*.ts': { lines: 95, branches: 85 },
+        'services/esb/src/sagas/engine.ts': { lines: 90, branches: 80 },
+      },
+    },
   },
 });

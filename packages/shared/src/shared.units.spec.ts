@@ -25,7 +25,7 @@ import { completeProblem, genericCode, ProblemDetailsException } from './problem
 import type { Operation } from './respuesta/contract.js';
 import { sanitize } from './respuesta/http-security.js';
 import { bookingLinks, holdLinks, publicPath } from './respuesta/links.js';
-import { actorOf, authenticate, isPublic, ownerOf, partnerOwnerOf, type Principal } from './respuesta/principal.js';
+import { actorOf, authenticate, isPublic, ownerOf, partnerOwnerOf } from './respuesta/principal.js';
 
 /**
  * PU-4 (Informacion_General/Pruebas.md §5.1.4): la librería compartida — dinero, aviones, aeropuertos, pasajeros, circuit
@@ -111,9 +111,9 @@ describe('tipos de avión (M-2)', () => {
 
 describe('aeropuertos y pasajeros', () => {
   it('distanceKm: simétrica, 0 al mismo aeropuerto, UIO–GYE 282 km', () => {
-    expect(distanceKm(AIRPORTS['UIO']!, AIRPORTS['GYE']!)).toBe(282);
-    expect(distanceKm(AIRPORTS['GYE']!, AIRPORTS['UIO']!)).toBe(282);
-    expect(distanceKm(AIRPORTS['UIO']!, AIRPORTS['UIO']!)).toBe(0);
+    expect(distanceKm(AIRPORTS['UIO'], AIRPORTS['GYE'])).toBe(282);
+    expect(distanceKm(AIRPORTS['GYE'], AIRPORTS['UIO'])).toBe(282);
+    expect(distanceKm(AIRPORTS['UIO'], AIRPORTS['UIO'])).toBe(0);
   });
   it('los 24 aeropuertos de provincias del Ecuador están en el catálogo (P-1)', () => expect(Object.values(AIRPORTS).filter((a) => a.country === 'EC').length).toBeGreaterThanOrEqual(24));
   it('resolvePassengerCounts: 1 adulto por defecto', () => expect(resolvePassengerCounts(undefined)).toEqual({ adults: 1, youths: 0, children: 0, infants: 0 }));
@@ -339,6 +339,6 @@ describe('authenticate: quién llama a un MS de respuesta (D22, D29)', () => {
   it('solo un ADMIN es actor (auditoría)', () => expect(actorOf({ kind: 'user', sub: 'a-1', role: 'ADMIN', scopes: [] })).toBe('a-1'));
   it('ownerOf: un partner sin usuario usa la huella del dispositivo, y sin ninguna → 400', () => {
     expect(ownerOf({ kind: 'partner', clientId: 'BOOKING_PROTOTIPO', scopes: [], fingerprint: 'fp1' })).toBe('partner:BOOKING_PROTOTIPO:fp:fp1');
-    expect(() => ownerOf({ kind: 'partner', clientId: 'BOOKING_PROTOTIPO', scopes: [] } as Principal)).toThrow(ProblemDetailsException);
+    expect(() => ownerOf({ kind: 'partner', clientId: 'BOOKING_PROTOTIPO', scopes: [] })).toThrow(ProblemDetailsException);
   });
 });

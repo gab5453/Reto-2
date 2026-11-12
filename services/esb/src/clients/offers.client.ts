@@ -61,7 +61,7 @@ export class OffersClient {
     // Un canal para los cuatro servicios (mismo host); grpc-js reconecta solo.
     const channel = new grpc.Channel(address, grpc.credentials.createInsecure(), {});
     for (const service of SERVICES) {
-      const Client = pkg[service]!;
+      const Client = pkg[service];
       this.clients[service] = new Client(address, grpc.credentials.createInsecure(), { channelOverride: channel }) as grpc.Client & Record<string, UnaryMethod>;
       for (const rpc of Object.keys(Client.service)) rpcs.set(rpc, service);
     }
@@ -93,7 +93,7 @@ export class OffersClient {
       if (caller.ownerId) metadata.set('x-owner-id', caller.ownerId);
       if (caller.actorId) metadata.set('x-actor-id', caller.actorId);
       return new Promise<T>((resolve, reject) => {
-        this.clients[service]![rpc]!(request, metadata, { deadline: Date.now() + this.timeoutMs }, (error, response) => {
+        this.clients[service][rpc](request, metadata, { deadline: Date.now() + this.timeoutMs }, (error, response) => {
           if (!error) return resolve(response as T);
           reject(this.translate(error));
         });

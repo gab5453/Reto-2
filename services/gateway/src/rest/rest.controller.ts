@@ -38,7 +38,7 @@ export class RestController {
   }
 
   private async handle(request: Request, response: Response, path: string): Promise<void> {
-    const instance = request.originalUrl.split('?')[0]!;
+    const instance = request.originalUrl.split('?')[0];
     try {
       await this.forward(request, response, path);
     } catch (error) {

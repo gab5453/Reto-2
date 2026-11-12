@@ -77,10 +77,10 @@ describe('logs (sin datos sensibles)', () => {
     const res = { statusCode: 200, on: (event: string, fn: () => void) => (listeners[event] = fn) };
     runWithCorrelation(context, () => {
       createRequestLogMiddleware('ms-reservas')(req as never, res as never, () => undefined);
-      listeners['finish']!();
+      listeners['finish']();
     });
     spy.mockRestore();
-    const entry = JSON.parse(lines[0]!);
+    const entry = JSON.parse(lines[0]);
     expect(entry).toMatchObject({
       level: 'info',
       service: 'ms-reservas',
@@ -104,9 +104,9 @@ describe('logs (sin datos sensibles)', () => {
     const listeners: Record<string, () => void> = {};
     const res = { statusCode: 200, on: (event: string, fn: () => void) => (listeners[event] = fn) };
     runWithCorrelation(context, () => createRequestLogMiddleware('ms-g-post-sale')({ method: 'POST', baseUrl: '', originalUrl: '/soap/post-sale' } as never, res as never, () => undefined));
-    listeners['finish']!(); // fuera de runWithCorrelation
+    listeners['finish'](); // fuera de runWithCorrelation
     spy.mockRestore();
-    expect(JSON.parse(lines[0]!)).toMatchObject({ correlation_id: 'corr-proceso-1', request_id: 'req-1', operation: 'POST /soap/post-sale' });
+    expect(JSON.parse(lines[0])).toMatchObject({ correlation_id: 'corr-proceso-1', request_id: 'req-1', operation: 'POST /soap/post-sale' });
   });
 });
 

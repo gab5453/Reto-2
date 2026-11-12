@@ -128,7 +128,7 @@ describe.skipIf(!live)('MS.Reservas (contrato v2)', () => {
     it('listTickets y getTicket: 200; un boleto inexistente responde 404', async () => {
       const list = await call('listTickets', { params: { bookingId: booking.bookingId } });
       expectConforms(list, { status: 200 });
-      const ticketId = (list.body as { tickets: { ticketId: string }[] }).tickets[0]!.ticketId;
+      const ticketId = (list.body as { tickets: { ticketId: string }[] }).tickets[0].ticketId;
       const one = await call('getTicket', { params: { bookingId: booking.bookingId, ticketId } });
       expectConforms(one, { status: 200 });
       const missing = await call('getTicket', { params: { bookingId: booking.bookingId, ticketId: 'TKT-NO-EXISTE' } });

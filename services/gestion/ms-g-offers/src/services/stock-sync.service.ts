@@ -129,7 +129,7 @@ export class StockSyncService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       const wait = Math.min(1_000 * 2 ** row.attempts, MAX_BACKOFF_MS);
       await this.store.markStockFailed(row.segmentId, row.cabinClass, row.version, error instanceof Error ? error.message : String(error), new Date(Date.now() + wait).toISOString());
-      if (row.attempts === 0) this.logger.warn(`Stock ${message.item_id} ${row.date} no se pudo enviar a Booking (se reintenta): ${error instanceof Error ? error.message : error}`);
+      if (row.attempts === 0) this.logger.warn(`Stock ${message.item_id} ${row.date} no se pudo enviar a Booking (se reintenta): ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
   }
@@ -153,7 +153,9 @@ export class StockSyncService implements OnModuleInit, OnModuleDestroy {
       signal: AbortSignal.timeout(this.config.bookingDeadlineMs),
     });
     const body = (await response.json().catch(() => ({}))) as { success?: unknown; message?: unknown; detail?: unknown };
-    const detail = String(body.detail ?? body.message ?? '').slice(0, 300);
+    // `detail` puede ser un objeto o una lista (errores de validación): se guarda como JSON, nunca como «[object Object]».
+    const raw = body.detail ?? body.message ?? '';
+    const detail = (typeof raw === 'string' ? raw : JSON.stringify(raw)).slice(0, 300);
     return { success: response.ok && body.success === true, message: `HTTP ${response.status}${detail ? ` ${detail}` : ''}` };
   }
 }

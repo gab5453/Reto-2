@@ -148,8 +148,8 @@ export function dateChangeOptions(booking: BookingContext, alternatives: Alterna
   const combinations: Alternative[][] = groups.reduce<Alternative[][]>((acc, group) => acc.flatMap((combo) => group.map((option) => [...combo, option])), [[]]).slice(0, MAX_DATE_CHANGE_OFFERS);
   const changeFee = fares.reduce((sum, fare) => sum + toCents(fare.changeFeeUsd) * booking.seatedPassengers, 0);
   return combinations.map((replacements) => {
-    const fareDifference = replacements.reduce((sum, option, index) => sum + baseCents(option.price) - baseCents(fares[index]!.price), 0);
-    const taxDifference = replacements.reduce((sum, option, index) => sum + taxCents(option.price) - taxCents(fares[index]!.price), 0);
+    const fareDifference = replacements.reduce((sum, option, index) => sum + baseCents(option.price) - baseCents(fares[index].price), 0);
+    const taxDifference = replacements.reduce((sum, option, index) => sum + taxCents(option.price) - taxCents(fares[index].price), 0);
     return {
       bookingId: booking.bookingId,
       replacements,

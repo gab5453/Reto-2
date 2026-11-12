@@ -67,9 +67,9 @@ describe('stock a Booking por REST (D53)', () => {
     const { store, pushed } = fakeStore([row()]);
     expect(await service(store).flush()).toBe(1);
     expect(received).toHaveLength(1);
-    expect(received[0]!.body).toEqual({ service_id: 'NODE_VUE_EQ5', item_id: 'EA100-ECONOMY', date: '2026-11-20', time_slot: '07:00', available_units: 42 });
-    expect(received[0]!.headers['content-type']).toBe('application/json');
-    expect(received[0]!.headers['x-correlation-id']).toBe('corr-stock-rest');
+    expect(received[0].body).toEqual({ service_id: 'NODE_VUE_EQ5', item_id: 'EA100-ECONOMY', date: '2026-11-20', time_slot: '07:00', available_units: 42 });
+    expect(received[0].headers['content-type']).toBe('application/json');
+    expect(received[0].headers['x-correlation-id']).toBe('corr-stock-rest');
     expect(pushed).toEqual([{ segmentId: 'EA100-20261120', cabinClass: 'ECONOMY', version: 3 }]);
   });
 

@@ -184,7 +184,7 @@ export class ContractController {
 
   @All('api/v2/*path')
   async handle(@Req() request: Request, @Res() response: Response): Promise<void> {
-    const instance = request.originalUrl.split('?')[0]!;
+    const instance = request.originalUrl.split('?')[0];
     try {
       const reply = await this.dispatch(request);
       this.send(response, reply);
@@ -249,7 +249,7 @@ export class ContractController {
       esb: (call) => runtime.esb.expect(call),
       esbRaw: (call) => runtime.esb.call(call),
     };
-    const reply = await runtime.definition.handlers[operation.operationId]!(context);
+    const reply = await runtime.definition.handlers[operation.operationId](context);
     return { ...reply, operation };
   }
 

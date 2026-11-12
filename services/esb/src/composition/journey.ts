@@ -118,8 +118,8 @@ export function buildJourney(correlationId: string, spans: RawSpan[]): Journey {
     const key = `${span.traceId}:${span.parentSpanId}`;
     childrenOf.set(key, [...(childrenOf.get(key) ?? []), span]);
   }
-  const origin = spans.reduce((min, span) => (span.startNs < min ? span.startNs : min), spans[0]!.startNs);
-  const end = spans.reduce((max, span) => (span.endNs > max ? span.endNs : max), spans[0]!.endNs);
+  const origin = spans.reduce((min, span) => (span.startNs < min ? span.startNs : min), spans[0].startNs);
+  const end = spans.reduce((max, span) => (span.endNs > max ? span.endNs : max), spans[0].endNs);
   const ms = (ns: bigint) => Number(ns - origin) / 1e6;
   const raw: Omit<JourneyHop, 'sequence'>[] = [];
   const httpStatus = (span: RawSpan) => {

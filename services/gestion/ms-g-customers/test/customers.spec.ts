@@ -69,8 +69,8 @@ describe('perfil del cliente', () => {
     const lines: string[] = [];
     const out = process.stdout.write.bind(process.stdout);
     const err = process.stderr.write.bind(process.stderr);
-    process.stdout.write = ((chunk: unknown) => (lines.push(String(chunk)), true)) as typeof process.stdout.write;
-    process.stderr.write = ((chunk: unknown) => (lines.push(String(chunk)), true)) as typeof process.stderr.write;
+    process.stdout.write = ((chunk: unknown) => (lines.push(String(chunk)), true));
+    process.stderr.write = ((chunk: unknown) => (lines.push(String(chunk)), true));
     try {
       await esb('put').send(profile);
       await esb('put').send({ ...profile, defaultAssistance: { type: 'MEDA', notes: 'Rodilla operada en octubre', extra: 1 } });

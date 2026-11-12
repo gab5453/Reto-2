@@ -48,7 +48,7 @@ export function contractValidator(file: string) {
       loaded.add(name);
       ajv.addSchema({ $id: `${BASE}${name}`, ...doc });
       // Otros contratos referenciados (`./otro.yaml#/...`).
-      for (const [, other] of JSON.stringify(doc).matchAll(/"\$ref":"\.\/([^"#]+)#/g)) if (!loaded.has(other!)) add(other!);
+      for (const [, other] of JSON.stringify(doc).matchAll(/"\$ref":"\.\/([^"#]+)#/g)) if (!loaded.has(other)) add(other);
     }
     return doc;
   };
@@ -64,9 +64,9 @@ export function contractValidator(file: string) {
     if (!documented) throw new Error(`${method} ${path} respondió ${status}, que no está documentado\n${JSON.stringify(response.body).slice(0, 500)}`);
     const name = documented.$ref?.split('/').at(-1);
     const base = name ? `#/components/responses/${pointer(name)}` : `#/paths/${pointer(path)}/${lower}/responses/${status}`;
-    const content = (name ? doc.components.responses![name]! : documented).content;
+    const content = (name ? doc.components.responses![name] : documented).content;
     if (!content) return;
-    const mediaType = String(response.headers['content-type'] ?? '').split(';')[0]!;
+    const mediaType = String(response.headers['content-type'] ?? '').split(';')[0];
     if (!content[mediaType]) throw new Error(`${method} ${path} ${status}: Content-Type ${mediaType} no documentado`);
     const validate = ajv.getSchema(`${BASE}${file}${base}/content/${pointer(mediaType)}/schema`)!;
     if (!validate(response.body)) {

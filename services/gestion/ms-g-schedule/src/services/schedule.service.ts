@@ -76,7 +76,7 @@ export class ScheduleService {
       const timetable = this.build([...state.routes, planned], state.fleet);
       const created: RouteRecord = {
         ...definition,
-        aircraft: [...timetable.aircraftByRoute![definition.routeId]!],
+        aircraft: [...timetable.aircraftByRoute![definition.routeId]],
         source: 'ADMIN',
         createdAt: now,
         updatedAt: now,
@@ -107,7 +107,7 @@ export class ScheduleService {
       const updated: RouteRecord = {
         ...current,
         ...definition,
-        aircraft: [...timetable.aircraftByRoute![routeId]!],
+        aircraft: [...timetable.aircraftByRoute![routeId]],
         updatedAt: new Date().toISOString(),
         updatedBy: actor,
       };
@@ -288,8 +288,8 @@ function datedFlights(timetable: Timetable, routeOf: Map<string, string>, date: 
   const weekday = weekdayOf(date);
   return flightsOperatingOn(timetable, date)
     .map((flight) => {
-      const origin = AIRPORTS[flight.origin]!;
-      const destination = AIRPORTS[flight.destination]!;
+      const origin = AIRPORTS[flight.origin];
+      const destination = AIRPORTS[flight.destination];
       const departure = localToUtcMs(date, flight.departureLocal, origin.utcOffsetMinutes);
       const arrival = departure + flightDurationMinutes(flight.origin, flight.destination) * 60_000;
       const dated = {
@@ -317,19 +317,19 @@ function toRouteDto(route: RouteRecord) {
     routeId: route.routeId,
     origin: route.origin,
     destination: route.destination,
-    outbound: { ...routeLeg(route.outbound.flightNumber, route.origin, route.destination, route.outbound.departureLocal), weekdays: route.weekdays.map((weekday) => WEEKDAY_CODES[weekday]!) },
+    outbound: { ...routeLeg(route.outbound.flightNumber, route.origin, route.destination, route.outbound.departureLocal), weekdays: route.weekdays.map((weekday) => WEEKDAY_CODES[weekday]) },
     // La vuelta puede salir días después de la ida (si el avión no alcanza a cumplir su tiempo en tierra el mismo día).
     inbound: {
       ...routeLeg(route.inbound.flightNumber, route.destination, route.origin, route.inbound.departureLocal),
-      weekdays: route.weekdays.map((weekday) => WEEKDAY_CODES[(weekday + back.returnDelayDays) % 7]!),
+      weekdays: route.weekdays.map((weekday) => WEEKDAY_CODES[(weekday + back.returnDelayDays) % 7]),
     },
     returnDelayDays: back.returnDelayDays,
     groundMinutes: back.groundMinutes,
     turnaroundMinutes: back.turnaroundMinutes,
-    weekdays: route.weekdays.map((weekday) => WEEKDAY_CODES[weekday]!),
+    weekdays: route.weekdays.map((weekday) => WEEKDAY_CODES[weekday]),
     aircraftType: route.aircraftType,
     aircraft: [...route.aircraft],
-    distanceKm: distanceKm(AIRPORTS[route.origin]!, AIRPORTS[route.destination]!),
+    distanceKm: distanceKm(AIRPORTS[route.origin], AIRPORTS[route.destination]),
     durationMinutes: flightDurationMinutes(route.origin, route.destination),
     source: route.source,
     createdAt: route.createdAt,

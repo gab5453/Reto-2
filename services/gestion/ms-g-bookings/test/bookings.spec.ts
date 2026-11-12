@@ -101,7 +101,7 @@ beforeAll(async () => {
 afterAll(() => app.close());
 
 describe('validar pasajeros (paso de "Crear reserva")', () => {
-  const validate = (passengers: Any[], segments: Any[] = [{ segmentId: UIO_GYE.segments[0]!.segmentId, flightNumber: 'EA100', departureAt: `${DAY}T07:00:00-05:00`, international: false }], breakdown: Any = { adults: passengers.filter((p) => p.passengerType === 'ADULT').length, infants: passengers.filter((p) => p.passengerType === 'INFANT').length }) =>
+  const validate = (passengers: Any[], segments: Any[] = [{ segmentId: UIO_GYE.segments[0].segmentId, flightNumber: 'EA100', departureAt: `${DAY}T07:00:00-05:00`, international: false }], breakdown: Any = { adults: passengers.filter((p) => p.passengerType === 'ADULT').length, infants: passengers.filter((p) => p.passengerType === 'INFANT').length }) =>
     esb('post', '/passengers/validate').send({ passengers, passengersBreakdown: breakdown, segments });
 
   it('pasajeros correctos → 200 { valid: true }', async () => {
@@ -115,7 +115,7 @@ describe('validar pasajeros (paso de "Crear reserva")', () => {
     ['cantidad distinta al hold', () => validate([passenger('PAX-1')], undefined, { adults: 2 }), 'PASSENGER_COUNT_MISMATCH'],
     ['infante sin adulto asociado', () => validate([passenger('PAX-1'), passenger('PAX-2', { passengerType: 'INFANT', documentNumber: cedula('171003407'), birthDate: day(-200) })]), 'INFANT_WITHOUT_ADULT'],
     ['documento vencido antes del vuelo', () => validate([passenger('PAX-1', { documentExpiryDate: day(1) })]), 'DOCUMENT_EXPIRED'],
-    ['cédula en un vuelo internacional', () => validate([passenger('PAX-1')], [{ segmentId: UIO_BOG.segments[0]!.segmentId, flightNumber: 'EA102', departureAt: `${DAY}T13:00:00-05:00`, international: true }]), 'PASSPORT_REQUIRED_INTERNATIONAL'],
+    ['cédula en un vuelo internacional', () => validate([passenger('PAX-1')], [{ segmentId: UIO_BOG.segments[0].segmentId, flightNumber: 'EA102', departureAt: `${DAY}T13:00:00-05:00`, international: true }]), 'PASSPORT_REQUIRED_INTERNATIONAL'],
   ])('%s → 422 %s', async (_, run, code) => {
     const response = await run();
     expect(response.status).toBe(422);
@@ -202,7 +202,7 @@ describe('crear y consultar reservas', () => {
     const second = await book({ passengers: [passenger('PAX-1', { documentNumber: doc })] });
     expect(second.created.status).toBe(422);
     expect(second.created.body.code).toBe('PASSENGER_ALREADY_ON_FLIGHT');
-    const validate = await esb('post', '/passengers/validate').send({ passengers: [passenger('PAX-1', { documentNumber: doc })], passengersBreakdown: { adults: 1 }, segments: [{ segmentId: UIO_GYE.segments[0]!.segmentId, flightNumber: 'EA100', departureAt: `${DAY}T07:00:00-05:00`, international: false }] });
+    const validate = await esb('post', '/passengers/validate').send({ passengers: [passenger('PAX-1', { documentNumber: doc })], passengersBreakdown: { adults: 1 }, segments: [{ segmentId: UIO_GYE.segments[0].segmentId, flightNumber: 'EA100', departureAt: `${DAY}T07:00:00-05:00`, international: false }] });
     expect(validate.body.code).toBe('PASSENGER_ALREADY_ON_FLIGHT');
   });
 
@@ -258,7 +258,7 @@ describe('crear y consultar reservas', () => {
 
 describe('emisión de boletos y estados', () => {
   it('emitir: un boleto por pasajero con cupón por segmento → CONFIRMED; repetir → issued: 0', async () => {
-    const { bookingId } = await book({ passengers: [passenger('PAX-1', { documentNumber: cedula('171003411'), assignedSeats: [{ segmentId: UIO_GYE.segments[0]!.segmentId, seatNumber: '12A' }] })] });
+    const { bookingId } = await book({ passengers: [passenger('PAX-1', { documentNumber: cedula('171003411'), assignedSeats: [{ segmentId: UIO_GYE.segments[0].segmentId, seatNumber: '12A' }] })] });
     const issued = await esb('post', `/bookings/${bookingId}/tickets`);
     expect(issued.status).toBe(200);
     expectContract('post', '/bookings/{bookingId}/tickets', issued);
@@ -307,7 +307,7 @@ describe('emisión de boletos y estados', () => {
 
 describe('asientos, check-in y asistencia', () => {
   let bookingId: string;
-  const segmentId = UIO_GYE.segments[0]!.segmentId;
+  const segmentId = UIO_GYE.segments[0].segmentId;
 
   beforeAll(async () => {
     ({ bookingId } = await book({
@@ -385,12 +385,12 @@ describe('postventa', () => {
     const next = itinerary('EA100', 'UIO', 'GYE', day(4));
     const changed = await esb('post', `/bookings/${bookingId}/date-change`).send({
       changeOfferId: 'CHG-1', replacedItineraryIds: [UIO_GYE.itineraryId], newItineraries: [next], newFares: [fareOf(next, '130.00')],
-      priceDifference: { currency: 'USD', total: '60.50' }, paymentReference: null, assignedSeats: [{ passengerId: 'PAX-1', segmentId: next.segments[0]!.segmentId, seatNumber: '9F' }],
+      priceDifference: { currency: 'USD', total: '60.50' }, paymentReference: null, assignedSeats: [{ passengerId: 'PAX-1', segmentId: next.segments[0].segmentId, seatNumber: '9F' }],
     });
     expect(changed.status).toBe(200);
     expectContract('post', '/bookings/{bookingId}/date-change', changed);
     expect(changed.body.itineraries.map((it: Any) => it.itineraryId)).toEqual([next.itineraryId]);
-    expect(changed.body.tickets[0].segments[0]).toMatchObject({ segmentId: next.segments[0]!.segmentId, seatNumber: '9F', status: 'ISSUED' });
+    expect(changed.body.tickets[0].segments[0]).toMatchObject({ segmentId: next.segments[0].segmentId, seatNumber: '9F', status: 'ISSUED' });
     // El vuelo original quedó libre para ese documento.
     expect((await book({ passengers: [passenger('PAX-1', { documentNumber: doc })] })).created.status).toBe(201);
   });
@@ -489,7 +489,7 @@ describe('correcciones de la prueba de usuario (PLAN_Correccion C-2)', () => {
   it('★ D55: después del check-in no se agregan maletas, no se cambia la fecha ni se cancela a pedido del cliente; el vuelo cancelado sí', async () => {
     const { bookingId } = await book({ passengers: [passenger('PAX-1', { documentNumber: cedula('171003432') })] });
     await esb('post', `/bookings/${bookingId}/tickets`);
-    const segmentId = UIO_GYE.segments[0]!.segmentId;
+    const segmentId = UIO_GYE.segments[0].segmentId;
     await esb('put', `/bookings/${bookingId}/seats`).send({ reason: 'CHECK_IN_AUTO', seats: [{ passengerId: 'PAX-1', segmentId, seatNumber: '15C' }] });
 
     const baggage = await esb('post', `/bookings/${bookingId}/baggage`).send({ passengerId: 'PAX-1', itineraryId: UIO_GYE.itineraryId, quantity: 1, amountCharged: { currency: 'USD', total: '35.00' }, paymentReference: 'pi_maletas_c2_0001' });
@@ -517,8 +517,8 @@ describe('la asistencia (dato de salud) no aparece en los logs', () => {
     const lines: string[] = [];
     const out = process.stdout.write.bind(process.stdout);
     const err = process.stderr.write.bind(process.stderr);
-    process.stdout.write = ((chunk: unknown) => (lines.push(String(chunk)), true)) as typeof process.stdout.write;
-    process.stderr.write = ((chunk: unknown) => (lines.push(String(chunk)), true)) as typeof process.stderr.write;
+    process.stdout.write = ((chunk: unknown) => (lines.push(String(chunk)), true));
+    process.stderr.write = ((chunk: unknown) => (lines.push(String(chunk)), true));
     try {
       const server = logged.getHttpServer();
       const call = (method: 'post' | 'put' | 'get', path: string) => request(server)[method](path).set('Authorization', `Bearer ${ESB}`);

@@ -32,7 +32,7 @@ async function eventoDeHoldCreado(): Promise<OutboxRecord> {
   } as unknown as OffersTx;
   const holds = new HoldsService({ transaction: (work: (t: OffersTx) => unknown) => work(tx) } as unknown as OffersStore);
   await holds.create({ offerId: segmentId, selections: [{ itineraryId: segmentId, cabinClass: 'ECONOMY', fareBrand: 'SEMILLA' }], passengers: { adults: 2 }, ownerId: DUENO_HOLD });
-  return outbox[0]!;
+  return outbox[0];
 }
 
 it('MS.G.Offers produce el evento hold.created que espera MS.G.Webhooks', () =>

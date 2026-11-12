@@ -144,7 +144,7 @@ const indexOfWeekday = (weekday: Weekday) => (weekday + 6) % 7;
 
 /** Duración del vuelo en minutos (distancia a ~800 km/h más 30 min de rodaje, redondeada a 5 min). */
 export function flightDurationMinutes(origin: string, destination: string): number {
-  const distance = distanceKm(AIRPORTS[origin]!, AIRPORTS[destination]!);
+  const distance = distanceKm(AIRPORTS[origin], AIRPORTS[destination]);
   return Math.round(((distance / 800) * 60 + 30) / 5) * 5;
 }
 
@@ -153,7 +153,7 @@ export const aircraftFor = (distance: number): AircraftType => aircraftForDistan
 
 /** Salida (ms UTC) de un vuelo en el día `dayIndex` contado desde el lunes de referencia. */
 function departureUtc(flight: { origin: string; departureLocal: string }, dayIndex: number): number {
-  return localToUtcMs(addDays(ANCHOR_MONDAY, dayIndex), flight.departureLocal, AIRPORTS[flight.origin]!.utcOffsetMinutes);
+  return localToUtcMs(addDays(ANCHOR_MONDAY, dayIndex), flight.departureLocal, AIRPORTS[flight.origin].utcOffsetMinutes);
 }
 
 /** Momento en que el avión queda listo para volver a salir: llegada + tiempo en tierra. */
@@ -255,7 +255,7 @@ export function validateRotations(timetable: Timetable): string[] {
       .sort((a, b) => a.departure - b.departure);
     if (legs.length === 0) continue; // disponible: sin vuelos asignados
     legs.forEach((leg, index) => {
-      const next = legs[(index + 1) % legs.length]!;
+      const next = legs[(index + 1) % legs.length];
       const nextDeparture = next.departure + (index === legs.length - 1 ? WEEK_MS : 0);
       if (next.flight.origin !== leg.flight.destination) {
         problems.push(`${plane.registration}: ${leg.flight.flightNumber} llega a ${leg.flight.destination} y ${next.flight.flightNumber} sale de ${next.flight.origin}.`);
@@ -302,7 +302,7 @@ interface RouteSlot {
  *    avión hace la ida y la vuelta el mismo día; en las largas la vuelta es al día siguiente y se suman aviones.
  */
 export function generateRoutes(
-  airports: readonly Airport[] = BASE_NETWORK_AIRPORTS.map((code) => AIRPORTS[code]!),
+  airports: readonly Airport[] = BASE_NETWORK_AIRPORTS.map((code) => AIRPORTS[code]),
   rules: TimetableRules = DEFAULT_TIMETABLE_RULES,
 ): RouteDefinition[] {
   const slots = new Map<string, RouteSlot>();
@@ -316,7 +316,7 @@ export function generateRoutes(
             flightNumber: `EA${100 + originIndex * 20 + slot * rules.bands.length + band}`,
             origin: origin.code,
             destination: destination.code,
-            departureLocal: times[(slot + originIndex * (band + 1)) % times.length]!,
+            departureLocal: times[(slot + originIndex * (band + 1)) % times.length],
             aircraft: aircraftFor(distanceKm(origin, destination)),
           });
         });
@@ -397,7 +397,7 @@ export function buildTimetable(routes: readonly RouteDefinition[], fleet: readon
 
 /** Horario completo de la red base. */
 export function generateTimetable(
-  airports: readonly Airport[] = BASE_NETWORK_AIRPORTS.map((code) => AIRPORTS[code]!),
+  airports: readonly Airport[] = BASE_NETWORK_AIRPORTS.map((code) => AIRPORTS[code]),
   rules: TimetableRules = DEFAULT_TIMETABLE_RULES,
 ): Timetable {
   return buildTimetable(generateRoutes(airports, rules));
@@ -486,7 +486,7 @@ export const DEFAULT_TIMETABLE: Timetable = buildTimetable(DEFAULT_ROUTES);
 export const DEFAULT_FLEET: readonly FleetAircraft[] = DEFAULT_TIMETABLE.fleet;
 export const DEFAULT_ROUTES_WITH_AIRCRAFT: readonly RouteDefinition[] = DEFAULT_ROUTES.map((route) => ({
   ...route,
-  aircraft: DEFAULT_TIMETABLE.aircraftByRoute![route.routeId]!,
+  aircraft: DEFAULT_TIMETABLE.aircraftByRoute![route.routeId],
 }));
 
 /** Día de la semana de una fecha `YYYY-MM-DD`. */

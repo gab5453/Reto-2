@@ -70,8 +70,8 @@ describe('la web usa solo el contrato GraphQL del gateway', () => {
       expect(call.headers['Authorization']).toBeUndefined();
     }
     // El número y el CVV viajan solo al tokenizar; la autorización lleva el token de la tarjeta.
-    expect(calls[0]!.body).toContain('4242424242424242');
-    expect(calls[1]!.body).not.toContain('4242424242424242');
+    expect(calls[0].body).toContain('4242424242424242');
+    expect(calls[1].body).not.toContain('4242424242424242');
     const graphqlBodies = sent.filter((call) => call.url.endsWith('/api/graphql')).map((call) => call.body ?? '');
     expect(graphqlBodies.some((body) => body.includes('4242424242424242'))).toBe(false);
   });

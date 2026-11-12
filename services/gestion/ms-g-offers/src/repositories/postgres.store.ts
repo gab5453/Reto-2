@@ -219,7 +219,7 @@ export class PostgresOffersStore implements OffersStore {
   constructor(connectionString: string) {
     // `date` (OID 1082) como texto YYYY-MM-DD: sin convertirlo a la zona horaria del proceso.
     const types = { getTypeParser: (oid: number, format?: 'text' | 'binary') => (oid === 1082 ? (value: string) => value : pg.types.getTypeParser(oid, format)) };
-    this.pool = new pg.Pool({ connectionString, max: 10, connectionTimeoutMillis: 5_000, types: types as pg.CustomTypesConfig });
+    this.pool = new pg.Pool({ connectionString, max: 10, connectionTimeoutMillis: 5_000, types: types });
   }
 
   async init(): Promise<void> {

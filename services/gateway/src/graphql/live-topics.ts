@@ -64,6 +64,8 @@ class Subscriber implements AsyncIterableIterator<Any> {
     while (!this.closed) {
       if (this.failure) {
         this.close();
+        // Se relanza tal cual el error que cerró la suscripción.
+        // eslint-disable-next-line @typescript-eslint/only-throw-error
         throw this.failure;
       }
       const payload = this.queue.shift();
@@ -161,7 +163,7 @@ export class LiveTopics {
       live = new LiveTopic(topic, () => this.topics.delete(topic.key), this.now);
       this.topics.set(topic.key, live);
     }
-    const subscriber = new Subscriber(context, field, (closed) => live!.remove(closed));
+    const subscriber = new Subscriber(context, field, (closed) => live.remove(closed));
     live.add(subscriber);
     return subscriber;
   }

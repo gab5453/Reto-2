@@ -1,0 +1,8 @@
+{
+  // Solo para ESLint (reglas con tipos, CI-2): un programa con TODO el código TypeScript del backend y sus pruebas. No emite.
+  // `@ecoairlines/shared` se resuelve a su `dist` (como en el build): `npm run lint` necesita antes `tsc -b`.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "declaration": false, "declarationMap": false, "composite": false },
+  "include": ["packages/*/src/**/*.ts", "services/**/src/**/*.ts", "services/**/test/**/*.ts", "tests/**/*.ts", "scripts/**/*.mjs", "*.ts"],
+  "exclude": ["**/node_modules", "**/dist"]
+}

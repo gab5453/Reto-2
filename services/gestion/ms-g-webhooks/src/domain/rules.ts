@@ -88,7 +88,7 @@ export const toEventRecord = (event: CloudEvent, ownerId: string | undefined): O
 
 /** Siguiente intento después de `attempts` intentos fallidos; `null` = agotado. */
 export const nextRetryAt = (attempts: number, now: number): string | null =>
-  attempts - 1 < RETRY_DELAYS_MS.length ? new Date(now + RETRY_DELAYS_MS[attempts - 1]!).toISOString() : null;
+  attempts - 1 < RETRY_DELAYS_MS.length ? new Date(now + RETRY_DELAYS_MS[attempts - 1]).toISOString() : null;
 
 const PRIVATE_V4 = [/^10\./, /^127\./, /^169\.254\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^0\./, /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./];
 const isPrivateAddress = (address: string) =>

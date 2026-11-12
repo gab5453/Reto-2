@@ -123,7 +123,7 @@ export class WebhooksService {
         time: e.time,
         correlationId: e.correlationId,
         public: e.public,
-        data: HEALTH_EVENTS.has(e.name) ? null : (e.event.data as Record<string, unknown>),
+        data: HEALTH_EVENTS.has(e.name) ? null : (e.event.data),
         deliveries: deliveries
           .filter((d) => d.eventSeq === e.seq)
           .map((d) => ({ subscriptionId: d.subscriptionId, target: targetOf(subscriptions.get(d.subscriptionId)?.url ?? ''), outcome: d.outcome, httpStatus: d.httpStatus, attempts: d.attempts, lastAttemptAt: d.lastAttemptAt, nextRetryAt: d.outcome === 'DELIVERED' ? null : d.nextRetryAt })),

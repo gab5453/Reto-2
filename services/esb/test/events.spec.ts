@@ -67,7 +67,7 @@ describe('eventos internos del enrutador (los produce el ESB, nunca salen de Eco
     await svc(http().put(`/router/identity/users/${SUB}/role`)).send({ role: 'ADMIN' });
     await svc(http().put(`/router/identity/users/${SUB}/status`)).send({ status: 'BLOCKED', reason: 'Fraude' });
     expect(types()).toEqual(['ec.ecoairlines.internal.user.created', 'ec.ecoairlines.internal.user.role_changed', 'ec.ecoairlines.internal.user.blocked']);
-    expect(publisher.published[2]!.event).toMatchObject({ subject: SUB, correlationid: 'corr-eventos-v211', data: { sub: SUB, role: 'ADMIN', status: 'BLOCKED', actorId: ADMIN, reason: 'Fraude' } });
+    expect(publisher.published[2].event).toMatchObject({ subject: SUB, correlationid: 'corr-eventos-v211', data: { sub: SUB, role: 'ADMIN', status: 'BLOCKED', actorId: ADMIN, reason: 'Fraude' } });
     // La contraseña del cuerpo nunca entra al evento.
     expect(JSON.stringify(publisher.published)).not.toContain('Clave-segura-1');
   });
@@ -78,7 +78,7 @@ describe('eventos internos del enrutador (los produce el ESB, nunca salen de Eco
     await svc(http().post('/router/identity/partners')).send({ clientId: 'OTRO_PARTNER', name: 'Otro', scopes: [] });
     await svc(http().post('/router/identity/partners/OTRO_PARTNER/secret')).send({});
     expect(types()).toEqual(['ec.ecoairlines.internal.partner.created', 'ec.ecoairlines.internal.partner.secret_rotated']);
-    expect(publisher.published[0]!.event.data).toEqual({ clientId: 'OTRO_PARTNER', status: 'ACTIVE', actorId: ADMIN });
+    expect(publisher.published[0].event.data).toEqual({ clientId: 'OTRO_PARTNER', status: 'ACTIVE', actorId: ADMIN });
     expect(JSON.stringify(publisher.published)).not.toMatch(/secreto/);
   });
 
@@ -133,7 +133,7 @@ describe('reintentos diferidos (esb.deferred, TTL + dead letter)', () => {
     const record = { sagaId: randomUUID(), type: 'CANCEL_BOOKING', steps: [{ name: 'offers.release', status: 'STARTED', at: '' }], attempts: 2, nextAttemptAt: '2026-10-25T10:00:10Z', correlationId: 'corr-x' } as unknown as SagaRecord;
     await scheduler.schedule(record, 10_000);
     expect(sent).toEqual([{ queue: waitQueue(10_000), body: { sagaId: record.sagaId, sagaType: 'CANCEL_BOOKING', step: 'offers.release', attempt: 2, notBefore: '2026-10-25T10:00:10Z', correlationId: 'corr-x' } }]);
-    expect(waitQueue(RETRY_DELAYS_MS[0]!)).toBe(`${DEFERRED_QUEUE}.wait.2s`);
+    expect(waitQueue(RETRY_DELAYS_MS[0])).toBe(`${DEFERRED_QUEUE}.wait.2s`);
 
     // engine.resume: solo retoma la saga si ya le toca (y no la tiene otra réplica).
     const engine = app.get(SagaEngine);
@@ -154,7 +154,7 @@ describe('catálogo de eventos contra events.asyncapi.yaml', () => {
   // name: 'booking.confirmed' (ESB) y addEvent(tx, 'hold.created', …) (Offers); visibility: 'internal' en la misma llamada. En
   // route-events.ts todos son internos (la visibilidad se fija una vez para todos).
   const produced = ({ file, code }: { file: string; code: string }) =>
-    [...code.matchAll(/(?:name: |addEvent\(tx, )'([a-z_]+\.[a-z_]+)'([^\n]{0,160})/g)].map(([, name, rest]) => ({ name: name!, internal: file.endsWith('route-events.ts') || /visibility: 'internal'/.test(rest!) }));
+    [...code.matchAll(/(?:name: |addEvent\(tx, )'([a-z_]+\.[a-z_]+)'([^\n]{0,160})/g)].map(([, name, rest]) => ({ name: name, internal: file.endsWith('route-events.ts') || /visibility: 'internal'/.test(rest) }));
   const all = [...files(join(ROOT, 'services/esb/src')), ...files(join(ROOT, 'services/gestion/ms-g-offers/src'))].flatMap(produced);
 
   it('cada evento que produce el código existe en el contrato de eventos con su misma visibilidad', () => {

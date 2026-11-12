@@ -216,13 +216,13 @@ describe('catálogo de aeropuertos del ESB (M-1)', () => {
   it('toCatalog normaliza números y quita lo que no necesitan las reglas', () =>
     expect(toCatalog({ ...tena, updatedAt: 'x' } as never)).toEqual({ code: 'TNW', city: 'Tena', name: 'Jumandy', country: 'EC', lat: -1, lon: -77.8, utcOffsetMinutes: -300, active: true }));
   it('una escritura del enrutador que salió bien actualiza el catálogo del proceso', () => {
-    applyAirportWrite('createAirport', {}, tena as never);
+    applyAirportWrite('createAirport', {}, tena);
     expect(AIRPORTS['TNW']?.city).toBe('Tena');
     applyAirportWrite('deleteAirport', { code: 'TNW' }, undefined);
     expect(AIRPORTS['TNW']).toBeUndefined();
   });
   it('replaceCatalog quita los aeropuertos que Schedule ya no tiene', () => {
-    replaceCatalog([toCatalog(tena as never), AIRPORTS['UIO']!]);
+    replaceCatalog([toCatalog(tena as never), AIRPORTS['UIO']]);
     expect(Object.keys(AIRPORTS).sort()).toEqual(['TNW', 'UIO']);
   });
 });

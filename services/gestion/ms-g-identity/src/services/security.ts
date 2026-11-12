@@ -39,7 +39,7 @@ export class AttemptLimiter {
     recent.push(now);
     this.attempts.set(key, recent);
     if (this.attempts.size > 10_000) this.attempts.delete(this.attempts.keys().next().value!);
-    return recent.length > this.perMinute ? Math.ceil((60_000 - (now - recent[0]!)) / 1000) : undefined;
+    return recent.length > this.perMinute ? Math.ceil((60_000 - (now - recent[0])) / 1000) : undefined;
   }
 }
 

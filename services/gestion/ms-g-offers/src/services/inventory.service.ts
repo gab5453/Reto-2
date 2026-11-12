@@ -124,7 +124,7 @@ export class InventoryService {
           (!input.passengerIds.length || (row.passengerId !== null && input.passengerIds.includes(row.passengerId))),
       );
       for (const row of rows) {
-        if (!(await tx.moveCupos(row.segmentId, row.cabinClass, input.from as TakenStatus, input.to as TakenStatus, 1))) throw problem(500, 'INTERNAL_ERROR', 'Inventario inconsistente.');
+        if (!(await tx.moveCupos(row.segmentId, row.cabinClass, input.from, input.to, 1))) throw problem(500, 'INTERNAL_ERROR', 'Inventario inconsistente.');
         await tx.updateBookingSeat({ ...row, status: input.to as TakenStatus });
       }
       return { bookingId: input.bookingId, seats: rows.filter((row) => row.seatNumber).map((row) => toAssigned({ ...row, status: input.to as TakenStatus })), seatsAffected: rows.length };

@@ -54,7 +54,7 @@ describe('MS.G.Offers → MS.G.Webhooks: evento hold.created (bus)', () => {
       .verify(async (message) => {
         // El código real del consumidor, con el contenido y la cabecera tal como llegan del bus.
         await service.ingest(message.contents as unknown as CloudEvent, (message.metadata as Record<string, string>)['x-owner-id']);
-        const [record, destinatarios] = store.ingest.mock.calls[0]!;
+        const [record, destinatarios] = store.ingest.mock.calls[0];
         expect(record).toMatchObject({ name: 'hold.created', public: true, ownerId: DUENO_HOLD });
         expect(destinatarios).toEqual(['sub-booking']);
       });

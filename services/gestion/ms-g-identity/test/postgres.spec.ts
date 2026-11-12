@@ -63,7 +63,7 @@ describe.skipIf(!url)('PostgresIdentityRepository', () => {
       });
     const results = await Promise.allSettled([block(b.sub, a.sub), block(a.sub, b.sub)]);
     expect(new Set(seen).size).toBe(2); // dos lecturas distintas: la segunda vio el bloqueo de la primera
-    const rejected = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
     for (const r of rejected) expect((r.reason as ProblemDetailsException).problem.code).toBe('LAST_ADMIN');
     expect((await repository.countUsers()).byRole.ADMIN).toBe(before);
   });

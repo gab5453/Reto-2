@@ -80,7 +80,7 @@ describe('red de prueba sembrada', () => {
   });
 
   it('detalle de una ruta con sus tramos y llegada local; 404 si no existe', async () => {
-    const first = DEFAULT_ROUTES[0]!;
+    const first = DEFAULT_ROUTES[0];
     const route = await esb('get', `/routes/${first.routeId}`);
     expectContract('get', '/routes/{routeId}', route);
     expect(route.body.outbound).toMatchObject({ flightNumber: first.outbound.flightNumber, departureLocal: first.outbound.departureLocal });
@@ -210,7 +210,7 @@ describe('flota', () => {
   });
 
   it('un avión en servicio no cambia de base ni se retira (409 AIRCRAFT_IN_SERVICE)', async () => {
-    const plane = DEFAULT_FLEET[0]!.registration;
+    const plane = DEFAULT_FLEET[0].registration;
     const move = await esb('put', `/aircraft/${plane}`).send({ base: 'MIA' });
     expect(move.status).toBe(409);
     expect(move.body.code).toBe('AIRCRAFT_IN_SERVICE');
@@ -236,7 +236,7 @@ describe('horario', () => {
     const full = await esb('get', `/timetable?from=${today}&to=${addDays(today, 91)}`);
     expect(full.status).toBe(200);
     expect(Date.now() - started).toBeLessThan(5000);
-    const route = DEFAULT_ROUTES[0]!.routeId;
+    const route = DEFAULT_ROUTES[0].routeId;
     const one = await esb('get', `/timetable?from=${today}&to=${addDays(today, 6)}&routeId=${route}`);
     expectContract('get', '/timetable', one);
     expect(one.body.flights).toHaveLength(14);

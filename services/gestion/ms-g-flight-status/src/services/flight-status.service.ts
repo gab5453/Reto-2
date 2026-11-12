@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
-import { type AircraftType, type CloudEvent, ProblemDetailsException, TURNAROUND_MINUTES } from '@ecoairlines/shared';
+import { type CloudEvent, ProblemDetailsException, TURNAROUND_MINUTES } from '@ecoairlines/shared';
 import { applyUpdate, atOffsetOf, type FlightOperationalStatus, INITIAL_STATE, type ScheduledFlightRecord, type StatusChangeRecord, type StatusUpdate, toFlightStatus } from '../domain/status.js';
 import { FLIGHT_STATUS_STORE, type FlightStatusStore, type FlightStatusTx } from '../repositories/flight-status.store.js';
 
@@ -80,7 +80,7 @@ export class FlightStatusService {
       const estimatedDepartureAt = shift(flight.departureAt);
       const estimatedArrivalAt = shift(flight.arrivalAt);
       // M-2: el del vuelo (publicado por Schedule); un vuelo publicado antes de M-2 usa el de la semilla.
-      const turnaround = flight.turnaroundMinutes ?? TURNAROUND_MINUTES[flight.aircraftType as AircraftType] ?? 45;
+      const turnaround = flight.turnaroundMinutes ?? TURNAROUND_MINUTES[flight.aircraftType] ?? 45;
       const readyAt = Date.parse(estimatedArrivalAt) + turnaround * 60_000;
       const day = (offset: number) => new Date(Date.parse(`${date}T12:00:00Z`) + offset * 86_400_000).toISOString().slice(0, 10);
       const candidates = [...(await tx.flightsOn(date)), ...(await tx.flightsOn(day(1))), ...(await tx.flightsOn(day(2)))]

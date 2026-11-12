@@ -302,9 +302,9 @@ Qué tipo de doble usa cada prueba, con los nombres de Meszaros:
 | **`@pact-foundation/pact`** | Contract testing consumer-driven | **Nueva** |
 | **Playwright Test** | E2E en el navegador | **Nueva** en el repositorio |
 | **Testing Library + jsdom** | Pruebas de la web | **Nueva** (solo en `ecoairlines-web`) |
-| **`@vitest/coverage-v8`** | Cobertura **[S9 Tabla 0c]** | Instalada, falta configurarla |
+| **`@vitest/coverage-v8`** | Cobertura **[S9 Tabla 0c]** | En uso desde CI-2 (`npm run test:coverage`) |
 | **Stryker** (`@stryker-mutator/core`) | Mutation testing **[S9 §9.5]** | **Nueva, opcional** (sección 9) |
-| **ESLint + typescript-eslint** | Lint con reglas que usan los tipos | **Nueva** (sección 7.1) |
+| **ESLint + typescript-eslint** | Lint con reglas que usan los tipos | En uso desde CI-2: `eslint` 10.13.0, `typescript-eslint` 8.72.1, `eslint-plugin-oxlint` 1.87.0 (sección 7.1) |
 | **oxlint** | Lint rápido | En uso |
 
 ### 7.1 ESLint y oxlint
@@ -316,6 +316,19 @@ Qué tipo de doble usa cada prueba, con los nombres de Meszaros:
 - **Recomendación:** usar ESLint con `typescript-eslint` (`recommendedTypeChecked`) como linter oficial, y dejar oxlint como
   revisión rápida, con `eslint-plugin-oxlint` para no duplicar reglas.
 
+**Cómo quedó (CI-2, 11/11):** `npm run lint` = oxlint (**1 s**) y después ESLint con tipos (**10 s**) sobre el mismo código
+(`eslint.config.mjs`, programa `tsconfig.eslint.json`). La primera medición dio 2 706 avisos en 168 archivos:
+
+| Reglas | Avisos | Decisión |
+|---|---:|---|
+| `no-floating-promises` | **0** | Error. El código no tenía promesas olvidadas (comprobado con una a propósito). `eslint-plugin-oxlint` la apagaba porque `oxlint.json` la declara, pero sin tipos oxlint no la aplica: se vuelve a encender en ESLint |
+| `no-unsafe-*` (5 reglas) | 1 957 | Apagadas: consecuencia directa del `any` que el proyecto permite (`no-explicit-any: off`); cumplirlas es reescribir el tipado de las sagas |
+| `require-await` | 271 | Apagada: métodos `async` sin `await` que piden las interfaces de Nest y los dobles |
+| `no-unnecessary-type-assertion` | 416 | Error; corregidas con `--fix` (quita `!` y `as` sobrantes; no cambia la ejecución, `tsc` lo verifica). Dos eran falsos positivos (`as Any` sobre `GrpcObject`) y se restauraron con un comentario |
+| `no-base-to-string` | 22 | Apagada: `String(valor)` sobre filas y JSON es deliberado. **Un caso era un error real**: el motivo de un stock rechazado por Booking quedaba como `[object Object]` si su `detail` era una lista (errores de validación); corregido y con prueba |
+| Pruebas: `unbound-method`, `no-misused-promises`, `only-throw-error`, `prefer-promise-reject-errors` | 34 | Apagadas solo en las pruebas (mocks de Vitest y errores simulados a propósito) |
+| El resto (`await-thenable`, `only-throw-error` en código, etc.) | ~10 | Corregidas; el Fault de SOAP se lanza como objeto porque node-soap lo exige (comentado) |
+
 ---
 
 ## 8. CI en GitHub Actions: orden *fail fast* [S9 §9.5]
@@ -325,7 +338,7 @@ Flujo nuevo: `.github/workflows/ci.yml`, en **cada push y pull request**.
 
 ```
 push / pull request
-  1. lint ............ oxlint + ESLint (tipos) + prettier --check + typecheck            ~2 min
+  1. lint ............ oxlint + ESLint (tipos) + typecheck (Prettier: descartado en CI-2)  ~2 min
   2. unitarias ....... ~980, con cobertura                                                  ~1 min
   3. integración ..... ~600 + contenedores postgres:17 y rabbitmq:4 (las 41)                ~4 min
   4. E2E ............. docker compose (sin la observabilidad) + Playwright (~8) + humo      ~12 min
@@ -365,6 +378,10 @@ con la máquina cargada. Se corrigen la causa o el margen; **nunca** se desactiv
 
 - **Cobertura como alerta, no como meta.** Se publica el reporte en cada ejecución. Después de medir la línea base, se pone un
   mínimo **solo en `src/domain/` y en el motor de sagas**, donde una falla cuesta dinero. Un 100 % no significa «sin errores».
+- **Línea base (CI-2, 11/11), código de producción:** 86,5 % de líneas y 74,7 % de ramas. Dominios: 99–100 % de líneas y 90–100 %
+  de ramas; motor de sagas 96 % y 85 %; `money.ts` y `circuit-breaker.ts` 100 %. **Mínimos** (fallan la CI): dominios ≥ 95 % de
+  líneas y ≥ 85 % de ramas; motor de sagas ≥ 90 % y ≥ 80 %. Medir agrega poco (~50 s la suite entera). El resumen sale en cada
+  ejecución de GitHub Actions y el reporte HTML queda como artefacto «cobertura».
 - **Mutation testing con Stryker (opcional):** una vez al mes, o a mano, sobre los módulos críticos: `money.ts`, `catalog.ts`
   (precios), `bookings/rules.ts`, `post-sale/rules.ts` (reembolsos), `engine.ts` y `circuit-breaker.ts`. Si un mutante
   sobrevive, la aserción es débil y se corrige. Es costoso, por eso **no** corre en cada push.
@@ -414,6 +431,6 @@ acordados con Booking.
 | **PU-4** ✅ 11/11 | Unitarias de shared, gateway, externos y web (5.1.4) | **159** (se estimaron ~275: parte ya estaba en `shared.spec`, `service.spec` y `bus.spec`): librería compartida 59, gateway 28, Payment API 26 (Booking simulado es una herramienta de prueba: no se prueba), web 46 con Vitest + Testing Library + jsdom (cliente GraphQL y WebSocket, hook en vivo, grafo del recorrido, validación de pasajeros, búsqueda en la URL). La mutación manual encontró que la web podía perder el token sin que nada fallara; se agregó la prueba |
 | **CT-1** ✅ 11/11 | Pact: consumidores, `pact.json` y verificación de proveedores (5.3) | **11 interacciones en 5 contratos** (se estimaron ~60; es la primera iteración, con las relaciones más críticas): todos → Identity `/oauth2/token` (3), ESB → Bookings (4), MS de respuesta → ESB `/sagas/{id}` (3) y el mensaje `hold.created` de Offers → Webhooks (1). Contratos en `contract/pacts/` (sin Pact Broker); trabajo «4. Contratos (Pact)» en la CI. Dos cambios que rompen (renombrar `pnr` y `seatsHeld`) fueron detectados |
 | **E2E-1** ✅ 11/11 | Playwright en `tests/e2e/` con los 8 flujos y E2E en CI (5.4) | **8 flujos** (E-1 a E-8) con `@playwright/test` 1.64.1 contra el sistema completo (docker compose) y la web compilada; la conformidad v2 corre en la CI con las **54** (antes 49 y 5 omitidas). Trabajo «5. E2E (sistema completo)». Cada prueba deja el sistema como estaba. Una mutación a mano en la web (no quitar el asiento tomado) fue detectada. Tres hallazgos fuera de la fase en `CAMBIOS.md` (el principal: 10 servicios se caen si PostgreSQL corta sus conexiones) |
-| **CI-2** | ESLint con tipos, Prettier, cobertura y gate de calidad | Pipeline completo |
+| **CI-2** ✅ 11/11 | ESLint con tipos, Prettier, cobertura y gate de calidad | ESLint con tipos junto a oxlint (§7.1): 0 promesas olvidadas, 416 aserciones sobrantes quitadas, **un error real** corregido (motivo `[object Object]` de Booking). Cobertura con mínimos en dominios y motor de sagas (§9). E2E de la CI arreglado: en una base nueva no había vuelos a la venta y ahora `e2e:up` publica el horario. **Prettier: descartado** por el responsable (solo cambia el formato, no encuentra errores; aplicarlo cambiaría 265–315 archivos; se puede activar si el grupo empieza a editar mucho los mismos archivos). Se quitaron `.prettierrc`, `npm run format` y la dependencia. Gate: lo activa el responsable en GitHub (*branch protection*, S-7) |
 | **CD-1** | Imágenes en GitHub y despliegue por `pull` (opción B) + humo | Despliegue sin compilar en la VM |
 | **SEG-1** (recomendada) | Mejoras de seguridad: **actualizar las dependencias de producción con avisos (S-0; `@nestjs/graphql` desde el 18/11)**, Vitest y `vite` (S-1), Dependabot y secret scanning (S-3), cambiar la contraseña del ADMIN de demostración al terminar la evaluación (S-4). Detalle, riesgos conocidos y lo que ya está implementado: [`Seguridad.md`](Seguridad.md) | Avisos de seguridad de las dependencias resueltos |

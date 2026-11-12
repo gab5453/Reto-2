@@ -79,7 +79,7 @@ function call(service: string, rpc: string, req: unknown, options: { token?: str
   if (options.correlationId) metadata.set('x-correlation-id', options.correlationId);
   return new Promise((resolve, reject) => {
     let headers = new grpc.Metadata();
-    const pending = clients[service]![rpc]!(req, metadata, (error, response) => (error ? reject(error) : resolve({ response, metadata: headers })));
+    const pending = clients[service][rpc](req, metadata, (error, response) => (error ? reject(error) : resolve({ response, metadata: headers })));
     pending.on('metadata', (received: grpc.Metadata) => (headers = received));
   });
 }
@@ -109,6 +109,8 @@ beforeAll(async () => {
   holds = app.get(HoldsService);
   store = app.get(OFFERS_STORE);
   const definition = protoLoader.loadSync(findContractFile('ms-g-offers.proto'), { keepCase: false, longs: String, enums: String, defaults: true, oneofs: true });
+  // `as Any` sí hace falta (GrpcObject no se indexa así); typescript-eslint lo marca de más con Record<string, any>.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
   const pkg = (grpc.loadPackageDefinition(definition) as Any)['ecoairlines']['offers']['v1'];
   clients = Object.fromEntries(
     ['CatalogService', 'HoldService', 'InventoryService', 'PublishingService'].map((name) => [name, new pkg[name](`127.0.0.1:${port}`, grpc.credentials.createInsecure()) as Client]),
@@ -128,8 +130,8 @@ const search = (origin: string, destination: string, date = DAY, passengers: Any
 const createHold = (offerId: string, cabinClass = 'CABIN_CLASS_ECONOMY', fareBrand = 'SEMILLA', passengers: Any = { adults: 2 }, ownerId = 'user-1') =>
   rpc('HoldService', 'CreateHold', { offerId, itinerarySelections: [{ itineraryId: offerId.split('~')[0], cabinClass, fareBrand }], passengersBreakdown: passengers, ownerId }).then((r) => r['hold']);
 const directOffer = async (flightNumber: 'EA100' | 'EA101' | 'EA102' | 'EA103', date = DAY) => {
-  const route = { EA100: ['UIO', 'GYE'], EA101: ['GYE', 'UIO'], EA102: ['UIO', 'BOG'], EA103: ['BOG', 'UIO'] }[flightNumber]!;
-  const result = await search(route[0]!, route[1]!, date, { adults: 1 });
+  const route = { EA100: ['UIO', 'GYE'], EA101: ['GYE', 'UIO'], EA102: ['UIO', 'BOG'], EA103: ['BOG', 'UIO'] }[flightNumber];
+  const result = await search(route[0], route[1], date, { adults: 1 });
   return result['offers'].find((offer: Any) => offer.offerId === segment(flightNumber, date))!.offerId as string;
 };
 
@@ -150,6 +152,7 @@ describe('acceso y trazabilidad (D41, contrato v2 §6)', () => {
 
   it('health gRPC estándar SERVING y /health HTTP con la base y el gRPC', async () => {
     const definition = protoLoader.loadSync(require.resolve('grpc-health-check/proto/health/v1/health.proto'), { enums: String });
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion -- ver `pkg` arriba
     const Health = (grpc.loadPackageDefinition(definition) as Any)['grpc']['health']['v1']['Health'];
     const address = (clients['CatalogService'] as grpc.Client).getChannel().getTarget().replace(/^dns:/, '');
     const health = new Health(address, grpc.credentials.createInsecure());
@@ -485,7 +488,7 @@ describe('precios editables: tarifa base y precio exacto por ruta (PLAN_Telemetr
     });
 
   it('★ el cargo fijo y el precio por km cambian la fórmula; el precio exacto de un paquete en la ruta la reemplaza solo para ese paquete', async () => {
-    const km = distanceKm(AIRPORTS['UIO']!, AIRPORTS['GYE']!);
+    const km = distanceKm(AIRPORTS['UIO'], AIRPORTS['GYE']);
     // Lo de siempre: (35 + 0,085 × km) × 1.
     expect(await adultBase('SEMILLA')).toBe(Math.round(35 + km * 0.085));
 
@@ -517,7 +520,7 @@ describe('catálogo de aeropuertos (PLAN_Telemetria_Asientos M-1)', () => {
       expect(AIRPORTS['JPJ']).toMatchObject({ city: 'Jipijapa', country: 'EC' });
       const offer = (await search('UIO', 'JPJ', DAY, { adults: 1 }))['offers'].find((candidate: Any) => candidate.offerId === segment('EA900'));
       const semilla = offer['itineraries'][0]['pricingOptions'].find((p: Any) => p.fareBrand === 'SEMILLA');
-      expect(Number(semilla['pricePerPassengerType'][0]['price']['baseFare'])).toBe(Math.round(35 + distanceKm(AIRPORTS['UIO']!, AIRPORTS['JPJ']!) * 0.085));
+      expect(Number(semilla['pricePerPassengerType'][0]['price']['baseFare'])).toBe(Math.round(35 + distanceKm(AIRPORTS['UIO'], AIRPORTS['JPJ']) * 0.085));
     } finally {
       await rpc('PublishingService', 'PublishTimetable', { publishId: 'pub-m1-quitar', from: DAY, to: DAY, routeId: 'EA900-EA901', flights: [] });
       removeAirport('JPJ');

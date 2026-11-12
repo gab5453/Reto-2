@@ -55,13 +55,13 @@ const withoutComments = (source: string): string => source.replace(/\/\*[\s\S]*?
 export function importViolations(file: string, source: string, own: Workspace): string[] {
   const errors: string[] = [];
   for (const [, specifier] of withoutComments(source).matchAll(IMPORT)) {
-    if (MONOLITH.test(specifier!)) errors.push(`${specifier}: depende del monolito`);
-    else if (specifier!.startsWith('@ecoairlines/') && !/^@ecoairlines\/shared(\/|$)/.test(specifier!)) {
+    if (MONOLITH.test(specifier)) errors.push(`${specifier}: depende del monolito`);
+    else if (specifier.startsWith('@ecoairlines/') && !/^@ecoairlines\/shared(\/|$)/.test(specifier)) {
       errors.push(`${specifier}: importa otro servicio (solo se permite @ecoairlines/shared)`);
-    } else if (own.kind === 'shared' && specifier!.startsWith('@ecoairlines/')) {
+    } else if (own.kind === 'shared' && specifier.startsWith('@ecoairlines/')) {
       errors.push(`${specifier}: la librería compartida no puede depender de un servicio`);
-    } else if (specifier!.startsWith('.')) {
-      const target = resolve(dirname(file), specifier!);
+    } else if (specifier.startsWith('.')) {
+      const target = resolve(dirname(file), specifier);
       // Excepción: las pruebas de un servicio (`<servicio>/test/`) pueden usar el código de pruebas compartido (`tests/support/`).
       const sharedTestSupport = file.startsWith(join(own.dir, 'test') + sep) && target.startsWith(join(ROOT, 'tests', 'support') + sep);
       if (!target.startsWith(own.dir + sep) && !sharedTestSupport) errors.push(`${specifier}: sale del paquete ${own.name} con una ruta relativa`);
@@ -73,7 +73,7 @@ export function importViolations(file: string, source: string, own: Workspace): 
 /** Regla 4: un MS.G no nombra el host de otro MS.G. */
 export function crossMsgViolations(source: string, own: Workspace): string[] {
   if (own.kind !== 'gestion') return [];
-  return [...new Set([...source.matchAll(/\bms-g-[a-z-]+/g)].map(([host]) => host!))]
+  return [...new Set([...source.matchAll(/\bms-g-[a-z-]+/g)].map(([host]) => host))]
     .filter((host) => host !== own.name)
     .map((host) => `nombra a ${host}: un MS.G nunca llama a otro MS.G (solo el ESB los coordina)`);
 }
@@ -91,14 +91,14 @@ const MAY_TALK_TO_BOOKING = new Set(['ms-g-offers', 'ms-g-webhooks', 'esb', 'boo
 const RESPONSE_FORBIDDEN = /\bms-g-[a-z-]+|['"](@grpc\/grpc-js|@grpc\/proto-loader|soap|amqplib|pg)['"]/g;
 export function responseViolations(source: string, own: Workspace): string[] {
   if (own.kind !== 'respuesta') return [];
-  return [...new Set([...source.matchAll(RESPONSE_FORBIDDEN)].map(([match]) => match!))].map((match) => `usa ${match}: un MS de respuesta solo habla con el ESB`);
+  return [...new Set([...source.matchAll(RESPONSE_FORBIDDEN)].map(([match]) => match))].map((match) => `usa ${match}: un MS de respuesta solo habla con el ESB`);
 }
 
 /** Regla 7: el código (`src/`) del gateway solo llama a los 5 MS de respuesta (sin contar los comentarios). */
 const GATEWAY_FORBIDDEN = /\bms-g-[a-z-]+|\bESB_URL\b|\/\/esb[:/]|['"`]\/(?:router|sagas|composition)\/|['"](@grpc\/grpc-js|@grpc\/proto-loader|soap|amqplib|pg)['"]/g;
 export function gatewayViolations(source: string, own: Workspace): string[] {
   if (own.kind !== 'gateway') return [];
-  return [...new Set([...withoutComments(source).matchAll(GATEWAY_FORBIDDEN)].map(([match]) => match!))].map((match) => `usa ${match}: el gateway solo habla con los MS de respuesta`);
+  return [...new Set([...withoutComments(source).matchAll(GATEWAY_FORBIDDEN)].map(([match]) => match))].map((match) => `usa ${match}: el gateway solo habla con los MS de respuesta`);
 }
 
 /** Regla 5: referencias a la integración con Booking fuera de las tres piezas autorizadas. */

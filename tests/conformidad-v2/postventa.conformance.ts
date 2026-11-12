@@ -18,7 +18,7 @@ describe.skipIf(!live)('MS.Postventa (contrato v2)', () => {
     it('opciones 200 y compra de 1 maleta 200 o 202 con el monto de la opción', async () => {
       const options = await call('getBaggageOptions', { params: { bookingId: booking.bookingId } });
       expectConforms(options, { status: 200 });
-      const option = (options.body as { passengerId: string; itineraryId: string; price: { currency: string; total: string } }[])[0]!;
+      const option = (options.body as { passengerId: string; itineraryId: string; price: { currency: string; total: string } }[])[0];
       const response = await call('addBaggage', {
         params: { bookingId: booking.bookingId },
         body: {
@@ -33,7 +33,7 @@ describe.skipIf(!live)('MS.Postventa (contrato v2)', () => {
 
     it('422 BAGGAGE_LIMIT_EXCEEDED al pasar el máximo', async () => {
       const options = await call('getBaggageOptions', { params: { bookingId: booking.bookingId } });
-      const option = (options.body as { passengerId: string; itineraryId: string; maxAllowed: number; price: { currency: string; total: string } }[])[0]!;
+      const option = (options.body as { passengerId: string; itineraryId: string; maxAllowed: number; price: { currency: string; total: string } }[])[0];
       const response = await call('addBaggage', {
         params: { bookingId: booking.bookingId },
         body: {

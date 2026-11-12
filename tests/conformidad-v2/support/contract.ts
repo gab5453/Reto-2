@@ -67,18 +67,18 @@ export const contract = load(readFileSync(CONTRACT_PATH, 'utf8')) as OpenApiDocu
 const METHODS: Method[] = ['get', 'post', 'put', 'patch', 'delete'];
 
 function resolveParameter(parameter: ParameterObject): ParameterObject {
-  return parameter.$ref ? contract.components.parameters[parameter.$ref.split('/').at(-1)!]! : parameter;
+  return parameter.$ref ? contract.components.parameters[parameter.$ref.split('/').at(-1)!] : parameter;
 }
 
 export function resolveResponse(response: ResponseObject): ResponseObject {
-  return response.$ref ? contract.components.responses[response.$ref.split('/').at(-1)!]! : response;
+  return response.$ref ? contract.components.responses[response.$ref.split('/').at(-1)!] : response;
 }
 
 /** Las 30 operaciones del contrato, indexadas por operationId. */
 export const operations: ReadonlyMap<string, ContractOperation> = new Map(
   Object.entries(contract.paths).flatMap(([path, item]) =>
     METHODS.filter((method) => item[method]).map((method) => {
-      const operation = item[method]!;
+      const operation = item[method];
       const security = operation.security ?? [{ PartnerOAuth2: [] }];
       return [
         operation.operationId,
@@ -116,7 +116,7 @@ addFormats(ajv);
 function withoutWriteOnlyRequired(node: unknown): unknown {
   if (Array.isArray(node)) return node.map(withoutWriteOnlyRequired);
   if (!node || typeof node !== 'object') return node;
-  const copy = Object.fromEntries(Object.entries(node).map(([key, value]) => [key, withoutWriteOnlyRequired(value)])) as JsonSchema;
+  const copy: JsonSchema = Object.fromEntries(Object.entries(node).map(([key, value]) => [key, withoutWriteOnlyRequired(value)]));
   const properties = copy['properties'] as Record<string, { writeOnly?: boolean }> | undefined;
   if (Array.isArray(copy['required']) && properties) copy['required'] = (copy['required'] as string[]).filter((name) => !properties[name]?.writeOnly);
   return copy;

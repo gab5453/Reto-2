@@ -106,7 +106,7 @@ const problemOf = (error: unknown): ProblemDetails & Record<string, unknown> =>
 
 const retryable = (error: unknown) => !(error instanceof ProblemDetailsException) || isUnavailable(error) || error.problem.status >= 500;
 
-const delayFor = (attempts: number) => RETRY_DELAYS_MS[Math.min(Math.max(attempts - 1, 0), RETRY_DELAYS_MS.length - 1)]!;
+const delayFor = (attempts: number) => RETRY_DELAYS_MS[Math.min(Math.max(attempts - 1, 0), RETRY_DELAYS_MS.length - 1)];
 
 @Injectable()
 export class SagaEngine implements OnModuleDestroy {
@@ -162,7 +162,7 @@ export class SagaEngine implements OnModuleDestroy {
       const existing = (await this.store.saga(record.sagaId))!;
       return { sagaId: existing.sagaId, done: this.settled<R>(existing) };
     }
-    return { sagaId: record.sagaId, done: this.execute(definition as unknown as SagaDefinition<unknown, R>, record) };
+    return { sagaId: record.sagaId, done: this.execute(definition, record) };
   }
 
   /** Inicia y espera el final (sagas hijas, eventos de Booking, pruebas). */

@@ -132,7 +132,7 @@ describe('OutboxRelay', () => {
     const relay = new OutboxRelay(source, () => bus, quiet, { intervalMs: 60_000, leaseMs: 0 });
     expect(await relay.runOnce()).toBe(3);
     expect(sent.map((s) => s.n)).toEqual([1, 2, 3]);
-    expect(sent[0]!.owner).toBe('partner:BOOKING_PROTOTIPO:u1');
+    expect(sent[0].owner).toBe('partner:BOOKING_PROTOTIPO:u1');
     expect(source.rows.every((r) => r.published)).toBe(true);
     expect(await relay.runOnce()).toBe(0);
   });
@@ -174,6 +174,6 @@ describe('OutboxRelay', () => {
     const e = event('booking.failed');
     source.rows.push({ id: e.id, event: e });
     expect(await new OutboxRelay(source, () => undefined, quiet).runOnce()).toBe(0);
-    expect(source.rows[0]!.published).toBeUndefined();
+    expect(source.rows[0].published).toBeUndefined();
   });
 });
