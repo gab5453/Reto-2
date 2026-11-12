@@ -2,7 +2,7 @@
 #   docker build -f infra/docker/node-service.Dockerfile --build-arg SERVICE_DIR=services/externos/booking-simulado .
 # Etapa 1 instala las dependencias del servicio y de packages/shared, y compila ambos. Etapa 2 solo copia lo necesario y
 # corre como usuario sin privilegios.
-FROM node:24.22.1-alpine AS build
+FROM node:26.12.1-alpine AS build
 ARG SERVICE_DIR
 WORKDIR /repo
 COPY package.json package-lock.json tsconfig.base.json ./
@@ -15,7 +15,7 @@ COPY ${SERVICE_DIR} ${SERVICE_DIR}
 RUN npm exec --yes --package=typescript@6.0.3 -- tsc -b ${SERVICE_DIR} \
  && npm prune --omit=dev --workspace packages/shared --workspace ${SERVICE_DIR} --include-workspace-root=false
 
-FROM node:24.22.1-alpine
+FROM node:26.12.1-alpine
 ARG SERVICE_DIR
 ENV NODE_ENV=production SERVICE_DIR=${SERVICE_DIR}
 WORKDIR /repo
