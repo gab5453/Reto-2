@@ -1,0 +1,84 @@
+{
+  "consumer": {
+    "name": "ms-respuesta"
+  },
+  "interactions": [
+    {
+      "description": "una petición de token de servicio de MS.Reservas",
+      "providerStates": [
+        {
+          "name": "existe el cliente interno ECOAIRLINES_MS_RESERVAS"
+        }
+      ],
+      "request": {
+        "body": "grant_type=client_credentials",
+        "headers": {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "authorization": "Basic RUNPQUlSTElORVNfTVNfUkVTRVJWQVM6c2VjcmV0by1tcy1yZXNlcnZhcy1kZXYtc29sby1sb2NhbC0wMDAx"
+        },
+        "matchingRules": {
+          "header": {
+            "authorization": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^Basic [A-Za-z0-9+/=]+$"
+                }
+              ]
+            }
+          }
+        },
+        "method": "POST",
+        "path": "/oauth2/token"
+      },
+      "response": {
+        "body": {
+          "access_token": "eyJ.ejemplo.reservas",
+          "expires_in": 3600,
+          "scope": "ecoairlines:esb",
+          "token_type": "Bearer"
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "matchingRules": {
+          "body": {
+            "$.access_token": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.expires_in": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      }
+    }
+  ],
+  "metadata": {
+    "pact-js": {
+      "version": "17.1.4"
+    },
+    "pactRust": {
+      "ffi": "0.5.8",
+      "models": "1.3.16"
+    },
+    "pactSpecification": {
+      "version": "3.0.0"
+    }
+  },
+  "provider": {
+    "name": "ms-g-identity"
+  }
+}

@@ -5,7 +5,8 @@ name: CI
 #   1. calidad ........ tipos (tsc) + lint (oxlint)
 #   2. pruebas ........ unitarias + integración (npm test: PostgreSQL y RabbitMQ en memoria o simulados)
 #   3. infraestructura  las pruebas con PostgreSQL y RabbitMQ REALES (contenedores de servicio), que sin ellos se omiten
-#   web (en paralelo) . lint + compilación de ecoairlines-web
+#   4. contratos ...... Pact (CT-1): los consumidores generan contract/pacts y los proveedores reales los verifican
+#   web (en paralelo) . lint + pruebas (Vitest + jsdom) + compilación de ecoairlines-web
 # Sin secretos: las bases y el broker son desechables y viven solo mientras dura el trabajo.
 on:
   push:
@@ -97,8 +98,35 @@ jobs:
       - name: Ninguna se omitió
         run: node scripts/ci/sin-omitidas.mjs resultados-infra.json
 
+  contratos:
+    name: 4. Contratos (Pact)
+    needs: pruebas
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Sin estadísticas de uso de Pact ni de sus dependencias (no se envía nada a terceros).
+    env:
+      PACT_DO_NOT_TRACK: 'true'
+      SCARF_ANALYTICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Consumidores (generan los contratos)
+        run: npm run test:pact
+      - name: Los contratos del repositorio están al día
+        run: |
+          if ! git diff --exit-code -- contract/pacts; then
+            echo "::error::Un consumidor cambió lo que espera y su contrato no se subió: ejecuta 'npm run test:pact' y sube contract/pacts."
+            exit 1
+          fi
+      - name: Proveedores (verifican los contratos)
+        run: npm run test:pact:verify
+
   web:
-    name: Web (lint y compilación)
+    name: Web (lint, pruebas y compilación)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -114,5 +142,7 @@ jobs:
       - run: npm ci
       - name: Lint
         run: npm run lint
+      - name: Pruebas de la web
+        run: npm test
       - name: Compilación
         run: npm run build

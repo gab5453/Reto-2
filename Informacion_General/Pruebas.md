@@ -84,7 +84,7 @@ solo es una pieza de 20. Por eso se usa este criterio, y conviene explicarlo as�
 | Contrato (lado proveedor, estático) | 95 | 3 | `esb/routes.spec.ts` (61), `arquitectura.spec.ts` (30), `web-graphql.spec.ts` (4) |
 | Contrato contra servidor real (conformidad v2) | 49 | 6 | `tests/conformidad-v2/` (a mano, con `CONFORMANCE_BASE_URL`) |
 | E2E (Playwright + Edge) | ~25 | — | **Fuera del repositorio** |
-| Web (`ecoairlines-web`) | 0 | — | Solo lint y compilación |
+| Web (`ecoairlines-web`) | 46 (desde PU-4) | 4 | Vitest + Testing Library + jsdom; corren en el trabajo «Web» de la CI |
 
 **Nada corre solo en GitHub Actions:** `imagenes-v2.yml` es manual, y el flujo de la web solo se dispara en `main`, que no
 existe en `gab5453/Reto-2`.
@@ -109,9 +109,9 @@ existe en `gab5453/Reto-2`.
 
 | Nivel | Al empezar (11/11) | Hoy | Objetivo | Cambio |
 |---|---:|---:|---:|---|
-| Unitarias | 82 | **778** (tras PU-3) | **~980** | **+~900** (sección 5.1) |
+| Unitarias | 82 | **937** (tras PU-4; 891 del backend + 46 de la web) | **~980** | **+~900** (sección 5.1) |
 | Integración | 540 + 41 omitidas | 540 + 41 (en CI) | ~600 | Se activan las 41 en CI ✅; +~20 nuevas; se revisan duplicados (sección 5.2) |
-| Contrato | 95 + 49 | + Pact | Se agrega Pact, el lado consumidor (sección 5.3) |
+| Contrato | 95 + 49 | 95 + 49 + **Pact: 11 interacciones en 5 contratos** (tras CT-1) | + Pact | Pact agregado (sección 5.3, `tests/contratos-pact`) |
 | E2E | ~25 fuera del repositorio | **~8** en el repositorio | Se reducen a los flujos críticos (sección 5.4) |
 
 Las cantidades nuevas son **estimadas**: unas 2 a 4 pruebas por función con reglas (camino feliz, caso límite, error). Se
@@ -378,8 +378,9 @@ acordados con Booking.
 | **PU-1** ✅ 11/11 | Unitarias de los dominios de los MS.G (5.1.1) | **325** (se estimaron ~245): Bookings 66, Offers 58, Schedule 59, PostSale 35, FlightStatus 36, CheckIn 15, Webhooks 42, Identity 14. Una mutación a mano en tres reglas (edad, impuestos, exoneración) fue detectada |
 | **PU-2** ✅ 11/11 | Unitarias de los servicios de los MS.G con *stubs* y *spies* (5.1.2) | **268** (se estimaron ~225): Bookings 71, Offers 73 (holds, inventario, stock a Booking con `fetch` simulado), Schedule 33, Identity 34, PostSale 14, FlightStatus 18, CheckIn 11, Webhooks 14 (con `fetch` simulado y firma HMAC). Customers no tiene capa de servicio (lo cubren sus 4 de integración). Otra mutación a mano en tres servicios fue detectada |
 | **PU-3** ✅ 11/11 | Unitarias del ESB (5.1.3) | **103** (se estimaron ~135: lo demás ya lo cubrían `journey`, `transversal`, `events` y `routes`): motor de sagas 18 (con un repositorio *fake*), enrutador, eventos internos, idempotencia, composición, catálogo y cobro/reembolso 66, entrada de eventos de Booking 19. La mutación manual encontró un borde sin probar (un 500 exacto en idempotencia) y se agregó su prueba |
-| **PU-4** | Unitarias de shared, gateway, externos y web (5.1.4) | ~275 |
-| **CT-1** | Pact: consumidores, `pact.json` y verificación de proveedores (5.3) | ~60 interacciones |
+| **PU-4** ✅ 11/11 | Unitarias de shared, gateway, externos y web (5.1.4) | **159** (se estimaron ~275: parte ya estaba en `shared.spec`, `service.spec` y `bus.spec`): librería compartida 59, gateway 28, Payment API 26 (Booking simulado es una herramienta de prueba: no se prueba), web 46 con Vitest + Testing Library + jsdom (cliente GraphQL y WebSocket, hook en vivo, grafo del recorrido, validación de pasajeros, búsqueda en la URL). La mutación manual encontró que la web podía perder el token sin que nada fallara; se agregó la prueba |
+| **CT-1** ✅ 11/11 | Pact: consumidores, `pact.json` y verificación de proveedores (5.3) | **11 interacciones en 5 contratos** (se estimaron ~60; es la primera iteración, con las relaciones más críticas): todos → Identity `/oauth2/token` (3), ESB → Bookings (4), MS de respuesta → ESB `/sagas/{id}` (3) y el mensaje `hold.created` de Offers → Webhooks (1). Contratos en `contract/pacts/` (sin Pact Broker); trabajo «4. Contratos (Pact)» en la CI. Dos cambios que rompen (renombrar `pnr` y `seatsHeld`) fueron detectados |
 | **E2E-1** | Playwright en `e2e/` con los 8 flujos y E2E en CI (5.4) | La punta de la pirámide |
 | **CI-2** | ESLint con tipos, Prettier, cobertura y gate de calidad | Pipeline completo |
 | **CD-1** | Imágenes en GitHub y despliegue por `pull` (opción B) + humo | Despliegue sin compilar en la VM |
+| **SEG-1** (recomendada) | Mejoras de seguridad: **actualizar las dependencias de producción con avisos (S-0; `@nestjs/graphql` desde el 18/11)**, Vitest y `vite` (S-1), Dependabot y secret scanning (S-3), cambiar la contraseña del ADMIN de demostración al terminar la evaluación (S-4). Detalle, riesgos conocidos y lo que ya está implementado: [`Seguridad.md`](Seguridad.md) | Avisos de seguridad de las dependencias resueltos |

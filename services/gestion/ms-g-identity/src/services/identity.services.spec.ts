@@ -58,7 +58,9 @@ function dobles() {
   };
 }
 let d: ReturnType<typeof dobles>;
-beforeEach(() => (d = dobles()));
+beforeEach(() => {
+  d = dobles();
+});
 
 const usuario = async (over: Partial<UserRecord> = {}): Promise<UserRecord> => ({
   sub: 'u-1',

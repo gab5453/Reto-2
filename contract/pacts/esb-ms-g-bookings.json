@@ -1,0 +1,704 @@
+{
+  "consumer": {
+    "name": "esb"
+  },
+  "interactions": [
+    {
+      "description": "el registro de una referencia de pago de Booking",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "la referencia de pago PAY-BKP-20261201-000099 no se ha usado"
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "amount": {
+              "currency": "USD",
+              "total": "127.00"
+            },
+            "expectedAmount": {
+              "currency": "USD",
+              "total": "127.00"
+            },
+            "operation": "BOOKING",
+            "paymentReference": "PAY-BKP-20261201-000099",
+            "provider": "BOOKING_PROTOTIPO",
+            "sagaId": "0c3e7a9b-1d2f-4a5b-8c6d-7e8f9a0b1c2d"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ],
+          "authorization": [
+            "Bearer token-de-servicio-de-ejemplo"
+          ]
+        },
+        "matchingRules": {
+          "header": {
+            "authorization": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^Bearer .+$"
+                }
+              ]
+            }
+          }
+        },
+        "method": "POST",
+        "path": "/payment-references/claim"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "amount": {
+              "currency": "USD",
+              "total": "127.00"
+            },
+            "claimedAt": "2026-12-01T12:00:00.000Z",
+            "operation": "BOOKING",
+            "paymentReference": "PAY-BKP-20261201-000099",
+            "provider": "BOOKING_PROTOTIPO",
+            "sagaId": "0c3e7a9b-1d2f-4a5b-8c6d-7e8f9a0b1c2d"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.amount": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.claimedAt": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "format": "yyyy-MM-dd'T'HH:mm:ss.SSSX",
+                  "match": "datetime"
+                }
+              ]
+            },
+            "$.sagaId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                }
+              ]
+            }
+          }
+        },
+        "status": 201
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "description": "la lectura de la reserva por otro dueño",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "existe una reserva confirmada de un usuario de Booking"
+        }
+      ],
+      "request": {
+        "headers": {
+          "authorization": [
+            "Bearer token-de-servicio-de-ejemplo"
+          ],
+          "x-owner-id": [
+            "partner:BOOKING_PROTOTIPO:otro-usuario"
+          ]
+        },
+        "matchingRules": {
+          "header": {
+            "authorization": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^Bearer .+$"
+                }
+              ]
+            }
+          }
+        },
+        "method": "GET",
+        "path": "/bookings/5f1e6a0c-2b7d-4c3e-9f10-1a2b3c4d5e6f"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "code": "NOT_FOUND",
+            "status": 404,
+            "title": "Reserva no encontrada."
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/problem+json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.title": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          }
+        },
+        "status": 404
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "description": "la lectura de la reserva por su dueño",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "existe una reserva confirmada de un usuario de Booking"
+        }
+      ],
+      "request": {
+        "headers": {
+          "authorization": [
+            "Bearer token-de-servicio-de-ejemplo"
+          ],
+          "x-owner-id": [
+            "partner:BOOKING_PROTOTIPO:usr-pact"
+          ]
+        },
+        "matchingRules": {
+          "header": {
+            "authorization": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^Bearer .+$"
+                }
+              ]
+            }
+          }
+        },
+        "method": "GET",
+        "path": "/bookings/5f1e6a0c-2b7d-4c3e-9f10-1a2b3c4d5e6f"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "bookingId": "5f1e6a0c-2b7d-4c3e-9f10-1a2b3c4d5e6f",
+            "channel": "BOOKING",
+            "grandTotal": {
+              "currency": "USD",
+              "total": "127.00"
+            },
+            "itineraries": [
+              {
+                "itineraryId": "EA100-20271210",
+                "segments": [
+                  {
+                    "arrival": {
+                      "at": "2027-12-10T08:50:00-05:00",
+                      "iataCode": "GYE"
+                    },
+                    "departure": {
+                      "at": "2027-12-10T08:00:00-05:00",
+                      "iataCode": "UIO"
+                    },
+                    "flightNumber": "EA100",
+                    "segmentId": "EA100-20271210"
+                  }
+                ]
+              }
+            ],
+            "ownerId": "partner:BOOKING_PROTOTIPO:usr-pact",
+            "passengers": [
+              {
+                "firstName": "Ana",
+                "lastName": "Pérez",
+                "passengerId": "P1",
+                "passengerType": "ADULT"
+              }
+            ],
+            "paymentReference": "PAY-BKP-20261201-000001",
+            "pnr": "ABC234",
+            "status": "CONFIRMED",
+            "tickets": [
+              {
+                "eTicketNumber": "9991234567890",
+                "passengerId": "P1",
+                "status": "ISSUED",
+                "ticketId": "TKT-5F1E6A0C-1"
+              }
+            ]
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.bookingId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                }
+              ]
+            },
+            "$.grandTotal": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.itineraries": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            },
+            "$.itineraries[*].itineraryId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.itineraries[*].segments": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            },
+            "$.itineraries[*].segments[*].arrival.at": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "format": "yyyy-MM-dd'T'HH:mm:ssXXX",
+                  "match": "datetime"
+                }
+              ]
+            },
+            "$.itineraries[*].segments[*].arrival.iataCode": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^[A-Z]{3}$"
+                }
+              ]
+            },
+            "$.itineraries[*].segments[*].departure.at": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "format": "yyyy-MM-dd'T'HH:mm:ssXXX",
+                  "match": "datetime"
+                }
+              ]
+            },
+            "$.itineraries[*].segments[*].departure.iataCode": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^[A-Z]{3}$"
+                }
+              ]
+            },
+            "$.itineraries[*].segments[*].flightNumber": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.itineraries[*].segments[*].segmentId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.passengers": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            },
+            "$.passengers[*].firstName": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.passengers[*].lastName": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.passengers[*].passengerId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.passengers[*].passengerType": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^(ADULT|YOUTH|CHILD|INFANT)$"
+                }
+              ]
+            },
+            "$.paymentReference": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.pnr": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^[A-Z2-9]{6}$"
+                }
+              ]
+            },
+            "$.tickets": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            },
+            "$.tickets[*].eTicketNumber": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^999\\d{10}$"
+                }
+              ]
+            },
+            "$.tickets[*].passengerId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.tickets[*].status": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.tickets[*].ticketId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "description": "la lectura de las tarifas de la reserva",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "existe una reserva confirmada de un usuario de Booking"
+        }
+      ],
+      "request": {
+        "headers": {
+          "authorization": [
+            "Bearer token-de-servicio-de-ejemplo"
+          ],
+          "x-owner-id": [
+            "partner:BOOKING_PROTOTIPO:usr-pact"
+          ]
+        },
+        "matchingRules": {
+          "header": {
+            "authorization": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^Bearer .+$"
+                }
+              ]
+            }
+          }
+        },
+        "method": "GET",
+        "path": "/bookings/5f1e6a0c-2b7d-4c3e-9f10-1a2b3c4d5e6f/fares"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "baggage": [
+              {
+                "included": 0,
+                "itineraryId": "EA100-20271210",
+                "passengerId": "P1",
+                "purchased": 0
+              }
+            ],
+            "bookingId": "5f1e6a0c-2b7d-4c3e-9f10-1a2b3c4d5e6f",
+            "channel": "BOOKING",
+            "fares": [
+              {
+                "cabinClass": "ECONOMY",
+                "fareBrand": "SEMILLA",
+                "isChangeable": false,
+                "isRefundable": false,
+                "itineraryId": "EA100-20271210",
+                "price": {
+                  "currency": "USD",
+                  "total": "127.00"
+                },
+                "segmentIds": [
+                  "EA100-20271210"
+                ]
+              }
+            ],
+            "partnerId": "BOOKING_PROTOTIPO",
+            "paymentReference": "PAY-BKP-20261201-000001",
+            "status": "CONFIRMED",
+            "unflownItineraryIds": [
+              "EA100-20271210"
+            ]
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.baggage": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            },
+            "$.baggage[*].included": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.baggage[*].itineraryId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.baggage[*].passengerId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.baggage[*].purchased": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            },
+            "$.bookingId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                }
+              ]
+            },
+            "$.fares": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            },
+            "$.fares[*].cabinClass": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.fares[*].fareBrand": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.fares[*].isChangeable": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.fares[*].isRefundable": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.fares[*].itineraryId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.fares[*].price": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.fares[*].segmentIds": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            },
+            "$.paymentReference": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.unflownItineraryIds": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    }
+  ],
+  "metadata": {
+    "pact-js": {
+      "version": "17.1.4"
+    },
+    "pactRust": {
+      "ffi": "0.5.8",
+      "models": "1.3.16"
+    },
+    "pactSpecification": {
+      "version": "4.0"
+    }
+  },
+  "provider": {
+    "name": "ms-g-bookings"
+  }
+}

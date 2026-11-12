@@ -22,12 +22,15 @@
     "test": "vitest run --config ./vitest.config.v2.ts",
     "test:v2": "vitest run --config ./vitest.config.v2.ts",
     "test:infra": "vitest run --config ./vitest.config.v2.ts postgres.spec bus.spec",
+    "test:pact": "vitest run --config ./tests/contratos-pact/vitest.config.ts consumidor",
+    "test:pact:verify": "vitest run --config ./tests/contratos-pact/vitest.config.ts proveedor",
     "test:conformidad-v2": "vitest run --config ./tests/conformidad-v2/vitest.config.ts",
     "infra:up": "docker compose -f infra/docker-compose.yml up -d --build",
     "infra:down": "docker compose -f infra/docker-compose.yml down"
   },
   "devDependencies": {
     "@nestjs/testing": "^12.0.1",
+    "@pact-foundation/pact": "17.1.4",
     "@types/express": "^5.0.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.0.0",
@@ -41,5 +44,8 @@
     "supertest": "^7.0.0",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2"
+  },
+  "scarfSettings": {
+    "enabled": false
   }
 }

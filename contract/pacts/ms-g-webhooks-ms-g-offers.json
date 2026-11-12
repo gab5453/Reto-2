@@ -1,0 +1,142 @@
+{
+  "consumer": {
+    "name": "ms-g-webhooks"
+  },
+  "messages": [
+    {
+      "contents": {
+        "correlationid": "corr-de-ejemplo",
+        "data": {
+          "expiresAt": "2026-12-01T12:15:00.000Z",
+          "holdId": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+          "offerId": "EA100-20271210",
+          "seatsHeld": 2
+        },
+        "datacontenttype": "application/json",
+        "id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+        "source": "/aerolineas/ecoairlines/vuelos",
+        "specversion": "1.0",
+        "subject": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+        "time": "2026-12-01T12:00:00.000Z",
+        "type": "ec.edu.epn.booking.vuelos.hold.created"
+      },
+      "description": "un evento hold.created",
+      "matchingRules": {
+        "body": {
+          "$.correlationid": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "type"
+              }
+            ]
+          },
+          "$.data.expiresAt": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "format": "yyyy-MM-dd'T'HH:mm:ss.SSSX",
+                "match": "datetime"
+              }
+            ]
+          },
+          "$.data.holdId": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "regex",
+                "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+              }
+            ]
+          },
+          "$.data.offerId": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "type"
+              }
+            ]
+          },
+          "$.data.seatsHeld": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "integer"
+              }
+            ]
+          },
+          "$.id": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "regex",
+                "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+              }
+            ]
+          },
+          "$.source": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "type"
+              }
+            ]
+          },
+          "$.subject": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "regex",
+                "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+              }
+            ]
+          },
+          "$.time": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "format": "yyyy-MM-dd'T'HH:mm:ss.SSSX",
+                "match": "datetime"
+              }
+            ]
+          }
+        },
+        "metadata": {
+          "x-owner-id": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "regex",
+                "regex": "^partner:[A-Z_]+:.+$"
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "contentType": "application/json",
+        "x-owner-id": "partner:BOOKING_PROTOTIPO:usr-pact"
+      },
+      "providerStates": [
+        {
+          "name": "un usuario de Booking retuvo asientos"
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "pact-js": {
+      "version": "17.1.4"
+    },
+    "pactRust": {
+      "ffi": "0.5.8",
+      "models": "1.3.16"
+    },
+    "pactSpecification": {
+      "version": "3.0.0"
+    }
+  },
+  "provider": {
+    "name": "ms-g-offers"
+  }
+}

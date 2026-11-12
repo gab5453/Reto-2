@@ -3215,3 +3215,66 @@ servicio guarda, borra o libera. Ninguna cambia código de producción ni usa Ne
 - **Errores de las propias pruebas, corregidos:** un *spy* guarda la referencia del objeto (se usó una copia por llamada) y una
   limpieza que restauraba un catálogo ya modificado (se guarda una copia antes).
 - **Suite:** 1 413 pasan (antes 1 310), 41 omitidas (corren en la CI); tipos y lint limpios.
+
+### Pruebas · PU-4 — Unitarias de shared, gateway, externos y web — ✅ HECHA (11/11)
+
+**159 pruebas unitarias nuevas**; ninguna cambia código de producción. Con esto termina la base de la pirámide (PU-1 a PU-4).
+- **Librería compartida** (`packages/shared/src/shared.units.spec.ts`, 59): dinero en centavos (0,10 + 0,20 = 0,30), tipos de avión
+  (filas desde los asientos, alcance, catálogo), aeropuertos y pasajeros, **circuit breaker** con reloj falso (abre a las 3 fallas,
+  un 4xx no cuenta, MEDIO ABIERTO deja pasar UNA llamada), **token de servicio** con `fetch` simulado (Basic codificado, renovación
+  60 s antes, una sola petición si piden varias), ProblemDetails, `redact`, `sanitize` (caracteres de control, `__proto__`),
+  enlaces HATEOAS y `authenticate` de los MS de respuesta (token de servicio rechazado, scopes, dueño `partner:<id>:<usuario>`).
+- **Gateway** (`services/gateway/src/graphql/gateway.units.spec.ts`, 28): enums de scopes y eventos, mappers (la asistencia médica
+  y los secretos nunca llegan al navegador), códigos de error GraphQL, `formatError` sin filtrar mensajes internos y el límite de
+  profundidad (los fragmentos no lo esquivan).
+- **Payment API** (`src/domain/payments.spec.ts`, 26): Luhn, marcas, vencimiento, CVV, estados, captura idempotente por orden,
+  anulación y reembolsos parciales sin pasar de lo capturado. Booking simulado no se prueba: es una herramienta de prueba.
+- **Web** (46, `npm test` en `ecoairlines-web`, nuevo paso en el trabajo «Web» de la CI): **Vitest 4.1.12 + jsdom 29.1.1 +
+  @testing-library/react 16.3.3 + @testing-library/dom 10.4.2** (dependencias de desarrollo, versiones exactas con más de 2 semanas;
+  jsdom 30 exige Node 24.15 y la máquina local tiene 24.12; Vitest 4.1.11 tenía 2 avisos moderados que 4.1.12 corrige; quedan los 7
+  avisos que ya había, entre ellos uno alto de `vite` 8.3.x, sin tocar en esta fase). Cliente GraphQL (el token nunca en la URL; un
+  503 del proxy no se muestra como «sin conexión», el incidente del 10/11), WebSocket `graphql-transport-ws` con un socket falso,
+  el hook en vivo (respaldo y reintento a los 30 s), el grafo del recorrido, la validación de pasajeros y la búsqueda en la URL.
+- **La mutación manual encontró otra prueba débil:** si la web dejaba de enviar el token cuando no hay huella del dispositivo (casi
+  todas las consultas), ninguna prueba fallaba. Se agregó la prueba. Las otras dos (circuito que abre tarde, reembolso de un
+  centavo de más) se detectaron a la primera.
+- **Error de las propias pruebas, aprendido:** `beforeEach(() => (spy = vi.spyOn(...)))` DEVUELVE el spy y Vitest lo usa como
+  limpieza (lo llamaba al terminar cada prueba). Se usan llaves; se revisaron todos los archivos.
+- **Suite:** backend 1 526 pasan (antes 1 413), 41 omitidas (corren en la CI); web 46; tipos, lint y compilación de la web limpios.
+
+### 11/11 — Seguridad: documento general y mejoras posibles
+
+- **`Informacion_General/Seguridad.md`** (nuevo): lo que ya protege el sistema (tokens RS256 con JWKS, tokens de servicio, scopes,
+  404 para lo ajeno, scrypt, límite de intentos; tarjetas fuera de EcoAirlines y datos de salud fuera de logs y eventos; HMAC,
+  SSRF, idempotencia; validación, `sanitize`, ProblemDetails, helmet, CORS y límites de GraphQL; solo Caddy público, SSH por IP,
+  una base por servicio, secretos fuera del repositorio), cómo se verifica, los riesgos conocidos (usuarios de demostración
+  aceptados, avisos en dependencias de desarrollo, una sola VM, la web sin CSP ni HSTS) y 8 mejoras opcionales por esfuerzo.
+- **`Pruebas.md`:** fase **SEG-1** (opcional) al final del plan: S-1 (Vitest 4.1.12 en la raíz, `vite` 8.3.5 en la web), S-3
+  (Dependabot y secret scanning) y S-4 (contraseña del ADMIN de demostración tras la evaluación).
+
+### Pruebas · CT-1 — Contract testing con Pact (consumer-driven) — ✅ HECHA (11/11)
+
+Lo que pide la Semana 9 (§9.2–9.3): cada **consumidor** declara en una prueba lo que espera, Pact genera el contrato
+(`contract/pacts/<consumidor>-<proveedor>.json`, versionado en el repositorio, sin Pact Broker: decisión P-2) y cada **proveedor**
+real lo verifica reproduciendo cada interacción. **@pact-foundation/pact 17.1.4** (dependencia de desarrollo; estadísticas de uso
+desactivadas con `scarfSettings` y `PACT_DO_NOT_TRACK`). Primera iteración con las relaciones más críticas, 11 interacciones:
+- **Todos → MS.G.Identity** `/oauth2/token` (consumidor: `ServiceTokenProvider` real): token del ESB (`ecoairlines:internal`), de
+  un MS de respuesta (`ecoairlines:esb`) y secreto incorrecto (`invalid_client`).
+- **ESB → MS.G.Bookings** (consumidor: `RestClient` real del ESB): leer la reserva por su dueño, 404 para otro dueño (como
+  `application/problem+json`), tarifas para la postventa y registrar una referencia de pago (201).
+- **MS de respuesta → ESB** `/sagas/{id}` (consumidor: `sagaOutcome` + `EsbClient` reales): saga completada, compensada (el mismo
+  error del paso) y de otro dueño (404).
+- **Mensajes: MS.G.Offers → MS.G.Webhooks** `hold.created` (consumidor: `WebhooksService.ingest` real; proveedor: el evento lo
+  produce `HoldsService.create` real y se toma del outbox, con `x-owner-id` como en la cabecera AMQP).
+- **Scripts:** `npm run test:pact` (consumidores) y `npm run test:pact:verify` (proveedores). **CI:** trabajo «4. Contratos (Pact)»:
+  genera los contratos, falla si difieren de los del repositorio (un consumidor cambió sin subir su contrato) y los verifica.
+- **Comprobación como en el PDF:** renombrar `pnr` en la vista de Bookings y `seatsHeld` en el evento de Offers hace fallar la
+  verificación con el campo exacto («Actual map is missing the following keys: seatsHeld»); el código se restauró.
+- **Limitaciones encontradas de Pact 17 (resueltas en las pruebas):** su interfaz V4 no permite un cuerpo de formulario (el
+  contrato de OAuth2 usa V3) y el proxy del verificador reenvía un formulario como JSON con otro largo (Identity respondía 400;
+  un `requestFilter` lo vuelve a armar). `jsonBody` impone `application/json`: un ProblemDetails declara su cabecera después.
+- **Hallazgo de seguridad (corrige `Seguridad.md` del mismo día):** `npm audit --omit=dev` muestra **8 avisos en dependencias de
+  PRODUCCIÓN, 6 altos** (`@nestjs/platform-express` con `body-parser` y `multer`, `follow-redirects`, `@nestjs/graphql`), no solo en
+  las de desarrollo. Pact no agregó ninguno (12 antes y después). Nueva mejora **S-0** (prioridad alta): `npm audit fix` y
+  `@nestjs/graphql` 14.2.0 desde el 18/11 (regla de las 2 semanas).
+- **Suite:** 1 526 pasan (sin cambios: los contratos corren aparte), consumidores 11, verificaciones 5; tipos y lint limpios.

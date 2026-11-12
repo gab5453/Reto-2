@@ -1,0 +1,136 @@
+{
+  "consumer": {
+    "name": "esb"
+  },
+  "interactions": [
+    {
+      "description": "una petición de token con un secreto incorrecto",
+      "providerStates": [
+        {
+          "name": "existe el cliente interno ECOAIRLINES_ESB"
+        }
+      ],
+      "request": {
+        "body": "grant_type=client_credentials",
+        "headers": {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "authorization": "Basic RUNPQUlSTElORVNfRVNCOnNlY3JldG8taW5jb3JyZWN0bw=="
+        },
+        "matchingRules": {
+          "header": {
+            "authorization": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^Basic [A-Za-z0-9+/=]+$"
+                }
+              ]
+            }
+          }
+        },
+        "method": "POST",
+        "path": "/oauth2/token"
+      },
+      "response": {
+        "body": {
+          "error": "invalid_client",
+          "error_description": "Credenciales del cliente inválidas."
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "matchingRules": {
+          "body": {
+            "$.error_description": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          }
+        },
+        "status": 401
+      }
+    },
+    {
+      "description": "una petición de token de servicio del ESB",
+      "providerStates": [
+        {
+          "name": "existe el cliente interno ECOAIRLINES_ESB"
+        }
+      ],
+      "request": {
+        "body": "grant_type=client_credentials",
+        "headers": {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "authorization": "Basic RUNPQUlSTElORVNfRVNCOnNlY3JldG8tZXNiLWRldi1zb2xvLWxvY2FsLTAwMDE="
+        },
+        "matchingRules": {
+          "header": {
+            "authorization": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^Basic [A-Za-z0-9+/=]+$"
+                }
+              ]
+            }
+          }
+        },
+        "method": "POST",
+        "path": "/oauth2/token"
+      },
+      "response": {
+        "body": {
+          "access_token": "eyJhbGciOiJSUzI1NiJ9.ejemplo.firma",
+          "expires_in": 3600,
+          "scope": "ecoairlines:internal",
+          "token_type": "Bearer"
+        },
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "matchingRules": {
+          "body": {
+            "$.access_token": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.expires_in": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "integer"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      }
+    }
+  ],
+  "metadata": {
+    "pact-js": {
+      "version": "17.1.4"
+    },
+    "pactRust": {
+      "ffi": "0.5.8",
+      "models": "1.3.16"
+    },
+    "pactSpecification": {
+      "version": "3.0.0"
+    }
+  },
+  "provider": {
+    "name": "ms-g-identity"
+  }
+}

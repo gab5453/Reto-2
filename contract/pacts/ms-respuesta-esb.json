@@ -1,0 +1,227 @@
+{
+  "consumer": {
+    "name": "ms-respuesta"
+  },
+  "interactions": [
+    {
+      "description": "la consulta de una saga compensada por su dueño",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "la saga de crear reserva del usuario de Booking se compensó por asiento tomado"
+        }
+      ],
+      "request": {
+        "headers": {
+          "authorization": [
+            "Bearer token-de-servicio-de-ejemplo"
+          ],
+          "x-owner-id": [
+            "partner:BOOKING_PROTOTIPO:usr-pact"
+          ]
+        },
+        "matchingRules": {
+          "header": {
+            "authorization": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^Bearer .+$"
+                }
+              ]
+            }
+          }
+        },
+        "method": "GET",
+        "path": "/sagas/8b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "error": {
+              "code": "SEAT_TAKEN",
+              "status": 409,
+              "title": "Asiento no disponible"
+            },
+            "sagaId": "8b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e",
+            "status": "COMPENSATED"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.error.title": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.sagaId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "description": "la consulta de una saga completada por su dueño",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "la saga de crear reserva del usuario de Booking terminó bien"
+        }
+      ],
+      "request": {
+        "headers": {
+          "authorization": [
+            "Bearer token-de-servicio-de-ejemplo"
+          ],
+          "x-owner-id": [
+            "partner:BOOKING_PROTOTIPO:usr-pact"
+          ]
+        },
+        "matchingRules": {
+          "header": {
+            "authorization": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^Bearer .+$"
+                }
+              ]
+            }
+          }
+        },
+        "method": "GET",
+        "path": "/sagas/7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "result": {
+              "bookingId": "5f1e6a0c-2b7d-4c3e-9f10-1a2b3c4d5e6f",
+              "pnr": "ABC234",
+              "status": "CONFIRMED"
+            },
+            "sagaId": "7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+            "status": "COMPLETED"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.result": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.sagaId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "description": "la consulta de una saga por otro dueño",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "la saga de crear reserva del usuario de Booking terminó bien"
+        }
+      ],
+      "request": {
+        "headers": {
+          "authorization": [
+            "Bearer token-de-servicio-de-ejemplo"
+          ],
+          "x-owner-id": [
+            "partner:BOOKING_PROTOTIPO:otro-usuario"
+          ]
+        },
+        "matchingRules": {
+          "header": {
+            "authorization": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^Bearer .+$"
+                }
+              ]
+            }
+          }
+        },
+        "method": "GET",
+        "path": "/sagas/7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "code": "NOT_FOUND",
+            "status": 404
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/problem+json"
+          ]
+        },
+        "status": 404
+      },
+      "type": "Synchronous/HTTP"
+    }
+  ],
+  "metadata": {
+    "pact-js": {
+      "version": "17.1.4"
+    },
+    "pactRust": {
+      "ffi": "0.5.8",
+      "models": "1.3.16"
+    },
+    "pactSpecification": {
+      "version": "4.0"
+    }
+  },
+  "provider": {
+    "name": "esb"
+  }
+}
