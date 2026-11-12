@@ -41,11 +41,18 @@ ssh -p "$PORT" "$USER_NAME@$HOST" "set -e
   export IMAGE_TAG='$SHA' GHCR_OWNER='$OWNER'
   C='docker compose -f docker-compose.yml -f cloud/docker-compose.cloud.yml -f cloud/docker-compose.imagenes.yml --env-file cloud/.env'
   date -u +'inicio %H:%M:%S UTC'
+  # Disco (30 GB): la caché de compilación de los despliegues anteriores (~10 GB) ya no sirve, porque la VM no compila. Y hacen
+  # falta ~6 GB libres para descargar las imágenes nuevas mientras las actuales siguen corriendo.
+  docker builder prune -af >/dev/null
+  libre=\$(df --output=avail -BG / | tail -1 | tr -dc 0-9)
+  echo \"Disco libre: \${libre} GB\"
+  if [ \"\$libre\" -lt 7 ]; then echo 'Menos de 7 GB libres: no se descarga (se llenaría el disco a la mitad).'; exit 1; fi
   \$C pull --quiet
   \$C up -d --no-build
   echo '$SHA' > ~/reto2/VERSION
-  # Las imágenes de versiones anteriores sin contenedor ocupan disco (la VM es chica): se borran las que nadie usa.
-  docker image prune -af --filter 'until=168h' >/dev/null || true
+  # Las imágenes que ningún contenedor usa (las de la versión anterior o las compiladas en la VM) se borran: volver atrás es
+  # descargar la versión anterior de ghcr.io.
+  docker image prune -af >/dev/null || true
   date -u +'fin %H:%M:%S UTC'
   \$C ps --format '{{.Service}}: {{.Status}}'"
 

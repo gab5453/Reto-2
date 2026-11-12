@@ -3364,5 +3364,8 @@ La VM ya no compila (compilar las 18 imágenes la dejaba ~15–20 min degradada,
 - **`scripts/cloud/humo.mjs`:** prueba de humo de SOLO LECTURA (health, búsqueda v2, mapa de asientos, estado de vuelo, GraphQL),
   con reintentos durante 5 min; nunca compra. Probada contra el sistema local: 5/5.
 - **Seguridad:** las imágenes no llevan secretos (código compilado, dependencias y `contract/`); `.dockerignore` excluye los `.env`.
+- **Disco de la VM (revisado antes del primer despliegue):** 30 GB al 83 % (5,3 GB libres) y las imágenes nuevas suman ~6 GB. El
+  script borra primero la caché de compilación (~10 GB que ya no sirven: la VM no compila), se detiene si quedan menos de 7 GB
+  libres y, al final, borra las imágenes que ningún contenedor usa (las compiladas en la VM).
 - **Pendiente del responsable:** hacer públicos los 18 paquetes en GHCR (se crean privados) o `docker login` en la VM, y el primer
   despliegue real con el script.
