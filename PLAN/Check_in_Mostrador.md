@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Fecha | 13/11/2026 |
-| Estado | **Aprobado (13/11)**: CM-1 = **A** (`jspdf`), CM-2 = **A** (toda la reserva), CM-3 = **calcular** (estándar), CM-4 = **intentar siempre el check-in** (13/11, ver §5.1). **M-1, M-2 y M-3 hechas (13/11)**; falta que el responsable despliegue y publique la web |
+| Estado | **Aprobado (13/11)**: CM-1 = **A** (`jspdf`), CM-2 = **A** (toda la reserva), CM-3 = **calcular** (estándar), CM-4 = **intentar siempre el check-in** (13/11, ver §5.1). **Completo (13/11)**: M-1, M-2 y M-3 hechas; desplegado (`e0f6876`) y web publicada por el responsable, con un pase impreso en la nube |
 | Origen | Pedido del responsable: que el administrador pueda hacer el check-in de un pasajero que no tiene cómo mostrar su pase (sin teléfono, sin batería, sin conexión) e imprimirle el pase de abordar en PDF. Referencia visual: pase de Avianca (no se copia al pie de la letra; se usan los datos que ya tiene el sistema) |
 | Qué cambia | Una operación nueva del administrador (check-in en mostrador), la lectura de los pases de cualquier reserva para el administrador y un botón en el detalle de la reserva del panel que genera el PDF. Se registra como **D57** |
 | Qué NO cambia | El contrato del grupo (`vuelos-openapi-v2.yaml`): es una función propia del panel (MS.Admin). Las reglas del check-in (ventana, boletos emitidos, vuelo no cancelado). El check-in del pasajero en la web y la PWA |
@@ -92,7 +92,7 @@ Una página por **pasajero y tramo** (un ida y vuelta de 2 pasajeros = 4 página
 - **Pruebas de la web (Vitest):** la función que arma el contenido del pase a partir de la reserva (sin datos de salud, horas de
   embarque y cierre, equipaje, mayúsculas) — separada del dibujo del PDF para poder probarla.
 
-### M-3 · E2E, documentación y despliegue — ✅ HECHA (13/11), salvo el despliegue (responsable)
+### M-3 · E2E, documentación y despliegue — ✅ HECHA (13/11), desplegada y publicada
 
 - **E2E nueva (E-9):** el administrador abre una reserva del vuelo de mañana, pulsa el botón, el PDF se descarga (empieza con
   `%PDF` y trae el PNR y el vuelo) y la reserva queda con check-in (el pasajero ya ve sus pases).

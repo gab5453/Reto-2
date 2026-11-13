@@ -63,7 +63,7 @@
 | BKG-12 | ⚪ | Nuestro descuento máximo (50 %) es más estricto que el contrato (0–100) | Informativo | D35 |
 | BKG-13 | ✅ | `booking.epn.edu.ec` no resuelve en el DNS público: el stock gRPC no puede llegar a Booking desde la nube | Resuelto (03/11) | Booking publicó `POST https://booking-core-api.azurewebsites.net/api/v2/inventory/stock` (D53) |
 | BKG-15 | 🟡 | Webhooks de Booking (`/api/v2/webhooks/vuelos`) «se activan en unos días» | Esperar el aviso | Ver sección 8 |
-| BKG-16 | 🔴 | Booking registró su webhook (04/11) pero **rechaza con HTTP 400 todas nuestras entregas** | **Sí**: preguntar qué valida | 49 entregas agotadas; se ven en el historial de cada reserva |
+| BKG-16 | ✅ | Booking registró su webhook (04/11) pero **rechazaba con HTTP 400 todas nuestras entregas** | **Resuelto** (12/11, formato de Booking) | Verificado con Booking en la reunión del 13/11 |
 | BKG-14 | 🟠 | Contrato v2: `extraBaggage` al crear la reserva no dice si su precio va incluido en el pago | **Sí** | Se ignora al crear; las maletas se compran con `addBaggage` |
 
 ---
@@ -395,7 +395,14 @@
   con `POST /vuelos/webhooks`) o por donde nos envían `payment.*` y `package.cancelled` (BKG-01). Con su URL y su secreto de firma se
   configura sin cambiar código.
 
-### BKG-16 🔴 Booking rechaza nuestros webhooks con HTTP 400 (08/11)
+### BKG-16 ✅ Booking rechazaba nuestros webhooks con HTTP 400 (08/11 — resuelto el 12/11, verificado el 13/11)
+
+- **Resuelto:** Booking validaba otro formato. Por decisión del responsable, el contrato del grupo (§8/§13) pasó al formato de
+  Booking: `type` corto (`booking.checked_in`), `source` `ecoairlines` e `id` UUID v4. Desplegado el 12/11; en la **reunión con
+  Booking del 13/11** se hicieron pruebas conjuntas y salieron bien. Detalle en `CAMBIOS.md` (BKG-16).
+
+**Historia del hallazgo:**
+
 
 - **Qué pasa:** el 04/11 Booking (`partner:BOOKING_PROTOTIPO`) suscribió `https://booking-core-api.azurewebsites.net/api/v2/webhooks/vuelos`
   a 8 eventos. **Las 49 entregas** (`booking.confirmed`, `booking.ticket_issued`, `booking.checked_in`, `booking.cancelled`…) terminaron

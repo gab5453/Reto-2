@@ -3572,4 +3572,9 @@ cierre de puertas −15 min). Para el pasajero que no puede mostrar su pase: el 
   (administrador)», y un segundo clic («Reimprimir pases») descarga el PDF sin mostrar error (CM-4). Limpieza: el administrador
   cancela. Las 10 E2E pasan en el sistema local.
 - **Documentación:** D57 en `PLAN/PLAN.md`; E-9 en `Pruebas.md`; el pase impreso en `Seguridad.md` (qué datos lleva y cuáles no).
-- **Falta (responsable):** desplegar la API (MS.Admin, gateway, Bookings) y publicar la web compilada con las URL de la nube.
+- **Desplegado (13/11, el responsable):** API `e0f6876` con `desplegar-imagenes.sh` y web publicada (compilada con las URL de la nube). Probado en la nube: check-in en mostrador y pase impreso.
+
+### Integración · Reunión con Booking (13/11)
+
+- Pruebas conjuntas con Booking: **salieron bien**. **BKG-16 cerrado** en `HALLAZGOS.md` (los webhooks con el formato de Booking
+  ya no se rechazan). Con D57, el check-in en mostrador de una reserva de Booking también les llega como `booking.checked_in`.
