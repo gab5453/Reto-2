@@ -208,6 +208,9 @@ type Query {
   "Detalle de cualquier reserva, solo lectura (panel O-1). → MS.Admin getAdminBooking"
   adminBooking(bookingId: UUID!): AdminBooking! @auth(scopes: [ECOAIRLINES_ADMIN])
 
+  "Pases de abordar de cualquier reserva, para imprimirlos en mostrador (D57). → MS.Admin listAdminBoardingPasses"
+  adminBoardingPasses(bookingId: UUID!): [BoardingPass!]! @auth(scopes: [ECOAIRLINES_ADMIN])
+
   "Ventas por día, canal y ruta, y la liquidación con Booking (panel O-3; días de Ecuador, máximo un año). → MS.Admin getSalesReport"
   adminSalesReport(from: Date!, to: Date!): SalesReport! @auth(scopes: [ECOAIRLINES_ADMIN])
 
@@ -331,6 +334,11 @@ type Mutation {
   penalidad y asientos liberados. → MS.Admin adminCancelBooking
   """
   adminCancelBooking(bookingId: UUID!, reason: String!): Boolean! @auth(scopes: [ECOAIRLINES_ADMIN])
+  """
+  Check-in en mostrador (D57): el administrador hace el check-in de todos los pasajeros pendientes de la reserva, con las mismas
+  reglas que el pasajero. Emite booking.checked_in. → MS.Admin adminCheckIn
+  """
+  adminCheckIn(bookingId: UUID!): CheckInResult! @auth(scopes: [ECOAIRLINES_ADMIN])
   "Marca que el aeropuerto confirmó la asistencia de un pasajero. → MS.Admin markAssistanceReady"
   markAssistanceReady(bookingId: UUID!, input: AssistanceReadyInput!): Boolean! @auth(scopes: [ECOAIRLINES_ADMIN])
 }

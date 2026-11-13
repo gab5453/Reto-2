@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import { cancelarComoAdmin, comprar, enDias, gql, ingresar, oferta, tokenDe, USUARIOS, type Reserva } from './apoyo.js';
 

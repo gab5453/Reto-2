@@ -8,6 +8,7 @@ import { maskDocument, settlementOf, summaryText } from '../../lib/admin-booking
 import { PASSENGER_LABELS, STATUS_LABELS, formatDateTime, formatMoney, localDate, localTime } from '../../lib/format';
 import { BookingTimelinePanel } from './BookingTimelinePanel';
 import { FlightDelayNotice } from '../../components/FlightDelayNotice';
+import { CounterCheckIn } from './CounterCheckIn';
 
 const OPERATION_LABELS: Record<string, string> = { BOOKING: 'Reserva', SEATS: 'Asientos', BAGGAGE: 'Maletas', DATE_CHANGE: 'Cambio de fecha' };
 const PROVIDER_LABELS: Record<string, string> = { BOOKING_PROTOTIPO: 'Booking (cobra Booking)', AIRLINE_DIRECT: 'Payment API (web)' };
@@ -20,6 +21,8 @@ export function AdminBookingDetailPage() {
   const [result, setResult] = useState<{ id: string; booking?: AdminBooking; error?: unknown } | null>(null);
   const [showDocuments, setShowDocuments] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Sube tras el check-in en mostrador para volver a leer la reserva (historial y asientos).
+  const [version, setVersion] = useState(0);
 
   useEffect(() => {
     if (!token) return;
@@ -31,7 +34,7 @@ export function AdminBookingDetailPage() {
     return () => {
       active = false;
     };
-  }, [token, bookingId]);
+  }, [token, bookingId, version]);
 
   const current = result?.id === bookingId ? result : null;
   const booking = current?.booking ?? null;
@@ -143,6 +146,7 @@ export function AdminBookingDetailPage() {
             {showDocuments ? 'Ocultar documentos' : 'Mostrar documentos'}
           </button>
         </div>
+        {token ? <CounterCheckIn token={token} booking={booking} onCheckedIn={() => setVersion((n) => n + 1)} /> : null}
         <div className="table-wrap">
           <table>
             <thead><tr><th scope="col">Pasajero</th><th scope="col">Tipo</th><th scope="col">Documento</th><th scope="col">Asistencia</th></tr></thead>

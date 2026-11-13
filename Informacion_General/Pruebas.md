@@ -83,7 +83,7 @@ solo es una pieza de 20. Por eso se usa este criterio, y conviene explicarlo as�
 | Integración con infraestructura real | 41 | 12 | `*/test/postgres.spec.ts`, `bus.spec.ts`: **omitidas** si no hay variables `*_TEST_DATABASE_URL` / `BUS_TEST_URL` |
 | Contrato (lado proveedor, estático) | 95 | 3 | `esb/routes.spec.ts` (61), `arquitectura.spec.ts` (30), `web-graphql.spec.ts` (4) |
 | Contrato contra servidor real (conformidad v2) | 49 (54 desde E2E-1, con las 5 de administrador) | 6 | `tests/conformidad-v2/`; desde E2E-1 corre en la CI contra el sistema local (`npm run e2e:conformidad`) |
-| E2E (Playwright + Edge) | ~25 (8 desde E2E-1) | 7 | Antes fuera del repositorio; desde E2E-1, los 8 flujos críticos en `tests/e2e/` y en la CI |
+| E2E (Playwright + Edge) | ~25 (9 desde D57) | 7 | Antes fuera del repositorio; desde E2E-1, los flujos críticos en `tests/e2e/` y en la CI (8 en E2E-1; E-9, check-in en mostrador, el 13/11) |
 | Web (`ecoairlines-web`) | 46 (desde PU-4) | 4 | Vitest + Testing Library + jsdom; corren en el trabajo «Web» de la CI |
 
 **Nada corre solo en GitHub Actions:** `imagenes-v2.yml` es manual, y el flujo de la web solo se dispara en `main`, que no
@@ -236,6 +236,7 @@ actuales quedan **solo los flujos críticos**, con Playwright Test, en `tests/e2
 | E-6 | El administrador cambia un precio y la búsqueda lo refleja | `recorrido_p1p` |
 | E-7 | Con el correlation ID de una compra, el administrador ve su recorrido | `recorrido_t2`, `t4` |
 | E-8 | La PWA muestra el pase de abordar sin conexión | `web-offline` |
+| E-9 | El administrador hace el check-in en mostrador e imprime el pase en PDF; un segundo clic reimprime sin error (D57, 13/11) | — (nuevo) |
 
 Lo que sale de los otros recorridos (catálogo de aeropuertos y tipos de avión, mapa en vivo, respaldo de T-5, etc.) **ya está
 cubierto por integración**, o pasa a integración. Cada E2E deja el sistema como estaba: cancela sus reservas y restaura los
@@ -251,6 +252,7 @@ precios.
 | `retraso.e2e.ts` | E-5 | MS.Admin → ESB → MS.G.FlightStatus → evento → MS.G.Bookings; Booking lo ve por REST |
 | `precio.e2e.ts` | E-6 | MS.Admin → ESB → MS.G.Schedule → evento de precios → MS.G.Offers |
 | `recorrido.e2e.ts` | E-7 | Telemetría: sagas y eventos (ESB), pasos (Loki) y spans (Tempo) |
+| `mostrador.e2e.ts` | E-9 | Panel → gateway → MS.Admin → ESB (saga de check-in como administrador) → MS.G.CheckIn; el PDF se descarga en el navegador (empieza con `%PDF`, trae el PNR, el vuelo y el nombre), el pasajero ve su pase y el historial dice «Check-in en mostrador (administrador)» |
 
 - **Preparar y limpiar por la API, probar en el navegador** (`apoyo.ts`): una reserva que solo es el punto de partida se compra
   por la API; la limpieza la hace el administrador (`adminCancelBooking`, que también cancela con check-in), y se quitan el retraso,

@@ -3516,3 +3516,60 @@ contrato del grupo en `changeSeats`). Origen: mensaje de Booking del 12/11 y dec
   `changeSeats` no cambia (ya decía que el asiento no se cambia después del check-in del segmento). Tipos regenerados.
 - `Pruebas.md`: E-3 describe la prueba nueva. `PLAN/cancelacion_check.md`: completo.
 - **Falta (responsable):** desplegar y avisar a Booking.
+
+### Panel · M-1 — Check-in en mostrador: backend (D57) — ✅ HECHA (13/11)
+
+Plan: `PLAN/Check_in_Mostrador.md` (aprobado el 13/11: CM-1 = A `jspdf`, CM-2 = A toda la reserva, CM-3 = embarque −40 min y
+cierre de puertas −15 min). Para el pasajero que no puede mostrar su pase: el administrador hace el check-in y lo imprime.
+- **Lo que ya existía:** la saga «Check-in» del ESB aceptaba ser ejecutada por un administrador (`X-Actor-Id`), y Bookings deja leer
+  cualquier reserva a un administrador. No hizo falta tocar el ESB.
+- **MS.Admin 1.14.0** (contrato primero, `ms-admin.openapi.yaml`): `adminCheckIn` (`POST /ecoairlines/admin/bookings/{id}/check-in`:
+  la saga del pasajero como administrador, con sus mismas reglas) y `listAdminBoardingPasses` (`GET …/boarding-passes`: la
+  composición del ESB, con la puerta vigente). Reutilizan las respuestas del contrato del grupo (`CheckInResponse`,
+  `BoardingPassListResponse`).
+- **Gateway** (`gateway.graphql`): `adminCheckIn(bookingId): CheckInResult!` y `adminBoardingPasses(bookingId): [BoardingPass!]!`,
+  solo ADMIN.
+- **Historial:** el check-in de un administrador queda como «Check-in en mostrador (administrador) de N pasajero(s)-segmento».
+- **Aviso a Booking** (pedido del responsable): sin código nuevo, la saga publica `booking.checked_in` con el **dueño** de la reserva
+  (webhook y `GET /vuelos/eventos`; Booking lo recibe si la reserva es suya, D40). Una prueba lo comprueba.
+- **Pruebas:** MS.Admin (check-in y pases como administrador y sin dueño, 403 para un cliente, el 409 con `code` y `detail`); ESB
+  (check-in del administrador: mismo resultado, Bookings recibe `X-Actor-Id` y el evento lleva el dueño); Bookings (el texto del
+  historial). Suite: 1 554 pruebas.
+- **Verificado contra el sistema local** (13/11): sin check-in no hay pases (409), un cliente recibe 403, el administrador hace el
+  check-in (asiento automático), lee los pases y el historial dice «Check-in en mostrador (administrador)»; repetirlo responde
+  `CHECK_IN_NOT_AVAILABLE`.
+
+### Panel · M-2 — Check-in en mostrador: botón y PDF (D57) — ✅ HECHA (13/11)
+
+- **Botón** en la sección **Pasajeros** del detalle de la reserva (`CounterCheckIn.tsx`): **«Check-in en mostrador e imprimir»**
+  pide confirmación, llama a `adminCheckIn`, lee los pases y descarga `pases-<PNR>.pdf`; después vuelve a leer la reserva
+  (historial). Si la reserva ya tiene pases, el botón es **«Reimprimir pases»** (no repite el check-in). Solo aparece en reservas
+  `CONFIRMED` con boletos emitidos; los errores del servidor (ventana cerrada, vuelo cancelado) se muestran con `ProblemAlert`.
+- **Corrección CM-4 (13/11, plan §5.1):** la primera versión, con pases ya emitidos, solo reimprimía. Eso dejaba sin check-in de
+  mostrador la **vuelta** de un ida y vuelta (su ventana abre después) y el **vuelo nuevo** tras un cambio de fecha (D56). Ahora el
+  botón **siempre intenta primero el check-in de lo pendiente**: si no hay nada (`CHECK_IN_NOT_AVAILABLE`) y ya hay pases, solo
+  reimprime. Tampoco imprime pases de tramos que ya salieron (con retraso, cuenta la salida estimada); si no queda ninguno, avisa.
+- **El contenido** (`lib/boarding-pass-print.ts`, función pura): una página por pasajero y tramo con `APELLIDOS / NOMBRES` en
+  mayúsculas, vuelo, fecha, IATA y ciudad, salida y llegada, **embarque (−40 min)** y **cierre de puertas (−15 min)** (desde la
+  salida **estimada** si FlightStatus informa un retraso), grupo, asiento, posición, puerta (o «Revisa la puerta en las pantallas del
+  aeropuerto»), cabina y paquete, PNR, e-ticket vigente y equipaje (lo del paquete + maletas extra). **Sin** asistencia médica,
+  documento, contacto ni pago.
+- **El PDF** (`lib/boarding-pass-pdf.ts`, `jspdf` 4.2.1 de marzo de 2026, instalado con `--before`): A5 apaisado con la marca, el
+  recuadro de la ruta y el QR del BCBP (`qrcode`, la misma librería de la web). Un nombre largo se achica y, si hace falta, va en
+  dos líneas para no invadir el QR. Se carga con `import()` solo al pulsar el botón (chunk propio de ~400 KB) y **se excluye de la
+  precaché de la PWA** (`globIgnores` en `vite.config.ts`): el teléfono del pasajero no lo descarga.
+- **Pruebas (Vitest, 11):** nombre, ruta y e-ticket vigente; embarque y cierre (también pasando la medianoche); retraso; tramos
+  que ya salieron (ida y vuelta, y un vuelo retrasado que se imprime hasta su salida estimada); equipaje
+  (Bosque con extra y Semilla); puerta; pases ajenos a la reserva; sin datos sensibles; el PDF (`%PDF`, una página por pase, PNR,
+  vuelos, sin el documento); nombre largo. Las pruebas fijan el momento de impresión. Web: 57 pruebas, tipos, oxlint y build en verde; `web-graphql` valida los documentos
+  nuevos contra `gateway.graphql`.
+
+### Panel · M-3 — Check-in en mostrador: E2E y documentación (D57) — ✅ HECHA (13/11)
+
+- **E2E E-9** (`tests/e2e/mostrador.e2e.ts`): el pasajero compra el vuelo de mañana (por la API); el administrador abre la reserva
+  en el panel, pulsa «Check-in en mostrador e imprimir» y se descarga `pases-<PNR>.pdf` (empieza con `%PDF`, trae el PNR, el vuelo,
+  `MOSTRADOR / PRUEBA` y «Check-in en mostrador»). El pasajero ve su pase, el historial dice «Check-in en mostrador
+  (administrador)», y un segundo clic («Reimprimir pases») descarga el PDF sin mostrar error (CM-4). Limpieza: el administrador
+  cancela. Las 10 E2E pasan en el sistema local.
+- **Documentación:** D57 en `PLAN/PLAN.md`; E-9 en `Pruebas.md`; el pase impreso en `Seguridad.md` (qué datos lleva y cuáles no).
+- **Falta (responsable):** desplegar la API (MS.Admin, gateway, Bookings) y publicar la web compilada con las URL de la nube.

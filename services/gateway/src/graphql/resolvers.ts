@@ -122,6 +122,7 @@ export function createResolvers(options: ResolverOptions) {
       return { items: ((page['items'] as Any[] | undefined) ?? []).map(map.adminBookingSummary), nextCursor: page['nextCursor'] ?? null };
     },
     adminBooking: async (_, { bookingId }, { ms }) => map.adminBooking((await ms.call('MS.Admin', 'GET', `/ecoairlines/admin/bookings/${id(bookingId)}`)).body),
+    adminBoardingPasses: async (_, { bookingId }, { ms }) => (await ms.call<Any>('MS.Admin', 'GET', `/ecoairlines/admin/bookings/${id(bookingId)}/boarding-passes`)).body['boardingPasses'] ?? [],
     adminSalesReport: async (_, { from, to }, { ms }) => (await ms.call('MS.Admin', 'GET', '/ecoairlines/admin/reports/sales', { query: { from, to } })).body,
     /** Cada campo de `Telemetry` llama a su propia operación (algunas responden 503 hasta V2.16). */
     telemetry: () => ({}),
@@ -243,6 +244,7 @@ export function createResolvers(options: ResolverOptions) {
       await ms.call('MS.Admin', 'POST', `/ecoairlines/admin/bookings/${id(bookingId)}/cancel`, { body: { reason } });
       return true;
     },
+    adminCheckIn: async (_, { bookingId }, { ms }) => (await ms.call('MS.Admin', 'POST', `/ecoairlines/admin/bookings/${id(bookingId)}/check-in`)).body,
     markAssistanceReady: async (_, { bookingId, input }, { ms }) => {
       await ms.call('MS.Admin', 'PUT', `/ecoairlines/admin/bookings/${id(bookingId)}/assistance-ready`, { body: input });
       return true;

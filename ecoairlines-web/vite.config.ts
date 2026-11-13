@@ -29,6 +29,8 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png}'],
+        // El PDF del check-in en mostrador (D57) es solo del panel: jspdf y lo que carga no van al teléfono del pasajero.
+        globIgnores: ['**/jspdf*.js', '**/html2canvas*.js', '**/purify*.js', '**/index.es*.js', '**/boarding-pass-pdf*.js'],
         navigateFallback: '/index.html',
         // Lo que en la nube comparte dominio con la web no es la aplicación.
         navigateFallbackDenylist: [/^\/api\//, /^\/payment-api\//, /^\/grafana/, /^\/integraciones\//, /^\/oauth2\//, /^\/health/],

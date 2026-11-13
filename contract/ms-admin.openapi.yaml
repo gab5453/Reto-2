@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: MS.Admin — panel de administración de EcoAirlines (respuesta)
-  version: 1.13.0
+  version: 1.14.0
   license:
     name: Uso académico — Integración de Sistemas (sin licencia de distribución)
   description: |
@@ -1179,6 +1179,64 @@ paths:
                 $ref: '#/components/schemas/AdminCancellation'
         '400':
           $ref: '#/components/responses/Problem400'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+  /ecoairlines/admin/bookings/{bookingId}/check-in:
+    post:
+      tags: [Administración]
+      operationId: adminCheckIn
+      summary: "Check-in en mostrador: el administrador hace el check-in de la reserva (1.14.0)"
+      description: |
+        Para el pasajero que no puede mostrar su pase (D57, `PLAN/Check_in_Mostrador.md`). La misma saga «Check-in» que usa el
+        pasajero, con las mismas reglas (ventana de 48 h hasta la salida, boletos emitidos, vuelo no cancelado, asiento automático a
+        quien no tiene) y para **todos** los pasajeros pendientes de la reserva. Emite `booking.checked_in` (Booking lo recibe si la
+        reserva es suya, D40). El historial dice «Check-in en mostrador (administrador)». Si ya todos tenían check-in: 409
+        `CHECK_IN_NOT_AVAILABLE` (la web reimprime con `listAdminBoardingPasses`).
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: Check-in hecho
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/CheckInResponse'
+        '401':
+          $ref: '#/components/responses/Problem401'
+        '403':
+          $ref: '#/components/responses/Problem403'
+        '404':
+          $ref: '#/components/responses/Problem404'
+        '409':
+          $ref: '#/components/responses/Problem409'
+  /ecoairlines/admin/bookings/{bookingId}/boarding-passes:
+    get:
+      tags: [Administración]
+      operationId: listAdminBoardingPasses
+      summary: "Pases de abordar de cualquier reserva, para imprimirlos en mostrador (1.14.0)"
+      description: |
+        Los mismos pases que ve el pasajero (con la puerta vigente). Sin check-in vigente: 409 `BOARDING_PASS_NOT_AVAILABLE`.
+      security:
+        - UserJwt: [ecoairlines:admin]
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: Pases de abordar
+          content:
+            application/json:
+              schema:
+                $ref: './vuelos-openapi-v2.yaml#/components/schemas/BoardingPassListResponse'
         '401':
           $ref: '#/components/responses/Problem401'
         '403':

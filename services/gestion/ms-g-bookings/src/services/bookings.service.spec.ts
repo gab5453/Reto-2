@@ -396,6 +396,12 @@ describe('asientos', () => {
     expect(saved.checkedIn).toEqual([{ segmentId: 'EA100-20261210', passengerId: 'P1' }]);
     expect(saved.tickets[0].segments[0].seatNumber).toBe('7F');
   });
+  it('D57: el historial distingue el check-in del pasajero del check-in en mostrador (administrador, sin dueño)', async () => {
+    await service.applySeats('b-1', { reason: 'CHECK_IN_AUTO', seats: [cambio()] }, { ownerId: OWNER });
+    expect((tx.saveBooking.mock.calls[0][0] as BookingRecord).changes.at(-1)!.description).toBe('Check-in de 1 pasajero(s)-segmento.');
+    await service.applySeats('b-1', { reason: 'CHECK_IN_AUTO', seats: [cambio()] }, { actorId: '6b0f1c1e-1a2b-4c3d-8e9f-0a1b2c3d4e5f' });
+    expect((tx.saveBooking.mock.calls[1][0] as BookingRecord).changes.at(-1)!.description).toBe('Check-in en mostrador (administrador) de 1 pasajero(s)-segmento.');
+  });
   it('con pago, la referencia debe estar registrada para asientos', async () => {
     tx.payment.mockResolvedValue(pago({ operation: 'BAGGAGE' }));
     expect(await codeOf(service.applySeats('b-1', { reason: 'CUSTOMER_CHANGE', seats: [cambio()], paymentReference: 'pay_123456' }, {}))).toBe('PAYMENT_REFERENCE_INVALID');

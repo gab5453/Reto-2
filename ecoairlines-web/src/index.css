@@ -2101,6 +2101,20 @@ a.session-name {
   justify-content: space-between;
   gap: 8px;
 }
+/* Check-in en mostrador (D57): el botón y su aviso, debajo del título de Pasajeros. */
+.counter-check-in {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.75rem;
+}
+.counter-check-in p {
+  margin: 0;
+}
+.counter-check-in .alert {
+  flex-basis: 100%;
+}
 
 /* Panel O-2: historial de una reserva (cambios, sagas con sus pasos y eventos con sus entregas). */
 .booking-timeline li {

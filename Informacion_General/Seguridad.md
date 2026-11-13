@@ -36,6 +36,7 @@ Qué protege hoy el sistema, qué riesgos se conocen y qué mejoras se pueden ha
 | El «Recorrido» de Telemetría enmascara los identificadores de las rutas (reservas, referencias de pago) | `esb/src/composition/journey.ts` |
 | El secreto de cada webhook se guarda **cifrado** (AES-256-GCM) y solo se muestran sus últimos 4 caracteres | MS.G.Webhooks |
 | La PWA guarda sin conexión **solo** lo necesario para abordar, y «Salir» lo borra; el service worker no guarda respuestas de la API | `ecoairlines-web/src/lib/offline-trips.ts`, `vite.config.ts` |
+| El **pase impreso en mostrador** (D57) lleva solo lo necesario para abordar (nombre, vuelo, asiento, PNR, e-ticket, QR): **nunca** la asistencia médica, el documento, el contacto ni el pago. Se genera en el navegador del administrador y no se guarda en ningún servidor | `ecoairlines-web/src/lib/boarding-pass-print.ts` (con prueba) |
 
 ### 1.3 Integración con sistemas externos
 
@@ -76,6 +77,7 @@ Muchas de estas medidas tienen pruebas automáticas que corren en cada push (`In
 
 - el secreto de un partner nunca va en un evento;
 - la asistencia médica nunca llega al navegador;
+- el pase impreso en mostrador no lleva asistencia, documento ni contacto;
 - un token de servicio se rechaza en un MS de respuesta;
 - las URL internas se rechazan en los webhooks (SSRF);
 - una firma alterada se rechaza;

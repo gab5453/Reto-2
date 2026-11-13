@@ -151,6 +151,16 @@ export const adminHandlers: Record<string, Handler> = {
     await saga(context, { method: 'POST', path: `/sagas/bookings/${bookingId}/cancel`, json: { reasonCode: 'SAGA_COMPENSATION', reason }, actorId }, actorId);
     return { status: 200, body: { bookingId: context.params['bookingId'], status: 'CANCELLED' } };
   },
+  /**
+   * Check-in en mostrador (1.14.0, D57): la saga «Check-in» del pasajero, ejecutada por el administrador (`X-Actor-Id`) para
+   * todos los pasajeros pendientes de la reserva, con las mismas reglas. Emite `booking.checked_in` (a Booking, si es su reserva).
+   */
+  adminCheckIn: async (context) => {
+    const actorId = actorOf(context);
+    return { status: 200, body: await saga(context, { method: 'POST', path: `/sagas/bookings/${p(context, 'bookingId')}/check-in`, actorId }, actorId) };
+  },
+  /** Pases de cualquier reserva, para reimprimirlos en mostrador: la composición del ESB (CheckIn + puerta de FlightStatus). */
+  listAdminBoardingPasses: esb('GET', (c) => `/composition/bookings/${p(c, 'bookingId')}/boarding-passes`),
   markAssistanceReady: async (context) => {
     const actorId = actorOf(context);
     return { status: 200, body: await saga(context, { method: 'PUT', path: `/sagas/bookings/${p(context, 'bookingId')}/assistance-ready`, json: context.body, actorId }, actorId) };

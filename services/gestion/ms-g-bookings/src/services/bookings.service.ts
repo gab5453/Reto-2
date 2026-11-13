@@ -34,6 +34,15 @@ import {
 } from '../domain/rules.js';
 import { BOOKINGS_STORE, type BookingsStore, type BookingsTx, decodeCursor, encodeCursor } from '../repositories/bookings.store.js';
 
+/**
+ * Texto del historial de un cambio de asientos. El check-in hecho por un administrador (llega con `X-Actor-Id` y sin dueño: el
+ * check-in en mostrador, D57) se distingue del que hace el pasajero.
+ */
+function changeDescription(reason: 'CUSTOMER_CHANGE' | 'CHECK_IN_AUTO', count: number, caller: Caller): string {
+  if (reason !== 'CHECK_IN_AUTO') return `Cambio de ${count} asiento(s).`;
+  return caller.actorId && !caller.ownerId ? `Check-in en mostrador (administrador) de ${count} pasajero(s)-segmento.` : `Check-in de ${count} pasajero(s)-segmento.`;
+}
+
 const problem = (status: number, code: string, title: string, extra: { detail?: string; invalidParams?: { name: string; reason: string }[] } = {}) =>
   new ProblemDetailsException({ status, code, title, ...extra });
 const notFound = () => problem(404, 'NOT_FOUND', 'Reserva no encontrada.');
@@ -353,7 +362,7 @@ export class BookingsService {
         ...booking,
         passengers,
         checkedIn,
-        changes: [...booking.changes, { changedAt: now, description: input.reason === 'CHECK_IN_AUTO' ? `Check-in de ${input.seats.length} pasajero(s)-segmento.` : `Cambio de ${input.seats.length} asiento(s).` }],
+        changes: [...booking.changes, { changedAt: now, description: changeDescription(input.reason, input.seats.length, caller) }],
         updatedAt: now,
       };
       updated.tickets = reissueCoupons(updated, now);

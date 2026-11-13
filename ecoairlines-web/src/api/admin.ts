@@ -1,7 +1,7 @@
 import { lastSaleDate, todayIso } from '../lib/format';
 import { graphql } from './client';
 import { ITINERARY, MONEY, PASSENGER, TICKET } from './operations';
-import type { BookingStatus, CabinClass, FlightOperationalStatus, ItineraryOption, MoneyAmount, PassengerItem, Ticket } from './types';
+import type { BoardingPass, BookingStatus, CabinClass, CheckInResponse, FlightOperationalStatus, ItineraryOption, MoneyAmount, PassengerItem, Ticket } from './types';
 
 /*
  * Administración sobre el GraphQL del gateway (`@auth(scopes: [ECOAIRLINES_ADMIN])` o `FLIGHTS_OPS`; → MS.Admin y MS.Vuelos).
@@ -908,6 +908,27 @@ export const getAdminBooking = (token: string, bookingId: string) =>
     { id: bookingId },
     { token },
   ).then((data) => data.adminBooking);
+
+// ── Check-in en mostrador (D57, PLAN/Check_in_Mostrador.md) ──
+/** La saga «Check-in» como administrador: todos los pasajeros pendientes de la reserva (CM-2 = A). Booking recibe `booking.checked_in`. */
+export const adminCheckIn = (token: string, bookingId: string) =>
+  graphql<{ adminCheckIn: CheckInResponse }>(
+    `mutation CheckInEnMostrador($id: UUID!) {
+      adminCheckIn(bookingId: $id) { bookingId status checkedInPassengers { passengerId status segments { segmentId seat status } } }
+    }`,
+    { id: bookingId },
+    { token },
+  ).then((data) => data.adminCheckIn);
+
+/** Los pases de cualquier reserva; sin check-in responde `BOARDING_PASS_NOT_AVAILABLE`. */
+export const getAdminBoardingPasses = (token: string, bookingId: string) =>
+  graphql<{ adminBoardingPasses: BoardingPass[] }>(
+    `query PasesDelPanel($id: UUID!) {
+      adminBoardingPasses(bookingId: $id) { passengerId segmentId seat boardingGroup boardingPosition barcode barcodeType gate }
+    }`,
+    { id: bookingId },
+    { token },
+  ).then((data) => data.adminBoardingPasses);
 
 // ── Historial de una reserva (panel O-2; → MS.Admin getAdminBookingTimeline) ──
 export interface AdminSaga {

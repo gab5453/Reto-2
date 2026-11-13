@@ -264,6 +264,38 @@ describe('vista «Recorrido» y mapa en vivo (PLAN_Telemetria_Asientos T-4)', ()
 });
 
 
+describe('check-in en mostrador (1.14.0, D57)', () => {
+  const BOOKING = '4c1f3d2a-6b5e-4f70-8a9b-0c1d2e3f4a5b';
+  const resultado = { bookingId: BOOKING, status: 'COMPLETED', checkedInPassengers: [{ passengerId: 'PAX-1', status: 'CHECKED_IN', segments: [{ segmentId: 'EA100-20261210', seat: '12A', status: 'CHECKED_IN' }] }] };
+  const pases = { bookingId: BOOKING, boardingPasses: [{ passengerId: 'PAX-1', segmentId: 'EA100-20261210', seat: '12A', boardingGroup: 'B', boardingPosition: '001', barcode: 'M1TORRES/MARIA', barcodeType: 'PDF417', gate: 'A4' }] };
+
+  it('★ hace el check-in con la saga del pasajero, como administrador (X-Actor-Id) y sin dueño; un cliente no puede', async () => {
+    esb.on('POST', `/sagas/bookings/${BOOKING}/check-in`, { body: resultado });
+    const response = await admin(http().post(`/api/v2/ecoairlines/admin/bookings/${BOOKING}/check-in`)).expect(200);
+    expectOwn('post', '/ecoairlines/admin/bookings/{bookingId}/check-in', response);
+    expect(response.body).toMatchObject({ bookingId: BOOKING, status: 'COMPLETED' });
+    const call = esb.last()!;
+    expect(call.headers['x-actor-id']).toBeDefined();
+    expect(call.headers['x-owner-id']).toBeUndefined(); // el administrador no se hace pasar por el dueño
+    await http().post(`/api/v2/ecoairlines/admin/bookings/${BOOKING}/check-in`).set('Authorization', tokens.customer()).expect(403);
+  });
+
+  it('lee los pases de cualquier reserva por la composición del ESB (para reimprimir); un cliente no puede', async () => {
+    esb.on('GET', `/composition/bookings/${BOOKING}/boarding-passes`, { body: pases });
+    const response = await admin(http().get(`/api/v2/ecoairlines/admin/bookings/${BOOKING}/boarding-passes`)).expect(200);
+    expectOwn('get', '/ecoairlines/admin/bookings/{bookingId}/boarding-passes', response);
+    expect(response.body.boardingPasses[0]).toMatchObject({ passengerId: 'PAX-1', seat: '12A', gate: 'A4' });
+    expect(esb.last()!.headers['x-actor-id']).toBeDefined();
+    await http().get(`/api/v2/ecoairlines/admin/bookings/${BOOKING}/boarding-passes`).set('Authorization', tokens.customer()).expect(403);
+  });
+
+  it('un error de la saga (ventana cerrada) llega con su code y su detail', async () => {
+    esb.on('POST', `/sagas/bookings/${BOOKING}/check-in`, { status: 409, body: { type: 'about:blank', status: 409, code: 'CHECK_IN_NOT_AVAILABLE', title: 'El check-in abre 48 horas antes.', detail: 'Vuelo EA100 del 10/12.' } });
+    const response = await admin(http().post(`/api/v2/ecoairlines/admin/bookings/${BOOKING}/check-in`)).expect(409);
+    expect(response.body).toMatchObject({ code: 'CHECK_IN_NOT_AVAILABLE', detail: 'Vuelo EA100 del 10/12.' });
+  });
+});
+
 describe('cancelación de administrador (excepción a D2)', () => {
   const BOOKING = 'dc4d0bf7-e126-4533-bcb5-f328f7461d51';
   it('★ cancela con SAGA_COMPENSATION (sin cotización ni regla del check-in), con el motivo y el administrador; un cliente no puede', async () => {

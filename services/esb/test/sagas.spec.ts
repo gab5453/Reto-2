@@ -570,6 +570,19 @@ describe('Check-in', () => {
     expect(types()).toEqual(['booking.checked_in']);
   });
 
+  it('★ D57: check-in en mostrador (el administrador, sin dueño): el mismo resultado, Bookings sabe que fue un administrador y booking.checked_in lleva el DUEÑO de la reserva (así le llega a Booking si es suya)', async () => {
+    noSeat();
+    const response = await as(http().post(`/sagas/bookings/${B}/check-in`), { actor: ADMIN }).send();
+    expect(response.status).toBe(200);
+    expect(log).toEqual(steps.map((s) => s.key));
+    const seats = msg.calls('bookings', 'PUT')[0];
+    expect(seats.headers['x-actor-id']).toBe(ADMIN);
+    expect(seats.headers['x-owner-id']).toBeUndefined();
+    expect(types()).toEqual(['booking.checked_in']);
+    expect(publisher.published[0].ownerId).toBe(OWNER); // el dueño de la reserva, no el administrador
+    expect(publisher.published[0].event.data).toMatchObject({ bookingId: B, passengersCheckedIn: 1 });
+  });
+
   it('★ fallo en cada paso antes del punto sin retorno: los asientos vuelven a TICKETED y se deshace el check-in', async () => {
     // El último paso (Bookings) está después del punto sin retorno: se reintenta (prueba aparte).
     await failEachStep(steps.slice(0, -1), checkIn, noSeat);
